@@ -63,6 +63,14 @@
 - **未検証（成功を装わない）**: 実機実行は未検証で、wasmtime のメモリ確保、RocksDB の mmap、SELinux 等は Pixel 9a に載せるまで不明。リンク成功も「動く」証明ではない。release プロファイルとクリーンビルド所要時間も未検証。
 - 代替路線の結論: light client（smoldot 等）は Quantus に痕跡がなく、finality のない PoW では成立しない。本命は「full 同期＋プルーニング改変ノードの Android ビルド」で、そのビルド自体に追加の原理的障壁は見当たらない。
 
+### Phase 1 調査で判明したこと（その3: プルーニング改変、2026-11-03）
+
+- **プルーニング指定が効かない原因は Quantus 独自コードの1箇所のみ**。`node/src/command.rs` の通常起動分岐で「Obligatory configuration for all node holders」として `ArchiveCanonical` と `KeepFinalized` を無条件に上書きしていた。CLI パース層と Configuration 構築は正常で、指定値は正しく届いた後に捨てられていた。意図的な設計で、README にも「mandatory storage configuration settings that cannot be overridden」「enforced at the code level」と明記がある（ZKツリーの過去ブロック proof 読み取りと archive RPC を全ノードに担保する思想）。
+- **最小パッチ案を作成し、Android 向け cargo check を通過**: 1ファイル +12行/−3行。数値指定のときだけ指定を尊重し、未指定時は従来の強制値を維持する（既存運用者の既定挙動は不変）。パッチは spike クローンの未コミット差分として保持し、コピーを作業ファイルにも保存済み。
+- **副次効果**: fast 同期の拒否条件は「実効プルーニングが archive か」であることをコードで特定した。プルーニングが数値で効けば fast のゲートはコード上開く（実際に状態ダウンロードまで成立するかは未検証）。warp はプロバイダ未構成＋PoW のため引き続き不可。
+- トレードオフ: プルーニング済みノードでは深い履歴の state_call / zkTree proof / archive RPC が「状態なし」で失敗する。スマホの個人ノード用途では許容範囲と判断するが、公式思想との差異として明記する。
+- **未検証**: パッチ適用バイナリを P2P の通る環境で起動し、起動ログの切替・同期時の DB 容量の頭打ち・fast 同期の成否を確認すること。この VM では P2P が通らず未実施。
+
 ### Pixel 9a（実機ターゲット）
 - Tensor G4（X4 ×1 + A720 ×3 + A520 ×4）、RAM 8GB、ストレージ 128/256GB UFS 3.1（microSD なし）、電池 5,100mAh、Titan M2。
 - ノード用途では CPU は十分。勝負はストレージ容量とバックグラウンド常駐の可否に絞られる。
