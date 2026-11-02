@@ -50,6 +50,19 @@
 - **最大の未知数は同期時間。** full 同期のみのため、33.7万ブロックの全実行検証をスマホ CPU で終える時間が未検証。次の実測は P2P の通る通常回線の環境（実機等）で取り直す。
 - ノードは GB 級の trie キャッシュを前提とする設計（起動時に 1GB 確保の警告を確認）。同期時ピーク RAM は未測定で、Pixel 9a（8GB）での注意材料。
 
+### Phase 0 実測で判明したこと（その2: Android 移植、2026-11-03）
+
+- **quantus-node 本体が Android 向けにコンパイル検証（cargo check）を通過した。** 対象は `aarch64-linux-android`、Wasm ランタイム有効時も EXIT 0 で、`quantus_runtime.wasm`（約3.1MB）の生成まで確認。基盤クレート（qpow-math、qp-dilithium-crypto、sc-network、sc-executor-wasmtime、sc-client-db）も全て通過し、RocksDB と ring のクロスコンパイル生成物も確認した。
+- 踏んだブロッカーは5件すべて回避実証済みで、**上流コードへのパッチはゼロ**:
+  - rustix 1.1.2 の Android 向けバグ → `cargo update -p rustix`（1.1.6、Cargo.lock のみの変更）
+  - litep2p の protoc 要求 → protoc 29.3 を用意
+  - bindgen の libclang / Android ヘッダ解決 → NDK 同梱 libclang の指定とクロス引数の追加
+  - ホスト側ビルドの重さ（Binaryen と ZK 回路生成で約20分/回）→ CI はキャッシュ前提の設計が必須
+- 当初恐れた glibc 前提・wasmtime のプラットフォーム前提は、check の範囲では表面化しなかった。
+- **最終リンクも成功（2026-11-03 朝、追記）**: `cargo build -p quantus-node --target aarch64-linux-android` が完走し、ARM aarch64 の ELF 実行ファイル（interpreter は Android の /system/bin/linker64、strip 後約123MB）を生成。リンクエラーの追加パッチは不要だった。ビルド手順はリポジトリの docs/BUILD-android.md に固定済み。実行時に libc++_shared.so のアプリ側同梱が必要（NEEDED に含まれる）。
+- **未検証（成功を装わない）**: 実機実行は未検証で、wasmtime のメモリ確保、RocksDB の mmap、SELinux 等は Pixel 9a に載せるまで不明。リンク成功も「動く」証明ではない。release プロファイルとクリーンビルド所要時間も未検証。
+- 代替路線の結論: light client（smoldot 等）は Quantus に痕跡がなく、finality のない PoW では成立しない。本命は「full 同期＋プルーニング改変ノードの Android ビルド」で、そのビルド自体に追加の原理的障壁は見当たらない。
+
 ### Pixel 9a（実機ターゲット）
 - Tensor G4（X4 ×1 + A720 ×3 + A520 ×4）、RAM 8GB、ストレージ 128/256GB UFS 3.1（microSD なし）、電池 5,100mAh、Titan M2。
 - ノード用途では CPU は十分。勝負はストレージ容量とバックグラウンド常駐の可否に絞られる。
