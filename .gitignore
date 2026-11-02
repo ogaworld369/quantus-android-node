@@ -1,0 +1,29 @@
+# Android / Gradle
+.gradle/
+build/
+local.properties
+*.apk
+*.aab
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Rust
+target/
+**/*.rs.bk
+
+# Secrets — never commit
+*.keystore
+*.jks
+keystore.properties
+mining.conf
+node_key.p2p
+*.p2p
+inner_hash*
+seed*
+.env
+
+# OS / editor
+.DS_Store
+.idea/
+*.iml
