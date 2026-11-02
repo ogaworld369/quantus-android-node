@@ -22,6 +22,12 @@ node_key.p2p
 inner_hash*
 seed*
 .env
+# Added by 2026-11-03 security audit (preventive: generic key files and
+# Substrate's on-disk node key name, which has no extension)
+*.key
+*.pem
+secret_ed25519
+node-key
 
 # OS / editor
 .DS_Store
