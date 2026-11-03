@@ -1,0 +1,215 @@
+# Quantus Node — Phase 1 MVP App
+
+The first usable version of the Android node app: install it, tap start,
+and a Quantus mainnet full node stays resident on the phone (foreground
+service) while a quiet dashboard shows whether it is alive and how far
+it has synced.
+
+- applicationId: `app.quantusnode.node`
+- minSdk 31 / targetSdk 35 / arm64-v8a only
+- versionName `0.1-mvp`
+- Permissions (only these): `INTERNET`, `FOREGROUND_SERVICE`,
+  `FOREGROUND_SERVICE_SPECIAL_USE`, `POST_NOTIFICATIONS`
+- `android:allowBackup="false"`
+- Plain framework Java + Android SDK APIs only. **No third-party
+  libraries** (JSON via the SDK's built-in `org.json`).
+
+## What it does
+
+- **NodeService** (foreground service, `specialUse` — Android 15 caps
+  `dataSync` services at 6 h per 24 h, which a resident node cannot
+  live with — not exported) runs the
+  bundled `quantus-node` binary as a child process from
+  `nativeLibraryDir` — direct exec first, one `/system/bin/linker64`
+  fallback if the direct start fails or dies immediately (same pattern
+  as the smoke app).
+- Fixed launch arguments (verified against the node's CLI; do not edit
+  casually). Two elements are user settings (see "Settings" below);
+  everything else is constant:
+
+  ```
+  --chain mainnet --base-path <filesDir>/node --name <display name>
+  --state-pruning 256 --blocks-pruning 256
+  --rpc-port 9944 --rpc-methods safe [--no-telemetry]
+  ```
+
+  Pruning is always passed. No `--rpc-external` (or similar) is ever
+  passed, so RPC stays bound to `127.0.0.1`. All node files (chain DB,
+  node key) stay inside the app-private directory. The app holds no
+  wallet, no seed phrase, no asset secrets — by design.
+- Node output goes to `filesDir/logs/node.log`, hard-capped by rotation
+  (~512 KB; when exceeded, the older half is dropped). No unbounded
+  buffers, no unbounded appends.
+- If the node process exits, the exit code is logged and shown, the
+  service stops, and nothing restarts it behind the user's back.
+- Status comes from the **local** JSON-RPC endpoint only
+  (`http://127.0.0.1:9944/`, `system_health` + `system_syncState`,
+  polled every ~3 s). Connection refused while booting is shown as
+  "起動中" (starting), never as an error. No external endpoint is contacted.
+
+## MainActivity (dashboard)
+
+Dark, minimal, quiet — the "気配" (presence) design:
+
+- **PulseView** (custom Canvas view): a faint still ring and dot. When a
+  new best block is observed, exactly one soft ripple expands and fades.
+  No perpetual animation.
+- Status （停止 / 起動中 / 同期中 / 同期完了）, best block, highest block,
+  peer count, and a start/stop button.
+- **航跡 (track)**: kept only on this device (SharedPreferences) —
+  cumulative uptime (saved every ~10 s while running, so most of it
+  survives a kill), the number of new-block updates observed, and the
+  maximum peer count observed. Never transmitted; no monetary value,
+  no ranking.
+- **量子ウォッチ (quantum watch)**: a frame showing this node's and the
+  network's health (sync state, peers, best/highest block). The external
+  threat-intelligence half is an explicit stub — "未実装（設計メモ参照）"
+  (not implemented; see the design memo, `../docs/DESIGN.md`). Nothing
+  is fetched from outside.
+- **設定 (settings)**: two user settings, both stored only on the
+  device (`NodeSettings`, SharedPreferences) and read at node launch:
+  - **テレメトリに表示する (telemetry opt-in)** — default **off**.
+    Off: the node is launched with `--no-telemetry`, exactly as before.
+    On: `--no-telemetry` is omitted and the node announces itself to
+    the chain spec's built-in official telemetry endpoint (the app
+    never sets a telemetry URL itself), so the node appears in the
+    public list at telemetry.quantus.com. The text next to the switch
+    says plainly that the node name and live status then become public
+    information — the user asked for this opt-in (2026-11-03) because
+    seeing their own node in the list is reassuring.
+  - **表示名 (display name)** — the `--name` value; empty means the
+    generic default `quantus-android-node`. It is sanitized (control
+    characters stripped, trimmed, 64-char cap) and passed as a single
+    argv element — never through a shell.
+  - Changing either setting while the node is running does **not**
+    restart it. The dashboard compares the settings with the snapshot
+    the running node was launched with and, when they differ, shows
+    "設定を変更しました。反映するにはノードの再起動（停止 → 開始）が
+    必要です。自動では再起動しません。" — applying the change is the
+    user's own stop → start.
+  - **言語 (language)** — the UI language: 日本語 / English /
+    简体中文 / Español / हिन्दी / العربية / 한국어 / Русский /
+    Français, or "follow device settings" (the default). Applies to
+    the dashboard immediately (activity recreate) and to the service
+    notification the next time it is rebuilt. All strings live in
+    `StringsTable.java` (38 keys × 9 languages, mechanically checked
+    for completeness); the full table and contribution guide are in
+    `../docs/I18N.md`. Numbers always render with ASCII digits in
+    every language, and Arabic mirrors the layout (RTL).
+
+## Bundled native libraries (not in git)
+
+`native/` must contain, before building:
+
+| file | bytes | what it is |
+|---|---|---|
+| `libquantus_node.so` | 122,615,272 | `quantus-node` cross-built for `aarch64-linux-android` (pruning patch + h2 update applied), then stripped |
+| `libc++_shared.so` | 1,794,776 | NDK r27d `sysroot/usr/lib/aarch64-linux-android/libc++_shared.so` — required: it is in the node's `NEEDED` list |
+
+How the node binary itself is cross-built (Rust 1.93.0, NDK r27d,
+protoc 29.3, the rustix lockfile bump, …) is documented step by step in
+[`../docs/BUILD-android.md`](../docs/BUILD-android.md). In short: build
+per that document, copy the resulting `quantus-node` binary, strip the
+copy with the NDK's `llvm-strip`, name it `libquantus_node.so`, and
+place it — together with `libc++_shared.so` from the NDK sysroot — in
+`native/`. Same staging as the smoke app (`../smoke/README.md`).
+
+## Building the APK
+
+### In this VM (manual pipeline)
+
+Gradle cannot run here: Java-originated network access is blocked by
+the environment, so the Android Gradle Plugin cannot be resolved.
+`build-manual.sh` builds the same APK with only local SDK tools
+(aapt2 → javac → d8 → zip → zipalign → apksigner). No network, no daemon.
+
+```sh
+./build-manual.sh
+# -> build/outputs/apk/debug/quantus-node-debug.apk (debug-signed)
+```
+
+Defaults: JDK `~/workspace/toolchain/jdk-21`, SDK
+`~/workspace/toolchain/android-sdk` (build-tools 35.0.0, platform
+android-35); override with `JAVA_HOME` / `ANDROID_HOME`. The `.so`
+files are stored **uncompressed** in `lib/arm64-v8a/` and the manifest
+sets `extractNativeLibs=true`, so the installer extracts them to
+`nativeLibraryDir`, from which the node can be executed by path.
+
+### On a normal machine (Gradle)
+
+Nothing here is VM-specific in the sources: the manifest, the Java
+sources and `build.gradle` (namespace/applicationId
+`app.quantusnode.node`, AGP 8.7.3, `useLegacyPackaging = true`) form a
+regular Android project. Stage the libraries where AGP expects them
+and build as usual:
+
+```sh
+mkdir -p src/main/jniLibs/arm64-v8a
+cp native/libquantus_node.so native/libc++_shared.so src/main/jniLibs/arm64-v8a/
+# with a Gradle wrapper / settings in place:
+./gradlew assembleDebug
+```
+
+## Installing
+
+```sh
+adb install build/outputs/apk/debug/quantus-node-debug.apk
+# or copy the .apk to the phone and open it with the Files app
+```
+
+Then launch **Quantus Node**, tap **ノードを開始**, and watch the status
+move from 起動中 to 同期中. First sync on mainnet takes a long time and
+the pruned DB still needs real storage — this is a node, not a light
+client.
+
+## Verified here (2026-11-03, manual pipeline, build VM only)
+
+- Path: `build/outputs/apk/debug/quantus-node-debug.apk`, **124,437,109 bytes**
+- `aapt2 dump badging`: package `app.quantusnode.node`, versionCode 1,
+  versionName `0.1-mvp`, minSdk 31, targetSdkVersion 35,
+  launchable activity `.MainActivity`, native-code `arm64-v8a`, and
+  exactly the four permissions listed at the top — nothing else.
+- `aapt2 dump xmltree`: `allowBackup=false`, `extractNativeLibs=true`,
+  service `.NodeService` with `exported=false` and
+  `foregroundServiceType=0x40000000` (specialUse, with the
+  `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` property declaring the node use
+  case).
+- Contents (`unzip -l` / `-v`): `classes.dex` (27,312 bytes, deflated);
+  `lib/arm64-v8a/libquantus_node.so` (122,615,272 bytes, **Stored**,
+  CRC32 `42063cd2` — identical to the file in `native/`);
+  `lib/arm64-v8a/libc++_shared.so` (1,794,776 bytes, **Stored**,
+  CRC32 `cdc23959` — identical).
+- `zipalign -c -p 4`: verification successful.
+- `apksigner verify -v`: **Verifies** (v3 scheme, 1 signer). The signer
+  is the **debug** key (`CN=Android Debug, O=Android, C=US`, SHA-256
+  `cc86d3e2…c91201c`) — the same well-known key AGP uses. This APK is
+  for development/testing, not a release build.
+
+### Re-verified after the telemetry opt-in (2026-11-03)
+
+- Same path, **124,453,493 bytes** (SHA-256 `8edbef28…`). Delta vs.
+  the build above is code only; the bundled node binary is untouched.
+- `aapt2 dump badging`: unchanged package / version / SDK range /
+  `arm64-v8a`, and still **exactly the same four permissions** — the
+  opt-in adds none (telemetry rides on the node's own networking).
+- `classes.dex` is now 32,460 bytes and contains 6 classes (the new
+  `NodeSettings` plus the previous five).
+- `zipalign -c -p 4`: OK. `apksigner verify`: **Verifies** (v3, same
+  debug key).
+- Argument behaviour verified by code re-reading: with default
+  settings the launched argument list is identical to the fixed list
+  above (including `--no-telemetry`); with the opt-in on, the only
+  difference is that `--no-telemetry` is absent. Pruning and all other
+  elements are unchanged in both modes.
+
+## Not yet verified (honest list)
+
+- **Everything on a real device.** Foreground-service behaviour on
+  GrapheneOS, process exec from `nativeLibraryDir` for the long-running
+  node (the smoke app only proves `--version`-class starts), RPC
+  answers, sync progress, battery/thermal behaviour, and long-run
+  stability are all unknown until this APK runs on the Pixel 9a.
+- The Gradle route (expected fine on a normal network, unproven here).
+- The node binary is a debug-profile Rust build; a release build is
+  still outstanding (see `../docs/BUILD-android.md`).
+- Quantum-watch external threat information: stub by design (above).

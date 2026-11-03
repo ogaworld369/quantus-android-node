@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Minimal permissions only:
+         INTERNET: the node itself talks to peers; local RPC stays on
+           127.0.0.1 and is never exposed (no external RPC flag anywhere).
+         FOREGROUND_SERVICE / FOREGROUND_SERVICE_SPECIAL_USE: keep the node
+           resident as a specialUse foreground service. specialUse is used
+           instead of dataSync because Android 15 caps dataSync foreground
+           services at 6 cumulative hours per 24 h, which would kill the
+           long-running node; a resident full node is the specialUse case.
+         POST_NOTIFICATIONS: the quiet status notification (Android 13+).
+         Nothing else. No storage, no location, no contacts. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:label="Quantus Node"
+        android:allowBackup="false"
+        android:extractNativeLibs="true"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- The node process lives here. Not exported: nothing outside the
+             app can start, stop or bind to it.
+             foregroundServiceType=specialUse requires the subtype property
+             below declaring what the long-running service is for. -->
+        <service
+            android:name=".NodeService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Long-running full blockchain node operation: keeps the user-started Quantus node resident so it can continuously sync, verify and relay blocks." />
+        </service>
+
+    </application>
+
+</manifest>

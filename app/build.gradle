@@ -1,0 +1,53 @@
+// Canonical build definition for normal environments (Gradle + AGP).
+// The current build VM cannot run Gradle (Java network egress is blocked),
+// so the APK shipped from this VM is produced by build-manual.sh instead —
+// same applicationId, manifest, sources and native libs, debug signing.
+//
+// For a Gradle build, stage the two native libraries first (they are not
+// in git, see README.md):
+//   mkdir -p src/main/jniLibs/arm64-v8a
+//   cp native/libquantus_node.so native/libc++_shared.so src/main/jniLibs/arm64-v8a/
+plugins {
+    id 'com.android.application' version '8.7.3'
+}
+
+android {
+    namespace 'app.quantusnode.node'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'app.quantusnode.node'
+        minSdk 31
+        targetSdk 35
+        versionCode 1
+        versionName '0.1-mvp'
+
+        ndk {
+            // arm64-v8a only: quantus-node is built for aarch64-linux-android.
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    buildTypes {
+        debug {
+            // debug signing is fine for the MVP
+        }
+        release {
+            minifyEnabled false
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // The .so files must be extracted to disk (nativeLibraryDir):
+            // libquantus_node.so is executed as a child process by path,
+            // which is impossible while it stays inside the APK.
+            useLegacyPackaging = true
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

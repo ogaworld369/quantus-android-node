@@ -1,0 +1,10 @@
+# Bundled native binaries (~124 MB together) are build inputs, not source.
+# Recreate / place them as described in README.md — never commit them.
+native/
+
+# Manual-pipeline build outputs
+build/
+*.apk
+*.aab
+
+local.properties
