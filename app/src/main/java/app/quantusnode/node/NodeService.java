@@ -418,6 +418,14 @@ public class NodeService extends Service {
         cmd.add("--name");          cmd.add(nodeName);
         cmd.add("--state-pruning"); cmd.add("256");
         cmd.add("--blocks-pruning"); cmd.add("256");
+        // Phone-sized tuning (2026-11-03 code audit): the default trie
+        // cache ceiling is 1 GiB, which the node itself warns it cannot
+        // initialize on this 8 GB device — cap it at 128 MiB so the
+        // cache actually works and memory pressure (LMK kills) drops.
+        // Blocks-per-request goes to the responder's protocol maximum
+        // (128, was 64), halving request round-trips while syncing.
+        cmd.add("--trie-cache-size"); cmd.add("134217728");
+        cmd.add("--max-blocks-per-request"); cmd.add("128");
         cmd.add("--rpc-port");      cmd.add("9944");
         cmd.add("--rpc-methods");   cmd.add("safe");
         if (!telemetry) {
