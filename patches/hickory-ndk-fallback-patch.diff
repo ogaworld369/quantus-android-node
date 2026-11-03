@@ -1,0 +1,162 @@
+# Quantus Android node: ndk-context panic fix (vendor patches)
+# Generated 2026-11-03T07:55:48Z against crates.io ndk-context 0.1.1 / hickory-resolver 0.26.1.
+# Reproduce: copy the two registry crates into chain/vendor/, apply the three crate diffs,
+# then add the [patch.crates-io] entries to chain/Cargo.toml (last hunk) and let cargo update Cargo.lock.
+
+--- a/ndk-context-0.1.1/src/lib.rs
++++ b/vendor/ndk-context/src/lib.rs
+@@ -72,6 +72,18 @@
+     unsafe { ANDROID_CONTEXT.expect("android context was not initialized") }
+ }
+ 
++/// Non-panicking variant of [`android_context()`]: returns the
++/// [`AndroidContext`] if it has been initialized, or `None` otherwise.
++///
++/// Local vendor patch (Quantus Android node): the node binary runs as a
++/// plain `exec`ed process with no NativeActivity, so nothing ever
++/// initializes the context. Callers that only need the context
++/// opportunistically (e.g. a DNS system-config lookup) can use this to
++/// fall back gracefully instead of panicking.
++pub fn try_android_context() -> Option<AndroidContext> {
++    unsafe { ANDROID_CONTEXT }
++}
++
+ /// Initializes the [`AndroidContext`]. [`AndroidContext`] is initialized by [__ndk-glue__](https://crates.io/crates/ndk-glue)
+ /// before `main` is called.
+ ///
+--- a/hickory-resolver-0.26.1/Cargo.toml
++++ b/vendor/hickory-resolver/Cargo.toml
+@@ -357,6 +357,11 @@
+ version = "0.1.1"
+ optional = true
+ 
++# Local vendor patch (Quantus Android node): used by the non-JNI DNS
++# fallback in src/system_conf/android.rs (__system_property_get).
++[target.'cfg(target_os = "android")'.dependencies.libc]
++version = "0.2"
++
+ [target.'cfg(target_vendor = "apple")'.dependencies.system-configuration]
+ version = "0.7"
+ optional = true
+--- a/hickory-resolver-0.26.1/src/system_conf/android.rs
++++ b/vendor/hickory-resolver/src/system_conf/android.rs
+@@ -1,13 +1,31 @@
+ use jni::objects::{IntoAuto as _, JByteArray, JList, JObject, JValue};
+ use jni::{jni_sig, jni_str};
+-use std::net::IpAddr;
++use std::net::{IpAddr, Ipv4Addr};
+ use tracing::{trace, warn};
+ 
+ use crate::config::{NameServerConfig, ResolverConfig, ResolverOpts};
+ use crate::proto::ProtoError;
+ 
+ pub fn read_system_conf() -> Result<(ResolverConfig, ResolverOpts), ProtoError> {
+-    let ctx = ndk_context::android_context();
++    // Local vendor patch (Quantus Android node): upstream calls
++    // `ndk_context::android_context()` here, which panics when no
++    // NativeActivity/runtime initialized the Android context. The
++    // Quantus node runs as a plain `exec`ed process, so the context is
++    // never initialized, and the panic killed the node as soon as
++    // litep2p tried to resolve its /dns/ bootstrap peers. Use the JNI
++    // path only when a context actually exists, and fall back to
++    // non-JNI configuration sources otherwise. This must never panic.
++    match ndk_context::try_android_context() {
++        Some(ctx) => read_system_conf_jni(ctx),
++        None => Ok(read_system_conf_fallback()),
++    }
++}
++
++/// Original upstream implementation: asks the ConnectivityManager for
++/// the active network's DNS servers over JNI. Unchanged.
++fn read_system_conf_jni(
++    ctx: ndk_context::AndroidContext,
++) -> Result<(ResolverConfig, ResolverOpts), ProtoError> {
+     let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+     vm.attach_current_thread(|env| {
+         let activity = unsafe { JObject::from_raw(env, ctx.context().cast()) };
+@@ -93,3 +111,66 @@
+         ))
+     })
+ }
++
++/// Fallback used when no Android context was initialized (plain
++/// `exec`ed process, no NativeActivity): read the legacy
++/// `net.dns1`..`net.dns4` system properties via bionic's
++/// `__system_property_get`, and if none of them yields a usable IP,
++/// fall back to public resolvers. Never panics.
++fn read_system_conf_fallback() -> (ResolverConfig, ResolverOpts) {
++    warn!(
++        "android context not initialized; falling back to net.dns* \
++         system properties for DNS server configuration"
++    );
++
++    let mut nameservers = Vec::<NameServerConfig>::new();
++    for property in ["net.dns1", "net.dns2", "net.dns3", "net.dns4"] {
++        if let Some(ip) = system_property_ip(property) {
++            if !nameservers.iter().any(|ns| ns.ip == ip) {
++                nameservers.push(NameServerConfig::udp_and_tcp(ip));
++            }
++        }
++    }
++
++    if nameservers.is_empty() {
++        warn!(
++            "no DNS servers found in net.dns* system properties; \
++             falling back to public resolvers 1.1.1.1 and 8.8.8.8"
++        );
++        for ip in [
++            IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
++            IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
++        ] {
++            nameservers.push(NameServerConfig::udp_and_tcp(ip));
++        }
++    }
++
++    trace!("Got DNS servers (fallback): {:?}", nameservers);
++
++    (
++        ResolverConfig::from_parts(None, vec![], nameservers),
++        Default::default(),
++    )
++}
++
++/// Reads one Android system property and parses it as an IP address.
++/// Returns `None` for missing, unreadable, or non-IP values.
++fn system_property_ip(name: &str) -> Option<IpAddr> {
++    // PROP_VALUE_MAX (bionic's sys/system_properties.h), including
++    // room for the terminating NUL.
++    const PROP_VALUE_MAX: usize = 92;
++
++    let c_name = std::ffi::CString::new(name).ok()?;
++    let mut buffer = [0u8; PROP_VALUE_MAX];
++    // SAFETY: `c_name` is a valid NUL-terminated string and `buffer`
++    // has room for PROP_VALUE_MAX bytes, as __system_property_get
++    // requires; the call only writes into `buffer`.
++    let len = unsafe {
++        libc::__system_property_get(c_name.as_ptr(), buffer.as_mut_ptr() as *mut libc::c_char)
++    };
++    if len <= 0 {
++        return None;
++    }
++    let value = std::str::from_utf8(&buffer[..len as usize]).ok()?;
++    value.trim().parse::<IpAddr>().ok()
++}
+
+# --- chain/Cargo.toml: [patch.crates-io] additions ---
+diff --git a/Cargo.toml b/Cargo.toml
+index 8ce06f2..e0553b4 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -389,7 +389,12 @@ frame-system = { path = "./pallets/frame-system" }
+ frame-system-benchmarking = { path = "./frame/system-benchmarking" }
+ frame-system-rpc-runtime-api = { path = "./frame/system-rpc-runtime-api" }
+ frame-try-runtime = { path = "./frame/try-runtime" }
++# Quantus Android node: vendored fixes for the ndk-context panic that
++# killed the node on Android (hickory DNS fallback when no Android
++# context was initialized). See vendor/ and phase1-ndk-fix notes.
++hickory-resolver = { path = "vendor/hickory-resolver" }
+ litep2p = { path = "./client/litep2p" }
++ndk-context = { path = "vendor/ndk-context" }
+ pallet-transaction-payment = { path = "./pallets/transaction-payment" }
+ pallet-transaction-payment-rpc = { path = "./pallets/transaction-payment-rpc" }
+ pallet-transaction-payment-rpc-runtime-api = { path = "./pallets/transaction-payment-rpc-runtime-api" }

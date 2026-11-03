@@ -56,7 +56,14 @@ public final class TrackStore {
             return;
         }
         SharedPreferences p = prefs(ctx);
-        p.edit().putLong(KEY_BLOCK_UPDATES, p.getLong(KEY_BLOCK_UPDATES, 0L) + delta).apply();
+        long current = p.getLong(KEY_BLOCK_UPDATES, 0L);
+        // Saturating add (TRK-07): with a stored value near
+        // Long.MAX_VALUE a plain add would wrap negative and the
+        // track record would collapse. Unreachable with real chain
+        // heights, but the guard costs nothing.
+        long next = (Long.MAX_VALUE - current < delta)
+                ? Long.MAX_VALUE : current + delta;
+        p.edit().putLong(KEY_BLOCK_UPDATES, next).apply();
     }
 
     public static void observePeers(Context ctx, int peers) {

@@ -135,6 +135,30 @@ files are stored **uncompressed** in `lib/arm64-v8a/` and the manifest
 sets `extractNativeLibs=true`, so the installer extracts them to
 `nativeLibraryDir`, from which the node can be executed by path.
 
+`build-manual.sh` never leaves a stale APK at the output path: the
+previous build is first moved aside to `quantus-node-debug.apk.prev`,
+and the new APK is placed at the final path only after signing has
+succeeded (bug P-5 — a failed build used to leave the old APK looking
+like the new one).
+
+### Versioning
+
+`versionCode` is bumped on **every** build from the 2026-11-03
+generation-unification build onward (that build is versionCode 2;
+`build-manual.sh` and `build.gradle` are kept in step). Android only
+installs an update over an existing install when the versionCode is
+strictly higher, so a fixed versionCode would silently strand testers
+on old builds. `versionName` stays `0.1-mvp` until the release gates
+in `../docs/RELEASE.md` say otherwise. versionCode 3 is the
+evidence build: per-attempt start records on the dashboard and a
+share-log button, for diagnosing the on-device instant-exit failure
+(node arguments and lifecycle logic unchanged). versionCode 4 is the
+ndk-context fix build: the bundled node is now the release-profile
+binary with vendored hickory-resolver/ndk-context patches, so DNS
+system-config lookup falls back (net.dns* properties, then public
+resolvers) instead of panicking when no Android context exists
+(app code itself unchanged from versionCode 3).
+
 ### On a normal machine (Gradle)
 
 Nothing here is VM-specific in the sources: the manifest, the Java
@@ -201,6 +225,31 @@ client.
   above (including `--no-telemetry`); with the opt-in on, the only
   difference is that `--no-telemetry` is absent. Pruning and all other
   elements are unchanged in both modes.
+
+### Re-verified after the generation-unification fixes (2026-11-03)
+
+Fixes for the latent-bug cluster found by the day-long test campaign
+(session-generation asymmetry N-1/N-2/N-3/N-5, launch-window orphan
+N-6, LogSink class lock N-11, giant-line log loss LOG-H-03, track
+saturation TRK-07, build staleness P-5, quick-exit reason display
+P-6). These were **code-reviewed findings, not reproduced on a
+device or emulator**; the fixes are verified here by rebuild, static
+checks and code re-reading only.
+
+- Same path, **124,453,493 bytes** (SHA-256 `98a32dc6…`; the bundled
+  node binary is untouched, and the equal total size vs. the previous
+  build is a deflate coincidence — `classes.dex` grew 56,968 →
+  59,148 bytes and contains the new code paths).
+- `aapt2 dump badging`: **versionCode 2**, versionName `0.1-mvp`,
+  package / SDK range / `arm64-v8a` unchanged, still **exactly the
+  same four permissions**. `aapt2 dump xmltree`: `allowBackup=false`,
+  `foregroundServiceType=0x40000000` (specialUse) with subtype —
+  unchanged. `zipalign -c -p 4`: OK. `apksigner verify`: **Verifies**
+  (v3, same debug key).
+- P-5 fix verified by inducing a build failure (broken `JAVA_HOME`,
+  exit 127): the output directory was left with only
+  `quantus-node-debug.apk.prev` / `.idsig.prev` — **no APK at the
+  final path** — and a subsequent good build restored it.
 
 ## Not yet verified (honest list)
 

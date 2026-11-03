@@ -71,7 +71,7 @@
   - ホスト側ビルドの重さ（Binaryen と ZK 回路生成で約20分/回）→ CI はキャッシュ前提の設計が必須
 - 当初恐れた glibc 前提・wasmtime のプラットフォーム前提は、check の範囲では表面化しなかった。
 - **最終リンクも成功（2026-11-03 朝、追記）**: `cargo build -p quantus-node --target aarch64-linux-android` が完走し、ARM aarch64 の ELF 実行ファイル（interpreter は Android の /system/bin/linker64、strip 後約123MB）を生成。リンクエラーの追加パッチは不要だった。ビルド手順はリポジトリの docs/BUILD-android.md に固定済み。実行時に libc++_shared.so のアプリ側同梱が必要（NEEDED に含まれる）。
-- **未検証（成功を装わない）**: 実機実行は未検証で、wasmtime のメモリ確保、RocksDB の mmap、SELinux 等は Pixel 9a に載せるまで不明。リンク成功も「動く」証明ではない。release プロファイルとクリーンビルド所要時間も未検証。
+- **その後の進展（2026-11-03 追記）**: 実機実行は実施済みで、ノードは DB（ParityDB）を開きジェネシス初期化まで到達した。ただしネットワーク開始直後に後述のパニックで終了しており、同期の完走は未検証のまま（詳細は「その4」）。release プロファイルのビルドも実施済み。当時の「リンク成功は『動く』証明ではない」という留保は正しかった。
 - 代替路線の結論: light client（smoldot 等）は Quantus に痕跡がなく、finality のない PoW では成立しない。本命は「full 同期＋プルーニング改変ノードの Android ビルド」で、そのビルド自体に追加の原理的障壁は見当たらない。
 
 ### Phase 1 調査で判明したこと（その3: プルーニング改変、2026-11-03）
@@ -91,6 +91,20 @@
 - **依存関係の是正**: 監査で「高」とされた h2 0.4.12 の既知 Advisory（DoS 級6件）は、`cargo update -p h2` で 0.4.20 へ更新し、cargo-audit 再実行で解消を確認した。他の上流由来の指摘（ring 等）は上流の追随待ちとして残る。
 - **量子ウォッチの外部情報**（Phase 1 では未実装、方針のみ確定）: データソース候補は NIST の PQC 公開情報、IETF/NIST のステータスページ等の一次情報に限る。取得は画面表示時のみ（常駐取得・ポーリングはしない）、キャッシュは端末内のみ、取得元 URL を画面に明示する。ニュースアグリゲータや解析基盤は使わない。Phase 1 では「自ノードとネットワークの健全性」の表示枠までを実装する。
 - **テレメトリ表示のオプトイン**（2026-11-03 本人決定、MVP に実装済み）: 公式テレメトリ（telemetry.quantus.com）の一覧に自分のノードが出ると安心感がある、という本人の希望により、既定オフ・任意オンのオプトインとして実装した。オフ時は上記の確定形どおり `--no-telemetry` を付けて起動する。オン時は `--no-telemetry` だけを外し、送信先は chain spec 既定の公式エンドポイントとする（送信先 URL をアプリ側で独自に指定しない）。オン時はノード名と稼働状態が誰でも見える公開情報になることを、設定トグルのそばに明記し、本人も了承済み。表示名は既定の汎用名 `quantus-android-node` を基本とし、利用者が任意の表示名を設定できる（端末内にのみ保存し、引数へは配列渡しで渡す）。設定変更は次回のノード起動時に反映され、稼働中に変えた場合は UI に「再起動（停止 → 開始）が必要」と表示するだけで、アプリが黙って再起動することはない。権限は増やさない（テレメトリ送信はノード本体の通信に乗る）。なお実際に一覧へ表示されるかは実機＋実回線での確認が別途必要で、未検証のままである。
+
+### Phase 1 実機で判明したこと（その4: ndk-context パニックと DNS フォールバック修正、2026-11-03）
+
+- **実機でノードがネットワーク開始直後に死ぬ原因を特定した。** 証拠取り版（versionCode 3）を Pixel 9a / GrapheneOS で実行したところ、ノードは起動し、DB（ParityDB）を開き、ジェネシス初期化まで完了したが、「Running litep2p network backend」の直後に panic して終了コード1で終了した（生存約17.8秒）。ログは証拠取り版の共有機能で取得でき、パニック文言がそのまま残っていた。
+- **パニックの正体**: `Thread 'main' panicked at 'android context was not initialized'`、発生箇所は ndk-context 0.1.1 の src/lib.rs:72。依存連鎖は quantus-node → litep2p 0.13.3 → hickory-resolver 0.26.1 → ndk-context 0.1.1。
+- **仕組み**: hickory-resolver（DNS リゾルバ）の Android 版 `read_system_conf()` が、システムの DNS 設定を読む冒頭で `ndk_context::android_context()` を呼ぶ。この関数は NativeActivity 等の Android ランタイムがコンテキストを初期化している前提で、未初期化だと panic する。本アプリのノードはアプリから exec された素のプロセスであり、コンテキストを初期化する者が存在しない。
+- **引き金**: mainnet のブートノードは全て /dns/ アドレスのため、ネットワーク開始直後の最初の名前解決で必ずこの経路に入る。
+- **なぜ PC で再現しなかったか**: Linux にはこの経路自体が存在しない（hickory は /etc/resolv.conf を読む）。ホスト再現実験で公式バイナリ・パッチ版バイナリとも正常起動したことと整合し、「環境側」と切り分けられた問題の内訳が、この Android 固有の依存経路だったことが判明した。
+- **修正（上流への2つ目のパッチ。1つ目はプルーニングパッチ）**: ndk-context 0.1.1 と hickory-resolver 0.26.1 を spike ツリー（chain/vendor/）にベンダー化し、chain/Cargo.toml の `[patch.crates-io]` で差し替えた。
+  - ndk-context に、panic しない `try_android_context() -> Option<AndroidContext>` を追加した。
+  - hickory-resolver の `read_system_conf()` を振り分けに変更した: コンテキストがある場合は従来どおり JNI 経由で ConnectivityManager から DNS サーバを取得する（挙動不変）。ない場合はフォールバックとして、libc の `__system_property_get` で `net.dns1`〜`net.dns4` を読み、IP として解釈できたものを採用する。それも得られなければ公開 DNS（1.1.1.1 / 8.8.8.8）を使う。フォールバック使用時は warn ログを出す。どの経路でも panic しない。あわせて hickory-resolver の Cargo.toml に Android 向け libc 依存を追加した。
+  - 差分の正本はリポジトリの `patches/hickory-ndk-fallback-patch.diff`（クレート3ファイル＋chain/Cargo.toml の計4件）。再現手順は同ファイル冒頭の記載どおり（レジストリから2クレートを vendor/ にコピーし差分を適用、[patch.crates-io] を追加、Cargo.lock は cargo が更新する）。
+- **検証済みの範囲**: Android（aarch64-linux-android）とホスト両方の `cargo check -p quantus-node` が EXIT 0。Android release を再ビルドし、フォールバックの warn 文字列がバイナリに埋め込まれていることを確認した。この release バイナリ（strip 後 約53.4MB）を同梱して APK versionCode 4 を作成済み。
+- **未検証（成功を装わない）**: **実機での解消確認はまだ実施していない。** versionCode 4 を Pixel 9a に入れて開始し、litep2p の DNS 解決を越えて同期に進むか（またはフォールバックの warn がログに出るか）を見るのが次の実機試行になる。フォールバックの実挙動（net.dns* が GrapheneOS 上で実際に読めるか）も実機でのみ確定する。
 
 ### Pixel 9a（実機ターゲット）
 - Tensor G4（X4 ×1 + A720 ×3 + A520 ×4）、RAM 8GB、ストレージ 128/256GB UFS 3.1（microSD なし）、電池 5,100mAh、Titan M2。
@@ -165,6 +179,7 @@
 
 - DB 容量は実測結果待ち。128GB モデルでは条件が厳しくなる可能性がある。
 - Android 移植で上流パッチが必要になれば、保守負担が恒常化する。Phase 0-2 の結果で継続可否を判断する。
+- 実際に上流パッチは2件体制になった（プルーニング、ndk-context / hickory-resolver の DNS フォールバック。§3「その4」参照）。上流の版上げのたびに再適用と再検証が必要で、保守負担は現実のものになっている。上流への還元（Issue / PR）が望ましい。
 - モバイル回線での同期は通信量が大きい。既定は Wi-Fi のみとし、ユーザーが選んだ場合だけモバイル回線を許可する。
 
 ## 10. 決めること

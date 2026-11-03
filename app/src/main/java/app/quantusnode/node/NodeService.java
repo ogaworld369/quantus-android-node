@@ -72,15 +72,27 @@ public class NodeService extends Service {
     private final AtomicBoolean pollerOn = new AtomicBoolean(false);
 
     /**
-     * Session generation: bumped every time a session starts and every
-     * time one is torn down (stop / finish / destroy). The RPC poller
-     * carries the generation it was started with and refuses to write
-     * state once its generation is stale, so a poll that was in flight
-     * while the service stopped cannot resurrect STARTING / SYNCED on
-     * top of the final STOPPED state (bug P-1).
+     * Session generation: established when a session STARTS (before any
+     * of its threads run) and handed to both the process worker and the
+     * RPC poller. Every teardown (stop / finish / destroy / FGS timeout)
+     * bumps it again. Any end-of-session write — state, track record,
+     * uptime — is made only after re-checking, under {@link #stateLock},
+     * that the writer's generation is still the current one, so a
+     * delayed worker or poll from a dead session can never overwrite a
+     * newer session's STOPPED/SYNCED state or rewind its uptime
+     * (bugs P-1, N-2, N-3, N-5).
      */
     private final java.util.concurrent.atomic.AtomicInteger sessionGen =
             new java.util.concurrent.atomic.AtomicInteger(0);
+
+    /**
+     * The single lock serializing all session lifecycle transitions and
+     * end-of-session writes: session establishment, teardown, uptime
+     * accounting and the poller's batched state/track writes all happen
+     * inside it, so a generation check and the writes it guards are
+     * atomic with respect to a concurrent teardown (N-4, N-5, N-7).
+     */
+    private final Object stateLock = new Object();
 
     private volatile Process nodeProcess;
     private volatile long sessionStartElapsedMs = -1;
@@ -119,23 +131,35 @@ public class NodeService extends Service {
         // Foreground first, promptly, before any heavy work.
         startForegroundWith(buildNotification(
                 NodeState.label(this, NodeState.Status.STARTING)));
-        NodeState st = NodeState.get();
-        st.status = NodeState.Status.STARTING;
-        st.lastExitCode = null;
-        st.lastNote = null;
-        // No launch snapshot yet for this session: the worker fills it in
-        // when the process is actually launched. Until then the UI must
-        // not claim a settings/restart mismatch against a previous run.
-        st.launchedTelemetry = null;
-        st.launchedNodeName = null;
-        baseUptimeMs = TrackStore.uptimeMs(this);
-        sessionStartElapsedMs = SystemClock.elapsedRealtime();
-        lastUptimeSaveElapsedMs = sessionStartElapsedMs;
-        prevBestBlock = -1;
+        // Establish the session — generation first, before either
+        // thread starts — under the lifecycle lock, and hand the
+        // generation to BOTH the worker and the poller. Previously the
+        // worker ran generation-less and the generation was only fixed
+        // after it had started, so a worker that died instantly (or
+        // finished late, after a stop + fresh start) wrote state and
+        // uptime for a session it did not belong to (N-2, N-3).
+        final int gen;
+        synchronized (stateLock) {
+            gen = sessionGen.incrementAndGet();
+            NodeState st = NodeState.get();
+            st.status = NodeState.Status.STARTING;
+            st.lastExitCode = null;
+            st.lastNote = null;
+            st.lastAttempts = java.util.Collections.emptyList();
+            // No launch snapshot yet for this session: the worker fills
+            // it in when the process is actually launched. Until then
+            // the UI must not claim a settings/restart mismatch against
+            // a previous run.
+            st.launchedTelemetry = null;
+            st.launchedNodeName = null;
+            baseUptimeMs = TrackStore.uptimeMs(this);
+            sessionStartElapsedMs = SystemClock.elapsedRealtime();
+            lastUptimeSaveElapsedMs = sessionStartElapsedMs;
+            prevBestBlock = -1;
+        }
 
-        workerThread = new Thread(this::runNodeProcess, "node-process");
+        workerThread = new Thread(() -> runNodeProcess(gen), "node-process");
         workerThread.start();
-        final int gen = sessionGen.incrementAndGet();
         pollerOn.set(true);
         pollerThread = new Thread(() -> runPoller(gen), "node-rpc-poll");
         pollerThread.start();
@@ -146,23 +170,28 @@ public class NodeService extends Service {
 
     @Override
     public void onDestroy() {
-        // Clear `started` FIRST: the worker is blocked in waitFor() and
-        // would otherwise read the process destroy below as a "quick
-        // failed start" and retry via linker64 — resurrecting a node the
-        // user (or the system) just stopped, with nobody left to kill it
-        // (bug B-2). Bumping the generation likewise invalidates any
-        // in-flight poll (bug P-1).
-        started.set(false);
-        sessionGen.incrementAndGet();
-        pollerOn.set(false);
-        Process p = nodeProcess;
-        if (p != null) {
-            p.destroy();
+        // The whole teardown runs under the lifecycle lock, in B-2
+        // order: clear `started` FIRST, then bump the generation, then
+        // destroy the process. The worker is blocked in waitFor() and
+        // would otherwise read the destroy as a "quick failed start"
+        // and retry via linker64 — resurrecting a node the user (or the
+        // system) just stopped, with nobody left to kill it (B-2).
+        // With the generation bumped under the same lock, the worker's
+        // own finish path is generation-stale and writes nothing (N-2).
+        synchronized (stateLock) {
+            started.set(false);
+            sessionGen.incrementAndGet();
+            pollerOn.set(false);
+            Process p = nodeProcess;
+            if (p != null) {
+                p.destroy();
+            }
+            saveUptimeLocked();
+            sessionStartElapsedMs = -1; // no live session any more
+            NodeState st = NodeState.get();
+            st.status = NodeState.Status.STOPPED;
+            st.serviceRunning = false;
         }
-        saveUptimeNow();
-        NodeState st = NodeState.get();
-        st.status = NodeState.Status.STOPPED;
-        st.serviceRunning = false;
         super.onDestroy();
     }
 
@@ -186,13 +215,20 @@ public class NodeService extends Service {
     }
 
     private void handleFgsTimeout() {
+        // Same ordering as the B-2 stop paths (N-1): clear `started`
+        // BEFORE destroying the process, so the worker cannot read the
+        // destroy as a quick failed start and retry it. finishAsStopped
+        // then runs the locked, generation-checked teardown for the
+        // session that is current right now.
+        final int gen = sessionGen.get();
+        started.set(false);
         logApp("foreground service timed out by the system; stopping node");
         NodeState.get().lastNote = I18n.get(this, StringsTable.NOTE_FGS_TIMEOUT);
         Process p = nodeProcess;
         if (p != null) {
             p.destroy();
         }
-        finishAsStopped(null);
+        finishAsStopped(gen, null);
     }
 
     @Override
@@ -201,20 +237,24 @@ public class NodeService extends Service {
     }
 
     private void stopNodeAndSelf() {
-        // Same ordering rule as onDestroy(): clear `started` before
-        // destroying the process, so the worker cannot mistake this
-        // user-requested stop for a failed start and retry it (B-2);
-        // bump the generation so an in-flight poll cannot write state
-        // after this stop is settled (P-1).
-        started.set(false);
-        sessionGen.incrementAndGet();
-        pollerOn.set(false);
-        Process p = nodeProcess;
-        if (p != null) {
-            p.destroy();
+        // Same ordering rule as onDestroy(), under the lifecycle lock:
+        // clear `started` before destroying the process, so the worker
+        // cannot mistake this user-requested stop for a failed start
+        // and retry it (B-2); bump the generation so neither an
+        // in-flight poll (P-1) nor the worker's delayed finish (N-2)
+        // can write state after this stop is settled.
+        synchronized (stateLock) {
+            started.set(false);
+            sessionGen.incrementAndGet();
+            pollerOn.set(false);
+            Process p = nodeProcess;
+            if (p != null) {
+                p.destroy();
+            }
+            saveUptimeLocked();
+            sessionStartElapsedMs = -1; // no live session any more
+            NodeState.get().status = NodeState.Status.STOPPED;
         }
-        saveUptimeNow();
-        NodeState.get().status = NodeState.Status.STOPPED;
         stopForeground(true);
         stopSelf();
     }
@@ -223,40 +263,77 @@ public class NodeService extends Service {
     // Node process
     // ------------------------------------------------------------------
 
-    private void runNodeProcess() {
+    private void runNodeProcess(int gen) {
         File bin = new File(getApplicationInfo().nativeLibraryDir, NODE_LIB);
         if (!bin.exists()) {
             logApp("node binary not found: " + bin.getAbsolutePath());
-            NodeState.get().lastNote = I18n.get(this, StringsTable.NOTE_BINARY_MISSING);
-            finishAsStopped(null);
+            synchronized (stateLock) {
+                if (gen == sessionGen.get()) {
+                    NodeState.get().lastNote =
+                            I18n.get(this, StringsTable.NOTE_BINARY_MISSING);
+                }
+            }
+            finishAsStopped(gen, null);
             return;
         }
         // App-private dirs only: the node DB / keys stay under filesDir.
         new File(getFilesDir(), "node").mkdirs();
 
+        // This session's per-attempt records, oldest first. Only this
+        // worker thread appends; publication into NodeState happens
+        // under stateLock with the usual generation check.
+        List<NodeState.Attempt> attempts = new ArrayList<>();
         boolean triedLinker = false;
-        while (started.get()) {
+        while (started.get() && gen == sessionGen.get()) {
             Process proc = null;
             long t0 = SystemClock.elapsedRealtime();
+            AttemptCapture capture = new AttemptCapture();
             try {
-                proc = launch(bin, triedLinker);
+                proc = launch(bin, triedLinker, gen);
             } catch (IOException e) {
                 logApp("start failed (" + (triedLinker ? "linker64" : "direct")
                         + "): " + e.getMessage());
-                if (!triedLinker) {
+                // A launch that never produced a process is still an
+                // attempt: record it (no exit code, no output), so the
+                // dashboard can show that BOTH methods were tried.
+                attempts.add(new NodeState.Attempt(triedLinker,
+                        SystemClock.elapsedRealtime() - t0, null,
+                        capture.tailLines(), capture.totalLines()));
+                if (attempts.size() > 2) {
+                    attempts.remove(0);
+                }
+                publishAttempts(attempts, gen);
+                if (!triedLinker && gen == sessionGen.get()) {
                     triedLinker = true;
                     continue; // one fallback attempt, via linker64
                 }
-                NodeState.get().lastNote = I18n.format(
-                        this, StringsTable.NOTE_START_FAILED, e.getMessage());
-                finishAsStopped(null);
+                synchronized (stateLock) {
+                    if (gen == sessionGen.get()) {
+                        NodeState.get().lastNote = I18n.format(
+                                this, StringsTable.NOTE_START_FAILED, e.getMessage());
+                    }
+                }
+                finishAsStopped(gen, null);
                 return;
             }
             nodeProcess = proc;
             final Process running = proc;
+            // N-6 / START-RACE window: the stop side may have run to
+            // completion while pb.start() was still creating this
+            // process (it saw nodeProcess == null and had nothing to
+            // destroy). Re-check immediately after the assignment; if
+            // this session is already torn down, kill the newborn
+            // process ourselves instead of orphaning it with the DB
+            // lock and RPC port held.
+            if (!started.get() || gen != sessionGen.get()) {
+                logApp("session ended while the node was starting; destroying it");
+                nodeProcess = null;
+                proc.destroy();
+                return;
+            }
             logApp("node started (" + (triedLinker ? "via linker64" : "direct") + ")");
 
-            Thread drain = new Thread(() -> drainOutput(running), "node-output");
+            Thread drain = new Thread(() -> drainOutput(running, capture), "node-output");
             drain.setDaemon(true);
             drain.start();
 
@@ -271,21 +348,46 @@ public class NodeService extends Service {
             }
             long livedMs = SystemClock.elapsedRealtime() - t0;
             logApp("node exited: code=" + code + " after " + livedMs + "ms");
-            NodeState.get().lastExitCode = code;
+            boolean quickFailure = code != 0 && livedMs < QUICK_EXIT_MS;
+            // Let the drain thread flush the node's final lines into
+            // this attempt's capture, then record the attempt: the
+            // record is the dashboard's evidence, and an exit code
+            // alone does not tell the user WHY the start failed (P-6).
+            // Per-attempt capture replaces the old file-tail snapshot,
+            // in which the retry overwrote the first attempt's record
+            // and [app] lines crowded out the node's own output.
+            try {
+                drain.join(1000);
+            } catch (InterruptedException ignored) {
+            }
+            attempts.add(new NodeState.Attempt(triedLinker, livedMs, code,
+                    capture.tailLines(), capture.totalLines()));
+            if (attempts.size() > 2) {
+                attempts.remove(0);
+            }
+            synchronized (stateLock) {
+                if (gen == sessionGen.get()) {
+                    NodeState st = NodeState.get();
+                    st.lastExitCode = code;
+                    st.lastAttempts = java.util.Collections.unmodifiableList(
+                            new ArrayList<>(attempts));
+                }
+            }
 
             // Quick, failed start on the direct path: try linker64 once.
             // Anything else is a real exit — record it and stop, no loop.
-            if (started.get() && !triedLinker && code != 0 && livedMs < QUICK_EXIT_MS) {
+            if (started.get() && gen == sessionGen.get()
+                    && !triedLinker && quickFailure) {
                 logApp("quick exit; retrying once via /system/bin/linker64");
                 triedLinker = true;
                 continue;
             }
-            finishAsStopped(code);
+            finishAsStopped(gen, code);
             return;
         }
     }
 
-    private Process launch(File bin, boolean viaLinker) throws IOException {
+    private Process launch(File bin, boolean viaLinker, int gen) throws IOException {
         String nativeDir = getApplicationInfo().nativeLibraryDir;
         String basePath = new File(getFilesDir(), "node").getAbsolutePath();
 
@@ -322,9 +424,16 @@ public class NodeService extends Service {
 
         // Remember what this process was launched with, so the UI can
         // say "settings changed — restart to apply" when they diverge.
-        NodeState st = NodeState.get();
-        st.launchedTelemetry = telemetry;
-        st.launchedNodeName = nodeName;
+        // Generation-gated like every other state write: a launch that
+        // completes after its session was torn down must not stamp its
+        // snapshot over a newer session's.
+        synchronized (stateLock) {
+            if (gen == sessionGen.get()) {
+                NodeState st = NodeState.get();
+                st.launchedTelemetry = telemetry;
+                st.launchedNodeName = nodeName;
+            }
+        }
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.environment().put("LD_LIBRARY_PATH", nativeDir);
@@ -334,18 +443,37 @@ public class NodeService extends Service {
         return pb.start();
     }
 
-    private void finishAsStopped(Integer exitCode) {
-        // Invalidate the session generation first, so a pollOnce() that
-        // is still blocked in an RPC call returns without writing state
-        // once this stop is settled (bug P-1).
-        sessionGen.incrementAndGet();
-        pollerOn.set(false);
-        saveUptimeNow();
-        NodeState st = NodeState.get();
-        st.status = NodeState.Status.STOPPED;
-        // bestBlock / highestBlock / peers keep their last known values,
-        // so the dashboard can still show where the node got to.
-        started.set(false);
+    /**
+     * End-of-session teardown for the worker / timeout paths. The
+     * whole decision — "is my generation still the live one?" — and
+     * every write that follows from it happen inside {@link #stateLock}:
+     * if a newer session has already started (or a stop has already
+     * settled this one), a delayed finish from the old worker must not
+     * overwrite the new session's state with STOPPED, rewind its
+     * uptime base, or stopSelf() the service out from under it (N-2).
+     * In that case this call does nothing at all.
+     */
+    private void finishAsStopped(int gen, Integer exitCode) {
+        synchronized (stateLock) {
+            if (gen != sessionGen.get()) {
+                logApp("stale finish ignored (gen " + gen
+                        + ", exitCode " + exitCode + ")");
+                return;
+            }
+            // Invalidate this session's generation, so a pollOnce()
+            // that is still blocked in an RPC call returns without
+            // writing state once this stop is settled (bug P-1).
+            sessionGen.incrementAndGet();
+            pollerOn.set(false);
+            saveUptimeLocked();
+            sessionStartElapsedMs = -1; // no live session any more
+            NodeState st = NodeState.get();
+            st.status = NodeState.Status.STOPPED;
+            // bestBlock / highestBlock / peers keep their last known
+            // values, so the dashboard can still show where the node
+            // got to. lastExitCode was already recorded by the worker.
+            started.set(false);
+        }
         stopForeground(true);
         stopSelf();
     }
@@ -354,7 +482,18 @@ public class NodeService extends Service {
     // Output draining + bounded log file
     // ------------------------------------------------------------------
 
-    private void drainOutput(Process proc) {
+    /** Publish the session's attempt records into NodeState (locked, gen-checked). */
+    private void publishAttempts(List<NodeState.Attempt> attempts, int gen) {
+        synchronized (stateLock) {
+            if (gen == sessionGen.get()) {
+                NodeState.get().lastAttempts =
+                        java.util.Collections.unmodifiableList(
+                                new ArrayList<>(attempts));
+            }
+        }
+    }
+
+    private void drainOutput(Process proc, AttemptCapture capture) {
         try (BufferedReader r = new BufferedReader(
                 new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
@@ -362,9 +501,40 @@ public class NodeService extends Service {
                 if (logSink != null) {
                     logSink.write(line);
                 }
+                capture.add(line);
             }
         } catch (IOException ignored) {
             // Stream closed because the process ended; that is expected.
+        }
+    }
+
+    /**
+     * In-memory capture of ONE launch attempt's process output, fed
+     * by the drain thread alongside the log file. Keeps only the tail
+     * (30 lines) plus the total count, so a long-running node cannot
+     * grow it without bound — and an attempt that printed nothing is
+     * distinguishable from one whose lines were merely dropped.
+     */
+    private static final class AttemptCapture {
+        private static final int MAX_KEPT_LINES = 30;
+
+        private final java.util.ArrayDeque<String> tail = new java.util.ArrayDeque<>();
+        private int total = 0;
+
+        synchronized void add(String line) {
+            total++;
+            if (tail.size() >= MAX_KEPT_LINES) {
+                tail.pollFirst();
+            }
+            tail.addLast(line);
+        }
+
+        synchronized List<String> tailLines() {
+            return new ArrayList<>(tail);
+        }
+
+        synchronized int totalLines() {
+            return total;
         }
     }
 
@@ -376,10 +546,30 @@ public class NodeService extends Service {
 
     /**
      * Append-only log with a hard cap: once the file passes ~512 KB it is
-     * rewritten keeping only its newer half. Synchronized; one writer at a
-     * time (app lines and node lines interleave by line, which is fine).
+     * rewritten keeping only its newer half. One writer at a time (app
+     * lines and node lines interleave by line, which is fine).
+     *
+     * Synchronization is on a CLASS-level lock, not the instance: a
+     * service destroyed and recreated across sessions leaves two
+     * LogSink objects pointing at the same node.log file, and
+     * instance-level locks let their appends/rotations interleave and
+     * corrupt each other's view of the file (N-11).
      */
     private static final class LogSink {
+        private static final Object LOCK = new Object();
+
+        /**
+         * Per-line byte cap (a quarter of the file cap). Without it, a
+         * single line longer than the whole file cap would, at the next
+         * rotation, push the keep-window start past every newline in
+         * the file and the rotation would drop ALL retained history,
+         * leaving only the marker (LOG-H-03). Oversized lines are
+         * truncated and marked instead; the file cap still holds.
+         */
+        private static final int MAX_LINE_BYTES = (int) (LOG_MAX_BYTES / 4);
+        private static final byte[] TRUNC_SUFFIX =
+                " ...[line truncated]\n".getBytes(StandardCharsets.UTF_8);
+
         private final File file;
         private long bytesSinceCheck = 0;
 
@@ -388,22 +578,43 @@ public class NodeService extends Service {
             this.file = new File(logDir, "node.log");
         }
 
-        synchronized void write(String line) {
-            byte[] bytes = (line + "\n").getBytes(StandardCharsets.UTF_8);
-            try (FileOutputStream out = new FileOutputStream(file, true)) {
-                out.write(bytes);
-            } catch (IOException ignored) {
-                // Logging must never take the node down with it.
-                return;
-            }
-            bytesSinceCheck += bytes.length;
-            if (bytesSinceCheck >= LOG_CHECK_EVERY_BYTES) {
-                bytesSinceCheck = 0;
-                rotateIfNeeded();
+        void write(String line) {
+            byte[] bytes = encodeLine(line);
+            synchronized (LOCK) {
+                try (FileOutputStream out = new FileOutputStream(file, true)) {
+                    out.write(bytes);
+                } catch (IOException ignored) {
+                    // Logging must never take the node down with it.
+                    return;
+                }
+                bytesSinceCheck += bytes.length;
+                if (bytesSinceCheck >= LOG_CHECK_EVERY_BYTES) {
+                    bytesSinceCheck = 0;
+                    rotateIfNeededLocked();
+                }
             }
         }
 
-        private void rotateIfNeeded() {
+        /** Encode one line, truncating an oversized line at a UTF-8 boundary. */
+        private static byte[] encodeLine(String line) {
+            byte[] bytes = (line + "\n").getBytes(StandardCharsets.UTF_8);
+            if (bytes.length <= MAX_LINE_BYTES) {
+                return bytes;
+            }
+            int keep = MAX_LINE_BYTES - TRUNC_SUFFIX.length;
+            // Do not split a multi-byte UTF-8 sequence: back off while
+            // the first dropped byte is a continuation byte (10xxxxxx).
+            while (keep > 0 && (bytes[keep] & 0xC0) == 0x80) {
+                keep--;
+            }
+            byte[] out = new byte[keep + TRUNC_SUFFIX.length];
+            System.arraycopy(bytes, 0, out, 0, keep);
+            System.arraycopy(TRUNC_SUFFIX, 0, out, keep, TRUNC_SUFFIX.length);
+            return out;
+        }
+
+        /** Caller must hold LOCK. */
+        private void rotateIfNeededLocked() {
             try {
                 long len = file.length();
                 if (len <= LOG_MAX_BYTES) {
@@ -444,7 +655,7 @@ public class NodeService extends Service {
             } catch (Exception ignored) {
                 // A failed poll is a state ("starting"), never a crash.
             }
-            saveUptimePeriodically();
+            saveUptimePeriodically(gen);
             try {
                 Thread.sleep(POLL_MS);
             } catch (InterruptedException e) {
@@ -454,56 +665,77 @@ public class NodeService extends Service {
     }
 
     private void pollOnce(int gen) {
-        NodeState st = NodeState.get();
         if (nodeProcess == null) {
             return; // watcher thread owns the stopped transition
         }
         if (gen != sessionGen.get()) {
             return; // stale session: never write state (bug P-1)
         }
+        // RPC calls run OUTSIDE the lock (they can block for seconds);
+        // every resulting write is applied in ONE locked batch at the
+        // end, after re-checking the generation inside the lock. That
+        // makes "generation check + writes" atomic with respect to a
+        // teardown: there is no longer a window in which a stop can
+        // settle between the check and the writes and still get its
+        // STOPPED overwritten by this poll (N-5), and the track
+        // read-modify-write (prevBestBlock + delta) cannot interleave
+        // with another session's poller (N-7).
         JSONObject health = rpcCall("system_health");
-        if (gen != sessionGen.get()) {
-            return; // stopped / finished while the call was in flight
-        }
         if (health == null) {
             // RPC not up yet (connection refused etc.): still starting.
-            if (st.status != NodeState.Status.STOPPED) {
-                st.status = NodeState.Status.STARTING;
+            synchronized (stateLock) {
+                if (gen != sessionGen.get()) {
+                    return;
+                }
+                NodeState st = NodeState.get();
+                if (st.status != NodeState.Status.STOPPED) {
+                    st.status = NodeState.Status.STARTING;
+                }
             }
             updateNotificationMaybe();
             return;
         }
         int peers = health.optInt("peers", 0);
         boolean isSyncing = health.optBoolean("isSyncing", false);
-        st.peers = peers;
-        TrackStore.observePeers(this, peers);
 
         JSONObject sync = rpcCall("system_syncState");
-        if (gen != sessionGen.get()) {
-            return; // stopped / finished while the call was in flight
-        }
+        long current = -1;
+        long highest = -1;
         if (sync != null) {
-            long current = sync.optLong("currentBlock", -1);
-            long highest = sync.optLong("highestBlock", -1);
-            if (current >= 0) {
-                if (prevBestBlock >= 0 && current > prevBestBlock) {
-                    // Count blocks, not polls: one poll interval during
-                    // the initial sync can cover thousands of blocks
-                    // (bug B-3). On a rewind (current <= prev) nothing
-                    // is added; prevBestBlock is still updated below.
-                    TrackStore.addBlockUpdates(this, current - prevBestBlock);
+            current = sync.optLong("currentBlock", -1);
+            highest = sync.optLong("highestBlock", -1);
+        }
+
+        synchronized (stateLock) {
+            if (gen != sessionGen.get()) {
+                return; // stopped / finished while the calls were in flight
+            }
+            NodeState st = NodeState.get();
+            st.peers = peers;
+            TrackStore.observePeers(this, peers);
+            if (sync != null) {
+                if (current >= 0) {
+                    if (prevBestBlock >= 0 && current > prevBestBlock) {
+                        // Count blocks, not polls: one poll interval
+                        // during the initial sync can cover thousands
+                        // of blocks (bug B-3). On a rewind (current <=
+                        // prev) nothing is added; prevBestBlock is
+                        // still updated below.
+                        TrackStore.addBlockUpdates(this, current - prevBestBlock);
+                    }
+                    prevBestBlock = current;
+                    st.bestBlock = current;
                 }
-                prevBestBlock = current;
-                st.bestBlock = current;
+                if (highest >= 0) {
+                    st.highestBlock = highest;
+                }
+                boolean atHead = highest < 0 || current >= highest;
+                st.status = (isSyncing || !atHead)
+                        ? NodeState.Status.SYNCING : NodeState.Status.SYNCED;
+            } else {
+                st.status = isSyncing
+                        ? NodeState.Status.SYNCING : NodeState.Status.SYNCED;
             }
-            if (highest >= 0) {
-                st.highestBlock = highest;
-            }
-            boolean atHead = highest < 0 || current >= highest;
-            st.status = (isSyncing || !atHead)
-                    ? NodeState.Status.SYNCING : NodeState.Status.SYNCED;
-        } else {
-            st.status = isSyncing ? NodeState.Status.SYNCING : NodeState.Status.SYNCED;
         }
         updateNotificationMaybe();
     }
@@ -551,17 +783,35 @@ public class NodeService extends Service {
     // Uptime accounting (survives most kills: saved every ~10 s)
     // ------------------------------------------------------------------
 
-    private void saveUptimePeriodically() {
-        long now = SystemClock.elapsedRealtime();
-        if (sessionStartElapsedMs >= 0
-                && now - lastUptimeSaveElapsedMs >= UPTIME_SAVE_EVERY_MS) {
-            lastUptimeSaveElapsedMs = now;
-            TrackStore.saveUptimeMs(this,
-                    baseUptimeMs + (now - sessionStartElapsedMs));
+    /**
+     * Periodic save from the poller. Generation-checked and locked:
+     * a stale poller must not keep accruing uptime for a session that
+     * has already ended (N-3), and the read-modify-rebase of the
+     * uptime base must not interleave between the poller, the worker
+     * and the main thread (N-4).
+     */
+    private void saveUptimePeriodically(int gen) {
+        synchronized (stateLock) {
+            if (gen != sessionGen.get() || sessionStartElapsedMs < 0) {
+                return;
+            }
+            long now = SystemClock.elapsedRealtime();
+            if (now - lastUptimeSaveElapsedMs >= UPTIME_SAVE_EVERY_MS) {
+                lastUptimeSaveElapsedMs = now;
+                TrackStore.saveUptimeMs(this,
+                        baseUptimeMs + (now - sessionStartElapsedMs));
+            }
         }
     }
 
-    private void saveUptimeNow() {
+    /**
+     * Fold the live session's elapsed time into the stored base and
+     * rebase. Caller MUST hold {@link #stateLock} (all teardown paths
+     * do); keeping this atomic with the generation bump is what stops
+     * an old session's late save from rewinding a newer session's
+     * accumulated uptime (N-2, N-4).
+     */
+    private void saveUptimeLocked() {
         if (sessionStartElapsedMs >= 0) {
             long total = baseUptimeMs
                     + (SystemClock.elapsedRealtime() - sessionStartElapsedMs);

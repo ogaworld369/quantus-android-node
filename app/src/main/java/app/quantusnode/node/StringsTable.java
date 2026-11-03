@@ -80,6 +80,23 @@ public final class StringsTable {
     public static final String NOTE_BINARY_MISSING = "note_binary_missing";
     /** Format: %1$s = error message from the OS. */
     public static final String NOTE_START_FAILED = "note_start_failed";
+    /** Heading above the per-attempt start records (evidence build). */
+    public static final String ATTEMPTS_TITLE = "attempts_title";
+    /** Launch method label: the binary executed directly. */
+    public static final String ATTEMPT_METHOD_DIRECT = "attempt_method_direct";
+    /** Launch method label: the binary run through /system/bin/linker64. */
+    public static final String ATTEMPT_METHOD_LINKER = "attempt_method_linker";
+    /** Format: %1$d = attempt number, %2$s = method, %3$d = exit code, %4$d = lived ms. */
+    public static final String ATTEMPT_SUMMARY = "attempt_summary";
+    /** Format: %1$d = attempt number, %2$s = method, %3$d = lived ms. */
+    public static final String ATTEMPT_SUMMARY_NO_EXIT = "attempt_summary_no_exit";
+    /** Shown under an attempt whose process printed nothing at all. */
+    public static final String ATTEMPT_NO_OUTPUT = "attempt_no_output";
+    public static final String BUTTON_SHARE_LOG = "button_share_log";
+    /** Subject line of the shared log (a product name; kept as-is in every language). */
+    public static final String SHARE_LOG_SUBJECT = "share_log_subject";
+    /** Toast shown when there is no log file (or it is empty) to share. */
+    public static final String LOG_MISSING_NOTE = "log_missing_note";
 
     /** Supported language tags, in picker order. "zh" is Simplified Chinese. */
     public static final String[] TAGS = {
@@ -198,7 +215,16 @@ public final class StringsTable {
                 NOTIF_ACTION_STOP, "停止",
                 NOTE_FGS_TIMEOUT, "システムの時間制限により停止しました",
                 NOTE_BINARY_MISSING, "ノードバイナリが見つかりません",
-                NOTE_START_FAILED, "起動に失敗しました: %1$s"
+                NOTE_START_FAILED, "起動に失敗しました: %1$s",
+                ATTEMPTS_TITLE, "直近の起動試行",
+                ATTEMPT_METHOD_DIRECT, "直接実行",
+                ATTEMPT_METHOD_LINKER, "linker64 経由",
+                ATTEMPT_SUMMARY, "試行 %1$d（%2$s）: 終了コード %3$d · %4$d ミリ秒",
+                ATTEMPT_SUMMARY_NO_EXIT, "試行 %1$d（%2$s）: 起動できませんでした · %3$d ミリ秒",
+                ATTEMPT_NO_OUTPUT, "（出力なし）",
+                BUTTON_SHARE_LOG, "ログを共有",
+                SHARE_LOG_SUBJECT, "Quantus Node log",
+                LOG_MISSING_NOTE, "ログはまだありません"
         );
     }
 
@@ -245,7 +271,16 @@ public final class StringsTable {
                 NOTIF_ACTION_STOP, "Stop",
                 NOTE_FGS_TIMEOUT, "Stopped by the system's time limit",
                 NOTE_BINARY_MISSING, "Node binary not found",
-                NOTE_START_FAILED, "Failed to start: %1$s"
+                NOTE_START_FAILED, "Failed to start: %1$s",
+                ATTEMPTS_TITLE, "Latest start attempts",
+                ATTEMPT_METHOD_DIRECT, "direct",
+                ATTEMPT_METHOD_LINKER, "via linker64",
+                ATTEMPT_SUMMARY, "Attempt %1$d (%2$s): exit code %3$d · %4$d ms",
+                ATTEMPT_SUMMARY_NO_EXIT, "Attempt %1$d (%2$s): could not start · %3$d ms",
+                ATTEMPT_NO_OUTPUT, "(no output)",
+                BUTTON_SHARE_LOG, "Share log",
+                SHARE_LOG_SUBJECT, "Quantus Node log",
+                LOG_MISSING_NOTE, "No log yet"
         );
     }
 
@@ -292,7 +327,16 @@ public final class StringsTable {
                 NOTIF_ACTION_STOP, "停止",
                 NOTE_FGS_TIMEOUT, "因系统时间限制而停止",
                 NOTE_BINARY_MISSING, "未找到节点二进制文件",
-                NOTE_START_FAILED, "启动失败： %1$s"
+                NOTE_START_FAILED, "启动失败： %1$s",
+                ATTEMPTS_TITLE, "最近的启动尝试",
+                ATTEMPT_METHOD_DIRECT, "直接运行",
+                ATTEMPT_METHOD_LINKER, "通过 linker64",
+                ATTEMPT_SUMMARY, "尝试 %1$d（%2$s）：退出代码 %3$d · %4$d 毫秒",
+                ATTEMPT_SUMMARY_NO_EXIT, "尝试 %1$d（%2$s）：无法启动 · %3$d 毫秒",
+                ATTEMPT_NO_OUTPUT, "（无输出）",
+                BUTTON_SHARE_LOG, "分享日志",
+                SHARE_LOG_SUBJECT, "Quantus Node log",
+                LOG_MISSING_NOTE, "尚无日志"
         );
     }
 
@@ -339,7 +383,16 @@ public final class StringsTable {
                 NOTIF_ACTION_STOP, "Detener",
                 NOTE_FGS_TIMEOUT, "Detenido por el límite de tiempo del sistema",
                 NOTE_BINARY_MISSING, "No se encontró el binario del nodo",
-                NOTE_START_FAILED, "No se pudo iniciar: %1$s"
+                NOTE_START_FAILED, "No se pudo iniciar: %1$s",
+                ATTEMPTS_TITLE, "Últimos intentos de inicio",
+                ATTEMPT_METHOD_DIRECT, "directo",
+                ATTEMPT_METHOD_LINKER, "vía linker64",
+                ATTEMPT_SUMMARY, "Intento %1$d (%2$s): código de salida %3$d · %4$d ms",
+                ATTEMPT_SUMMARY_NO_EXIT, "Intento %1$d (%2$s): no se pudo iniciar · %3$d ms",
+                ATTEMPT_NO_OUTPUT, "(sin salida)",
+                BUTTON_SHARE_LOG, "Compartir registro",
+                SHARE_LOG_SUBJECT, "Quantus Node log",
+                LOG_MISSING_NOTE, "Aún no hay registro"
         );
     }
 
@@ -386,7 +439,16 @@ public final class StringsTable {
                 NOTIF_ACTION_STOP, "बंद करें",
                 NOTE_FGS_TIMEOUT, "सिस्टम की समय-सीमा के कारण बंद हुआ",
                 NOTE_BINARY_MISSING, "नोड बाइनरी नहीं मिली",
-                NOTE_START_FAILED, "शुरू करने में विफल: %1$s"
+                NOTE_START_FAILED, "शुरू करने में विफल: %1$s",
+                ATTEMPTS_TITLE, "हाल के प्रारंभ प्रयास",
+                ATTEMPT_METHOD_DIRECT, "सीधा",
+                ATTEMPT_METHOD_LINKER, "linker64 के माध्यम से",
+                ATTEMPT_SUMMARY, "प्रयास %1$d (%2$s): निकास कोड %3$d · %4$d मिलीसेकंड",
+                ATTEMPT_SUMMARY_NO_EXIT, "प्रयास %1$d (%2$s): शुरू नहीं हो सका · %3$d मिलीसेकंड",
+                ATTEMPT_NO_OUTPUT, "(कोई आउटपुट नहीं)",
+                BUTTON_SHARE_LOG, "लॉग साझा करें",
+                SHARE_LOG_SUBJECT, "Quantus Node log",
+                LOG_MISSING_NOTE, "अभी कोई लॉग नहीं है"
         );
     }
 
@@ -433,7 +495,16 @@ public final class StringsTable {
                 NOTIF_ACTION_STOP, "إيقاف",
                 NOTE_FGS_TIMEOUT, "توقف بسبب حد الوقت في النظام",
                 NOTE_BINARY_MISSING, "لم يتم العثور على ملف العقدة التنفيذي",
-                NOTE_START_FAILED, "فشل البدء: %1$s"
+                NOTE_START_FAILED, "فشل البدء: %1$s",
+                ATTEMPTS_TITLE, "أحدث محاولات البدء",
+                ATTEMPT_METHOD_DIRECT, "مباشر",
+                ATTEMPT_METHOD_LINKER, "عبر linker64",
+                ATTEMPT_SUMMARY, "المحاولة %1$d (%2$s): رمز الخروج %3$d · %4$d مللي ثانية",
+                ATTEMPT_SUMMARY_NO_EXIT, "المحاولة %1$d (%2$s): تعذّر البدء · %3$d مللي ثانية",
+                ATTEMPT_NO_OUTPUT, "(لا يوجد إخراج)",
+                BUTTON_SHARE_LOG, "مشاركة السجل",
+                SHARE_LOG_SUBJECT, "Quantus Node log",
+                LOG_MISSING_NOTE, "لا يوجد سجل بعد"
         );
     }
 
@@ -480,7 +551,16 @@ public final class StringsTable {
                 NOTIF_ACTION_STOP, "정지",
                 NOTE_FGS_TIMEOUT, "시스템 시간 제한으로 정지했습니다",
                 NOTE_BINARY_MISSING, "노드 바이너리를 찾을 수 없습니다",
-                NOTE_START_FAILED, "시작에 실패했습니다: %1$s"
+                NOTE_START_FAILED, "시작에 실패했습니다: %1$s",
+                ATTEMPTS_TITLE, "최근 시작 시도",
+                ATTEMPT_METHOD_DIRECT, "직접 실행",
+                ATTEMPT_METHOD_LINKER, "linker64 경유",
+                ATTEMPT_SUMMARY, "시도 %1$d(%2$s): 종료 코드 %3$d · %4$d 밀리초",
+                ATTEMPT_SUMMARY_NO_EXIT, "시도 %1$d(%2$s): 시작할 수 없었습니다 · %3$d 밀리초",
+                ATTEMPT_NO_OUTPUT, "(출력 없음)",
+                BUTTON_SHARE_LOG, "로그 공유",
+                SHARE_LOG_SUBJECT, "Quantus Node log",
+                LOG_MISSING_NOTE, "아직 로그가 없습니다"
         );
     }
 
@@ -527,7 +607,16 @@ public final class StringsTable {
                 NOTIF_ACTION_STOP, "Остановить",
                 NOTE_FGS_TIMEOUT, "Остановлено по системному ограничению времени",
                 NOTE_BINARY_MISSING, "Бинарный файл узла не найден",
-                NOTE_START_FAILED, "Не удалось запустить: %1$s"
+                NOTE_START_FAILED, "Не удалось запустить: %1$s",
+                ATTEMPTS_TITLE, "Последние попытки запуска",
+                ATTEMPT_METHOD_DIRECT, "напрямую",
+                ATTEMPT_METHOD_LINKER, "через linker64",
+                ATTEMPT_SUMMARY, "Попытка %1$d (%2$s): код завершения %3$d · %4$d мс",
+                ATTEMPT_SUMMARY_NO_EXIT, "Попытка %1$d (%2$s): не удалось запустить · %3$d мс",
+                ATTEMPT_NO_OUTPUT, "(вывода нет)",
+                BUTTON_SHARE_LOG, "Поделиться журналом",
+                SHARE_LOG_SUBJECT, "Quantus Node log",
+                LOG_MISSING_NOTE, "Журнала пока нет"
         );
     }
 
@@ -574,7 +663,16 @@ public final class StringsTable {
                 NOTIF_ACTION_STOP, "Arrêter",
                 NOTE_FGS_TIMEOUT, "Arrêté par la limite de temps du système",
                 NOTE_BINARY_MISSING, "Binaire du nœud introuvable",
-                NOTE_START_FAILED, "Échec du démarrage : %1$s"
+                NOTE_START_FAILED, "Échec du démarrage : %1$s",
+                ATTEMPTS_TITLE, "Dernières tentatives de démarrage",
+                ATTEMPT_METHOD_DIRECT, "direct",
+                ATTEMPT_METHOD_LINKER, "via linker64",
+                ATTEMPT_SUMMARY, "Tentative %1$d (%2$s) : code de sortie %3$d · %4$d ms",
+                ATTEMPT_SUMMARY_NO_EXIT, "Tentative %1$d (%2$s) : démarrage impossible · %3$d ms",
+                ATTEMPT_NO_OUTPUT, "(aucune sortie)",
+                BUTTON_SHARE_LOG, "Partager le journal",
+                SHARE_LOG_SUBJECT, "Quantus Node log",
+                LOG_MISSING_NOTE, "Aucun journal pour le moment"
         );
     }
 }

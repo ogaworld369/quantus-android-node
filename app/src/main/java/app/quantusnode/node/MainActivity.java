@@ -22,8 +22,13 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 /**
  * Dashboard. Dark, minimal, quiet — the node's presence ("気配"), not a
@@ -33,9 +38,13 @@ import java.io.File;
  * on-device "航跡" (track) record; the "量子ウォッチ" (quantum watch)
  * frame, whose external-threat half is an honest stub for now; and the
  * settings — the telemetry opt-in (default off, with what it reveals
- * stated next to the switch), the node's display name, and the UI
+ * stated next to the switch), the node's display name, the UI
  * language (9 languages, "follow device" by default — see
- * {@link StringsTable} / {@link I18n}).
+ * {@link StringsTable} / {@link I18n}), and a share-log button: the
+ * log file lives in the app-private directory, so sharing it out is
+ * a deliberate tap, never automatic. After a failed start, the note
+ * under the status shows each launch attempt's record (method, exit
+ * code, lived time, and what that attempt's process printed).
  *
  * All data comes from the node on this phone via local RPC (through
  * NodeService / NodeState). Nothing here talks to the outside.
@@ -139,8 +148,15 @@ public class MainActivity extends Activity {
         statusView = text(I18n.get(this, StringsTable.STATUS_STOPPED), 26, TEXT);
         statusView.setGravity(Gravity.CENTER);
         root.addView(statusView);
-        noteView = text("", 11, FAINT);
-        noteView.setGravity(Gravity.CENTER);
+        // The note carries the per-attempt start records (raw node
+        // output included) when a start fails: it is evidence, so it
+        // is set larger than the old 11sp one-liner, start-aligned
+        // with breathing room between lines, and selectable so the
+        // user can copy the exact text out.
+        noteView = text("", 13, DIM);
+        noteView.setGravity(Gravity.START);
+        noteView.setLineSpacing(0, 1.3f);
+        noteView.setTextIsSelectable(true);
         root.addView(noteView);
         root.addView(spacer(d, 14));
 
@@ -244,6 +260,18 @@ public class MainActivity extends Activity {
         languageButton.setText(currentLanguageLabel());
         languageButton.setOnClickListener(v -> showLanguageDialog());
         root.addView(languageButton, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        root.addView(spacer(d, 14));
+
+        // ログ共有 — the node's whole log lives in the app-private
+        // directory and cannot be reached from outside; this button
+        // is the one way out, and it only ever fires on the user's
+        // own tap (nothing is sent automatically, ever).
+        Button shareLogButton = new Button(this);
+        shareLogButton.setText(I18n.get(this, StringsTable.BUTTON_SHARE_LOG));
+        shareLogButton.setOnClickListener(v -> onShareLogClicked());
+        root.addView(shareLogButton, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
         root.addView(spacer(d, 26));
@@ -362,6 +390,54 @@ public class MainActivity extends Activity {
         refresh();
     }
 
+    /**
+     * Share the node's log file (filesDir/logs/node.log, the same
+     * size-capped file NodeService writes) as plain text through the
+     * system share sheet. The text travels as EXTRA_TEXT — no
+     * FileProvider, no new dependency, no permission. If there is no
+     * log yet (or it is empty), say so instead of opening the sheet.
+     */
+    private void onShareLogClicked() {
+        File logFile = new File(new File(getFilesDir(), "logs"), "node.log");
+        String logText = null;
+        try {
+            if (logFile.isFile() && logFile.length() > 0) {
+                byte[] all;
+                try (FileInputStream in = new FileInputStream(logFile)) {
+                    all = in.readAllBytes();
+                }
+                logText = new String(all, StandardCharsets.UTF_8);
+            }
+        } catch (IOException ignored) {
+            // Fall through to the "no log" message below.
+        }
+        if (logText == null || logText.trim().isEmpty()) {
+            Toast.makeText(this, I18n.get(this, StringsTable.LOG_MISSING_NOTE),
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        // The log file is capped at 512 KB, but an intent extra has a
+        // much smaller safe ceiling (the Binder transaction limit is
+        // ~1 MB for the whole parcel, and text travels as UTF-16):
+        // handing a full-size log to the share sheet could fail or
+        // crash the chooser. Share the tail — where a failed start's
+        // evidence lives — when the log is large. The marker is plain
+        // text like the log itself, which is unlocalized by design.
+        final int shareMaxChars = 100_000;
+        if (logText.length() > shareMaxChars) {
+            logText = "[... earlier log omitted for sharing; "
+                    + "showing the last part ...]\n"
+                    + logText.substring(logText.length() - shareMaxChars);
+        }
+        Intent send = new Intent(Intent.ACTION_SEND);
+        send.setType("text/plain");
+        send.putExtra(Intent.EXTRA_SUBJECT,
+                I18n.get(this, StringsTable.SHARE_LOG_SUBJECT));
+        send.putExtra(Intent.EXTRA_TEXT, logText);
+        startActivity(Intent.createChooser(send,
+                I18n.get(this, StringsTable.BUTTON_SHARE_LOG)));
+    }
+
     // ------------------------------------------------------------------
     // Refresh (1 s tick while visible; reads NodeState + TrackStore only)
     // ------------------------------------------------------------------
@@ -379,6 +455,44 @@ public class MainActivity extends Activity {
                 note.append(" · ");
             }
             note.append(st.lastNote);
+        }
+        // Failed start: show each launch attempt's own record —
+        // method, exit code, how long it lived, and the lines that
+        // attempt's process printed (or that it printed nothing) —
+        // so the reason is visible, not just the exit code (P-6,
+        // per-attempt form). The output lines are raw node text (the
+        // node's own language); the labels are localized.
+        List<NodeState.Attempt> attempts = st.lastAttempts;
+        if (attempts != null && !attempts.isEmpty()
+                && st.status == NodeState.Status.STOPPED) {
+            if (note.length() > 0) {
+                note.append("\n\n");
+            }
+            note.append(I18n.get(this, StringsTable.ATTEMPTS_TITLE));
+            int n = 1;
+            for (NodeState.Attempt a : attempts) {
+                note.append("\n");
+                String method = I18n.get(this, a.viaLinker
+                        ? StringsTable.ATTEMPT_METHOD_LINKER
+                        : StringsTable.ATTEMPT_METHOD_DIRECT);
+                if (a.exitCode != null) {
+                    note.append(I18n.format(this, StringsTable.ATTEMPT_SUMMARY,
+                            n, method, a.exitCode, a.livedMs));
+                } else {
+                    note.append(I18n.format(this,
+                            StringsTable.ATTEMPT_SUMMARY_NO_EXIT,
+                            n, method, a.livedMs));
+                }
+                if (a.lines.isEmpty()) {
+                    note.append("\n").append(
+                            I18n.get(this, StringsTable.ATTEMPT_NO_OUTPUT));
+                } else {
+                    for (String line : a.lines) {
+                        note.append("\n").append(line);
+                    }
+                }
+                n++;
+            }
         }
         noteView.setText(note.toString());
 
