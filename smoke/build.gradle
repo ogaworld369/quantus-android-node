@@ -1,0 +1,44 @@
+plugins {
+    id 'com.android.application' version '8.7.3'
+}
+
+android {
+    namespace 'app.quantusnode.smoke'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'app.quantusnode.smoke'
+        minSdk 31
+        targetSdk 35
+        versionCode 1
+        versionName '0.1-smoke'
+
+        ndk {
+            // arm64-v8a only: quantus-node is built for aarch64-linux-android.
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    buildTypes {
+        debug {
+            // debug signing is fine for a smoke test
+        }
+        release {
+            minifyEnabled false
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // The .so files must be extracted to disk (nativeLibraryDir):
+            // libquantus_node.so is executed as a child process by path,
+            // which is impossible while it stays inside the APK.
+            useLegacyPackaging = true
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

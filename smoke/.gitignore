@@ -1,0 +1,12 @@
+# Build outputs
+/build/
+app/build/
+.gradle/
+local.properties
+*.apk
+*.aab
+
+# Bundled native binaries are NOT committed (large, reproducible from the
+# build recipe in README.md): stripped quantus-node copy + libc++_shared.so
+src/main/jniLibs/arm64-v8a/libquantus_node.so
+src/main/jniLibs/arm64-v8a/libc++_shared.so
