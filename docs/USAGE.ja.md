@@ -1,6 +1,6 @@
 # 使い方ガイド
 
-[English version](USAGE.md)
+**言語：** [English](USAGE.md) · 日本語 · [简体中文](USAGE.zh-Hans.md) · [Español](USAGE.es.md) · [हिन्दी](USAGE.hi.md) · [العربية](USAGE.ar.md) · [한국어](USAGE.ko.md) · [Русский](USAGE.ru.md) · [Français](USAGE.fr.md)
 
 このアプリは、Quantus Network（QTC メインネット）の**通常フルノード**（ブロック生成はしない）を Android スマホで動かすものです。チェーンを同期し、すべてのブロックを自分で検証し、ピアへデータを中継します。**マイニングはしません。ウォレットもありません**（フレーズや報酬キーを扱うことは一切ありません）。
 

@@ -10,7 +10,7 @@ Product concept: make the node's pulse visible — live block/peer visualization
 
 ## Usage
 
-New to the app? Start with the [Usage Guide](docs/USAGE.md) ([日本語版](docs/USAGE.ja.md)): requirements, installation, the first sync, settings, and troubleshooting.
+New to the app? Start with the Usage Guide — available in all 9 languages the app speaks: [English](docs/USAGE.md), [日本語](docs/USAGE.ja.md), [简体中文](docs/USAGE.zh-Hans.md), [Español](docs/USAGE.es.md), [हिन्दी](docs/USAGE.hi.md), [العربية](docs/USAGE.ar.md), [한국어](docs/USAGE.ko.md), [Русский](docs/USAGE.ru.md), [Français](docs/USAGE.fr.md). Requirements, installation, the first sync, settings, and troubleshooting.
 
 ## Scope
 

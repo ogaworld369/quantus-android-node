@@ -1,6 +1,6 @@
 # Usage Guide
 
-[日本語版はこちら](USAGE.ja.md)
+**Languages:** English · [日本語](USAGE.ja.md) · [简体中文](USAGE.zh-Hans.md) · [Español](USAGE.es.md) · [हिन्दी](USAGE.hi.md) · [العربية](USAGE.ar.md) · [한국어](USAGE.ko.md) · [Русский](USAGE.ru.md) · [Français](USAGE.fr.md)
 
 This app runs a **non-validator full node** for Quantus Network (QTC mainnet) on an Android phone. It syncs the chain, verifies every block itself, and relays data to peers. It does **not** mine, and it has **no wallet** — it never touches seed phrases or reward keys.
 
