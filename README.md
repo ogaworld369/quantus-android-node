@@ -8,6 +8,10 @@ Status: **Phase 1 MVP — running on a real device.** The node now runs on a Pix
 
 Product concept: make the node's pulse visible — live block/peer visualization with a quiet "presence" (KEHAI) design, a local record of your contribution, and a quantum-threat watch. The UI speaks 9 languages (see [docs/I18N.md](docs/I18N.md); native-speaker improvements are very welcome). Telemetry listing is opt-in only (default off).
 
+## Usage
+
+New to the app? Start with the [Usage Guide](docs/USAGE.md) ([日本語版](docs/USAGE.ja.md)): requirements, installation, the first sync, settings, and troubleshooting.
+
 ## Scope
 
 - A non-validator full node for Quantus mainnet: sync, verify, relay, local status.
