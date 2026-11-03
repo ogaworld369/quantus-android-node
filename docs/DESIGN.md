@@ -10,7 +10,7 @@
 ## 1. 前提と原則
 
 - 対象は Android のみ。iOS は対象外。
-- 最初の実機ターゲットは Pixel 9a + GrapheneOS。将来は一般の Android へ広げる。
+- 対象端末の方針（2026-11-03 本人決定）: Pixel 限定にはしない。動作要件は Android 12 以降・arm64 の一般の Android とし（実装は minSdk 31 / arm64-v8a のみ。Google サービスや Pixel 固有機能への依存はない）、「動作確認済み」と「動作見込み」を分けて正直に表記する。現時点の動作確認済みは Pixel 9a + GrapheneOS のみ。その他の端末は動作見込みとし、メーカー独自の省電力機能（Samsung・Xiaomi 等）が常駐サービスを止める可能性を留保として明記する。確認済み端末は、GitHub の Issue への動作報告で増やしていく（公開リポジトリ上で情報共有が回る前提）。
 - オープンソースで公開する（GitHub）。ライセンスは上流に合わせ Apache-2.0 を第一候補とする。
 - セキュリティは最優先。急がず、テストを繰り返し、本番として出せる品質まで作り込む。
 - 「今までにない最新」がテーマ。公式には Android 版ノードが存在せず、スマホで常駐する量子耐性チェーンのフルノードという形自体が新しい。
@@ -104,7 +104,7 @@
   - hickory-resolver の `read_system_conf()` を振り分けに変更した: コンテキストがある場合は従来どおり JNI 経由で ConnectivityManager から DNS サーバを取得する（挙動不変）。ない場合はフォールバックとして、libc の `__system_property_get` で `net.dns1`〜`net.dns4` を読み、IP として解釈できたものを採用する。それも得られなければ公開 DNS（1.1.1.1 / 8.8.8.8）を使う。フォールバック使用時は warn ログを出す。どの経路でも panic しない。あわせて hickory-resolver の Cargo.toml に Android 向け libc 依存を追加した。
   - 差分の正本はリポジトリの `patches/hickory-ndk-fallback-patch.diff`（クレート3ファイル＋chain/Cargo.toml の計4件）。再現手順は同ファイル冒頭の記載どおり（レジストリから2クレートを vendor/ にコピーし差分を適用、[patch.crates-io] を追加、Cargo.lock は cargo が更新する）。
 - **検証済みの範囲**: Android（aarch64-linux-android）とホスト両方の `cargo check -p quantus-node` が EXIT 0。Android release を再ビルドし、フォールバックの warn 文字列がバイナリに埋め込まれていることを確認した。この release バイナリ（strip 後 約53.4MB）を同梱して APK versionCode 4 を作成済み。
-- **未検証（成功を装わない）**: **実機での解消確認はまだ実施していない。** versionCode 4 を Pixel 9a に入れて開始し、litep2p の DNS 解決を越えて同期に進むか（またはフォールバックの warn がログに出るか）を見るのが次の実機試行になる。フォールバックの実挙動（net.dns* が GrapheneOS 上で実際に読めるか）も実機でのみ確定する。
+- **実機で解消を確認した（2026-11-03 17:25）**: versionCode 4 を Pixel 9a / GrapheneOS で実行し、ノードは panic 地点を越えて起動し、ピア12に接続、同期中（ベスト #61642 / 最高 #341089、稼働累計18分）であることを本人が画面で確認した。残る実機確認は、同期の完走、数時間の常駐、プルーニング256での DB 容量の頭打ち、電池・発熱、停止と再開。フォールバックの細部（net.dns* が読めたのか公開 DNS 経路だったのか）は未確定のままである。
 
 ### Pixel 9a（実機ターゲット）
 - Tensor G4（X4 ×1 + A720 ×3 + A520 ×4）、RAM 8GB、ストレージ 128/256GB UFS 3.1（microSD なし）、電池 5,100mAh、Titan M2。

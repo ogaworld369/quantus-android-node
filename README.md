@@ -12,7 +12,7 @@ Product concept: make the node's pulse visible — live block/peer visualization
 
 - A non-validator full node for Quantus mainnet: sync, verify, relay, local status.
 - No mining. No wallet. The app never handles seed phrases or reward keys — by design, there is no asset secret inside the app worth stealing.
-- First target device: Pixel 9a running GrapheneOS. Wider Android support later.
+- Devices: not Pixel-only. Requirements: Android 12+ on arm64 — the implementation has no Google-services or Pixel-specific dependency (it runs on GrapheneOS, which ships without Google services). Verified so far: Pixel 9a running GrapheneOS. Other devices are expected to work but are unverified; OEM battery savers (Samsung, Xiaomi, …) may stop the resident service. Device reports via GitHub Issues are welcome — the verified list grows from them.
 
 ## What we know so far
 
