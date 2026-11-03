@@ -1,0 +1,11 @@
+cacert.pem — Mozilla CA root bundle, official curl.se extract.
+Source: https://curl.se/ca/cacert.pem
+Certificate data from Mozilla as of: Tue Oct 20 13:32:40 2026 GMT
+SHA-256 (verified against https://curl.se/ca/cacert.pem.sha256 on 2026-11-03):
+796f1389bfea13c0ed78f663b765baaff54a508e5483786bd6ece73c5e3e3cbe
+
+Purpose: the bundled node runs as a bare native process, where
+rustls-native-certs finds no system roots on Android. NodeService
+copies this bundle to filesDir and points the node's SSL_CERT_FILE
+at it so the official telemetry (wss) connection can verify TLS.
+The bundle's contents are Mozilla's CA list (MPL-2.0 data).

@@ -14,10 +14,12 @@ import android.os.SystemClock;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -437,10 +439,53 @@ public class NodeService extends Service {
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.environment().put("LD_LIBRARY_PATH", nativeDir);
+        // TLS roots for the node's telemetry (wss) connection: the node
+        // runs as a bare native process, where rustls-native-certs finds
+        // no system roots ("no native root CA certificates found" —
+        // seen in the field on 2026-11-03, which kept the node out of
+        // the public telemetry list). Point the loader at the bundled
+        // Mozilla CA set, with the on-device store as a second hint.
+        String caPath = ensureCaBundle();
+        if (caPath != null) {
+            pb.environment().put("SSL_CERT_FILE", caPath);
+        }
+        pb.environment().put("SSL_CERT_DIR", "/system/etc/security/cacerts");
         pb.redirectErrorStream(true);
         logApp("launch: " + String.join(" ", cmd)
                 + " [telemetry " + (telemetry ? "ON (user opt-in)" : "off") + "]");
         return pb.start();
+    }
+
+    /**
+     * Copy the bundled Mozilla CA roots (assets/cacert.pem, the official
+     * curl.se extract) into filesDir so the node process can read them
+     * by path, and return that path. Refreshed when the bundled copy's
+     * size changes. Returns null when the copy is unavailable; the
+     * caller then relies on the SSL_CERT_DIR hint alone.
+     */
+    private String ensureCaBundle() {
+        try {
+            byte[] data;
+            try (InputStream in = getAssets().open("cacert.pem");
+                 ByteArrayOutputStream buf = new ByteArrayOutputStream()) {
+                byte[] chunk = new byte[8192];
+                int n;
+                while ((n = in.read(chunk)) != -1) {
+                    buf.write(chunk, 0, n);
+                }
+                data = buf.toByteArray();
+            }
+            File out = new File(getFilesDir(), "cacert.pem");
+            if (!out.isFile() || out.length() != data.length) {
+                try (FileOutputStream fos = new FileOutputStream(out)) {
+                    fos.write(data);
+                }
+            }
+            return out.getAbsolutePath();
+        } catch (Exception e) {
+            logApp("CA bundle unavailable: " + e);
+            return null;
+        }
     }
 
     /**
