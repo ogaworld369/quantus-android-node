@@ -4,7 +4,9 @@ Android-only, open-source app that runs a Quantus Network (QTC) full node on a p
 
 **Purpose: decentralization, not profit.** This node does not mine and earns no rewards. It syncs, verifies every block itself, and relays data to peers — so the network depends a little less on a small number of servers, and a little more on ordinary people with hardware they already own.
 
-Status: **design phase (v0.2, node-only)** — see [docs/DESIGN.md](docs/DESIGN.md).
+Status: **Phase 1 MVP in development** — the node binary builds for Android (debug and release profiles), and the MVP app source is in [app/](app/). On-device verification is in progress; there is no public release yet. The release gates are listed in [docs/RELEASE.md](docs/RELEASE.md). Design: [docs/DESIGN.md](docs/DESIGN.md).
+
+Product concept: make the node's pulse visible — live block/peer visualization with a quiet "presence" (KEHAI) design, a local record of your contribution, and a quantum-threat watch. The UI speaks 9 languages (see [docs/I18N.md](docs/I18N.md); native-speaker improvements are very welcome). Telemetry listing is opt-in only (default off).
 
 ## Scope
 
@@ -15,8 +17,9 @@ Status: **design phase (v0.2, node-only)** — see [docs/DESIGN.md](docs/DESIGN.
 ## What we know so far
 
 - Upstream: `quantus-node` v1.0.5 (Quantus-Network/chain), Substrate-based, QPoW / Poseidon2, ML-DSA signatures.
-- Official minimum specs list 100 GB storage (validator-oriented). How small a pruned, warp-synced non-validator node can be is being measured in Phase 0.
-- No official Android build exists. Porting blockers (wasmtime, database backends, libc differences) are being catalogued in Phase 0.
+- The node cross-builds for `aarch64-linux-android` with zero upstream source patches (one lockfile update). The build recipe is fixed in [docs/BUILD-android.md](docs/BUILD-android.md). Release-profile binary: ~53 MB stripped (debug: ~123 MB).
+- Upstream forces archive storage on all nodes; a minimal patch (respect explicit numeric pruning) enables a phone-sized database. Details in the design doc.
+- Official minimum specs list 100 GB storage (validator-oriented); a pruned non-validator node is expected to be far smaller. On-device measurement is pending.
 
 ## Roadmap (summary)
 
@@ -28,7 +31,7 @@ Status: **design phase (v0.2, node-only)** — see [docs/DESIGN.md](docs/DESIGN.
 
 ## Security first
 
-The only secret is the node's P2P identity key, wrapped by Android Keystore and excluded from cloud backup. RPC stays on loopback only. No analytics, no ads, no remote code loading — native code ships inside the signed APK only. Distribution is planned as signed APKs on GitHub Releases (and F-Droid).
+The only secret is the node's P2P identity key, kept in app-private storage and excluded from cloud backup (`allowBackup=false`). RPC stays on loopback only. No analytics, no ads, no remote code loading — native code ships inside the signed APK only. Distribution is planned as signed APKs on GitHub Releases (and F-Droid), gated by [docs/RELEASE.md](docs/RELEASE.md).
 
 ## License
 

@@ -108,6 +108,15 @@ cargo build -p quantus-node --target aarch64-linux-android
 
 リンクは通ったが、以下は依然として未検証。**リンク成功は「実機で動く」ことの証明ではない。**
 
-- release プロファイルでのビルド（LTO 等でリンク時メモリが増える可能性。この VM の 7GB では溢れる可能性がある）。
 - 実機（bionic）での起動: `libc++_shared.so` の同梱ロード、wasmtime のメモリ確保、RocksDB の mmap・ファイルロック、SELinux / W^X、バックグラウンド制限は実行してみるまで分からない。
 - クリーンビルド（`target/` なし）での所要時間。
+- `[profile.production]`（LTO を含む別プロファイル）のビルド可否。
+
+### release プロファイルの検証結果（2026-11-03 追記）
+
+`cargo build --release -p quantus-node --target aarch64-linux-android -j2`（android-env.sh、Wasm 有効）が**初回試行のまま完走**した。プロファイル変更・追加パッチは不要で、OOM もなし。
+
+- 所要時間: 約96分（debug の `target/` キャッシュがある状態での計測）
+- 成果物: 未 strip 77,885,328 bytes → strip 後 **53,403,896 bytes**（debug 版の 43.6%）。NEEDED は debug 版と同一で、`libc++_shared.so` の同梱が必要な点も不変
+- 前提の訂正: 上流の `[profile.release]` は opt-level=3 のみで **LTO を含まない**（LTO は別プロファイル `[profile.production]` 側）。「release は LTO でリンクメモリが溢れる」という当初の懸念は、このプロファイルでは発生しなかった
+- メモリの実態: ビルド中の MemAvailable は最小約49MB まで落ちたが枯渇には至らなかった。最大の消費者は最終リンクではなく、Wasm ビルド内の pallet-wormhole ビルドスクリプト（ZK 回路生成、RSS 約4.96GB）
