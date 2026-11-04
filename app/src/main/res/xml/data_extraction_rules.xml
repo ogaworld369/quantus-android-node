@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Data extraction rules (Android 12+): exclude ALL app data from both
+  cloud backup and device-to-device transfer.
+
+  Why: the app's only secret is the node's P2P identity key, stored
+  under the app-private files directory together with the node
+  database. allowBackup="false" alone does not govern device-to-device
+  transfer on Android 12+; without these rules a phone migration could
+  silently clone the node identity onto a second device. Excluding
+  every domain means a new device starts as a fresh node with a fresh
+  identity, which is the correct behavior for a node key.
+
+  (External audit follow-up, 2026-11-04, finding 2.)
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+    </device-transfer>
+</data-extraction-rules>

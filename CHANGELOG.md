@@ -5,6 +5,41 @@ shared directly by the maintainer; there is no public release yet.
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 13 — 2026-11-04
+- **External-audit follow-ups (findings 2–7 of the 2026-11-04 ChatGPT
+  audit; see SECURITY.md).** No behavior change in normal use; the
+  node binary is the versionCode 10 build.
+  - *Node key no longer travels to a new phone.* Data-extraction
+    rules now exclude all app data domains (files, databases,
+    shared preferences) from both cloud backup and device-to-device
+    transfer, so a phone migration cannot clone the node's P2P
+    identity key. (`allowBackup=false` alone does not govern
+    device transfer on Android 12+.)
+  - *Stop is startId-checked.* Session teardown ends the service via
+    `stopSelfResult()` with the creating START's startId (a STOP
+    command's startId takes over when one arrives), so a delayed
+    finish can no longer stop the service out from under a newer
+    session whose start was already queued.
+  - *Leftover node processes are waited out across service
+    instances.* Each spawned child's pid is recorded in filesDir;
+    before a new spawn, a leftover from a previous (possibly
+    destroyed-and-recreated) service instance is waited on for up to
+    5 s — verified via /proc as still being a quantus process, never
+    killed — and the launch fails with the reason recorded instead of
+    racing it for the database lock.
+  - *Notification race closed.* The RPC poller no longer re-posts
+    the status notification for a stale generation or after a stop
+    has settled, and the stop paths cancel the notification when
+    they end the service.
+  - *Local RPC hardened.* Responses are capped at 64 KiB and HTTP
+    redirects are no longer followed away from the loopback
+    endpoint.
+  - *Failed-start detection tightened.* The quick-exit lifetime is
+    now measured from the moment the child process actually spawns,
+    not from before the wait for a previous process, so a quick
+    failed start can no longer be masked and skip the linker64
+    retry.
+
 ## versionCode 12 — 2026-11-04
 - **Settings lock is now a switch row, with its purpose always
   visible.** The lock was a borderless text button ("Lock settings"

@@ -16,9 +16,15 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- dataExtractionRules: on Android 12+, allowBackup="false" alone
+         does not stop device-to-device transfer from carrying the app
+         data (including the node's P2P identity key) to a new phone.
+         The referenced rules exclude every data domain from both cloud
+         backup and device transfer. -->
     <application
         android:label="Quantus Node"
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:extractNativeLibs="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
 

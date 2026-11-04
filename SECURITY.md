@@ -38,7 +38,7 @@ Four items from earlier reviews are **not applicable** to the current lockfile, 
 - The node's RPC listens on loopback only (127.0.0.1) and is never exposed to the network; the app polls it locally.
 - The only exported Android component is the launcher activity; the node service is not exported.
 - Telemetry is opt-in and off by default: the node starts with `--no-telemetry` unless the user explicitly turns telemetry on. Turning it on makes the node name and status publicly visible.
-- The node identity key is generated on first start and stays in app-private storage; cloud backup is disabled (`allowBackup=false`), and no user input is involved. It is unrelated to any wallet.
+- The node identity key is generated on first start and stays in app-private storage; cloud backup is disabled (`allowBackup=false`) and data-extraction rules exclude every app data domain from device-to-device transfer as well, so a phone migration cannot clone the identity. No user input is involved. It is unrelated to any wallet.
 - Distribution, once public releases begin: signed APKs with SHA-256 checksums published alongside (see Scope notes).
 
 ### Accepted, known items
@@ -46,7 +46,20 @@ Four items from earlier reviews are **not applicable** to the current lockfile, 
 - **Log-writing granularity:** the node's log sink opens/closes the file per line and re-reads to rotate it. It completed a full on-device sync (about 2 hours 21 minutes) with no observed ill effect; this is accepted as a performance item, not a correctness issue.
 - **Synchronous save on the stop path:** uptime is saved with a synchronous commit when the node stops. This is deliberate — preserving the contribution record takes priority over a few milliseconds of latency.
 
+### External audit — 2026-11-04 (ChatGPT)
+An external source audit of the versionCode 12 tree raised seven findings. Six were confirmed and are addressed in versionCode 13:
+
+- **Finding 2 (node key could travel to a new device):** `allowBackup=false` does not govern device-to-device transfer on Android 12+. Data-extraction rules now exclude the file, database and shared-preferences domains from both cloud backup and device transfer.
+- **Finding 3 (stop could tear down a newer session):** session teardown now ends the service with `stopSelfResult()` on the recorded startId (the creating START's, replaced by a STOP command's when one arrives), so a delayed finish cannot stop the service — or remove its foreground state — after a newer start has been queued.
+- **Finding 4 (database lock race across service instances):** the previous F-2 wait only covered a process the same service instance still referenced. Each spawned child's pid is now recorded in filesDir; a later instance waits up to 5 s for a verified leftover (checked via `/proc/<pid>/cmdline`, never killed) and otherwise fails the launch with the reason recorded, instead of racing it for ParityDB's exclusive lock.
+- **Finding 5 (stale notification after stop):** the poller's notification update is now generation- and state-guarded, and the stop paths cancel the status notification when they end the service.
+- **Finding 6 (unbounded local RPC reads):** RPC responses are capped at 64 KiB and redirects are no longer followed away from the loopback endpoint.
+- **Finding 7 (quick-exit window could be masked):** the failed-start lifetime is measured from the actual process spawn, excluding the wait for a previous process, so a quick failed start reliably triggers the one linker64 retry.
+
+One finding was reviewed and deliberately **not** acted on: the suggestion to add a network security configuration for the loopback RPC's cleartext HTTP. The platform's default network security policy permits cleartext traffic to loopback destinations, and the app's RPC polling over `http://127.0.0.1:9944/` has been observed working on the target device class in every build since versionCode 1; no configuration is added for it.
+
 ### Audit record
 - 2026-11-03: a security audit (supply chain, dependency advisories, secret handling) confirmed that no secret value appears in the repository, its history, or the shipped APK.
 - 2026-11-04: a full-source bug audit of the app, plus an extended audit covering the Rust patches, the provenance of the shipped node binary, the build pipeline and documentation consistency. **None of the audits produced a finding of high severity.** The confirmed findings were fixed in versionCode 8 and versionCode 9.
 - 2026-11-04: a third-party-style double-check of the public repository, followed by a dependency re-audit against the current RustSec database (see "Dependency advisories" above). The double-check found no high-severity issue; the dependency re-audit's fixes shipped in versionCode 10, and its corrections to this file's earlier dependency wording are included above.
+- 2026-11-04: an external audit (ChatGPT) of the versionCode 12 source tree. Of its seven findings, six were confirmed and fixed in versionCode 13; one (cleartext configuration for the loopback RPC) was reviewed and deliberately not acted on. See "External audit — 2026-11-04 (ChatGPT)" above.

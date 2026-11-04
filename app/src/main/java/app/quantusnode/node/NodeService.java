@@ -27,7 +27,6 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -61,6 +60,8 @@ public class NodeService extends Service {
     private static final int NOTIF_ID = 1;
 
     private static final String RPC_URL = "http://127.0.0.1:9944/";
+    /** Hard cap on one RPC response (finding 6); real replies are ~100 B. */
+    private static final int RPC_MAX_RESPONSE_BYTES = 64 * 1024;
     private static final long POLL_MS = 3000;
     private static final long UPTIME_SAVE_EVERY_MS = 10000;
 
@@ -70,6 +71,15 @@ public class NodeService extends Service {
 
     /** A process that dies faster than this counts as a failed start. */
     private static final long QUICK_EXIT_MS = 2500;
+
+    /**
+     * Cross-instance leftover-process wait (audit finding 4): the pid
+     * file under filesDir, how long launch() waits for a leftover node
+     * to finish exiting before refusing to spawn, and the poll step.
+     */
+    private static final String PID_FILE_NAME = "node-process.pid";
+    private static final long LEFTOVER_WAIT_MS = 5000;
+    private static final long LEFTOVER_POLL_MS = 100;
 
     private final AtomicBoolean started = new AtomicBoolean(false);
     private final AtomicBoolean pollerOn = new AtomicBoolean(false);
@@ -98,6 +108,32 @@ public class NodeService extends Service {
     private final Object stateLock = new Object();
 
     private volatile Process nodeProcess;
+
+    /**
+     * The startId to hand to {@code stopSelfResult()} when this service
+     * ends itself (external audit 2026-11-04, finding 3). Recorded when
+     * the session is established — the startId of the ACTION_START that
+     * created it — and OVERWRITTEN by an ACTION_STOP for this session:
+     * the stop command is then by definition the latest command the
+     * service has received, so ending the service on its authority is
+     * always correct. If a NEWER start command has arrived since the
+     * recorded one, stopSelfResult() declines and a delayed finish from
+     * this session cannot stopForeground()/stop the service out from
+     * under the newer session.
+     */
+    private volatile int sessionStopId = -1;
+
+    /**
+     * Wall-clock (elapsedRealtime) moment the current child process
+     * actually spawned — set inside launch() immediately after
+     * ProcessBuilder.start() returns (audit finding 7). The worker
+     * measures the child's lifetime from here, NOT from before
+     * launch(): launch() can spend seconds waiting for a previous
+     * process to exit, and folding that wait into the lifetime would
+     * mask a quick failed start and skip the linker64 retry.
+     */
+    private volatile long lastSpawnElapsedMs = -1;
+
     private volatile long sessionStartElapsedMs = -1;
     private volatile long baseUptimeMs = 0;
     private volatile long lastUptimeSaveElapsedMs = 0;
@@ -124,7 +160,7 @@ public class NodeService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent != null ? intent.getAction() : null;
         if (ACTION_STOP.equals(action)) {
-            stopNodeAndSelf();
+            stopNodeAndSelf(startId);
             return START_NOT_STICKY;
         }
         if (!started.compareAndSet(false, true)) {
@@ -144,6 +180,9 @@ public class NodeService extends Service {
         final int gen;
         synchronized (stateLock) {
             gen = sessionGen.incrementAndGet();
+            // This START created the session: its startId is the one a
+            // later end-of-session uses for stopSelfResult() (finding 3).
+            sessionStopId = startId;
             NodeState st = NodeState.get();
             st.status = NodeState.Status.STARTING;
             st.lastExitCode = null;
@@ -249,7 +288,7 @@ public class NodeService extends Service {
         return null; // not a bound service
     }
 
-    private void stopNodeAndSelf() {
+    private void stopNodeAndSelf(int stopStartId) {
         // Same ordering rule as onDestroy(), under the lifecycle lock:
         // clear `started` before destroying the process, so the worker
         // cannot mistake this user-requested stop for a failed start
@@ -257,6 +296,11 @@ public class NodeService extends Service {
         // in-flight poll (P-1) nor the worker's delayed finish (N-2)
         // can write state after this stop is settled.
         synchronized (stateLock) {
+            // This STOP is the newest command the service has seen, so
+            // its startId takes over as the session's stop authority
+            // (finding 3): ending the service below is then legitimate
+            // even though it was a START that created the session.
+            sessionStopId = stopStartId;
             started.set(false);
             sessionGen.incrementAndGet();
             pollerOn.set(false);
@@ -268,8 +312,30 @@ public class NodeService extends Service {
             sessionStartElapsedMs = -1; // no live session any more
             NodeState.get().status = NodeState.Status.STOPPED;
         }
-        stopForeground(true);
-        stopSelf();
+        stopServiceNow();
+    }
+
+    /**
+     * End the service itself, startId-checked (external audit
+     * 2026-11-04, finding 3): stopSelfResult() performs the stop only
+     * if the recorded startId is still the most recent start command.
+     * If a newer START has arrived since — e.g. start commands queued
+     * back-to-back — it returns false and BOTH the self-stop and the
+     * stopForeground() are skipped, so a finishing old session cannot
+     * tear down the foreground state of the service a new session is
+     * about to use. When the stop does go through, the status
+     * notification is also cancelled outright (finding 5, insurance
+     * against a stale notify() landing after the stop has settled).
+     */
+    private void stopServiceNow() {
+        boolean doStop = stopSelfResult(sessionStopId);
+        if (doStop) {
+            stopForeground(true);
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            if (nm != null) {
+                nm.cancel(NOTIF_ID);
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -366,8 +432,19 @@ public class NodeService extends Service {
                 if (nodeProcess == running) {
                     nodeProcess = null;
                 }
+                // Finding 4: same rule for the pid file — remove it
+                // only while it still names THIS process; a newer
+                // session's pid must survive this late cleanup.
+                clearPidFileIfMatches(running.pid());
             }
-            long livedMs = SystemClock.elapsedRealtime() - t0;
+            // Finding 7: lifetime is measured from the actual spawn
+            // (recorded by launch() just after ProcessBuilder.start()),
+            // so the wait for a previous process inside launch() does
+            // not inflate it and hide a quick failed start. The pre-
+            // launch t0 remains only as a fallback for a spawn that
+            // somehow left no timestamp.
+            long livedMs = SystemClock.elapsedRealtime()
+                    - (lastSpawnElapsedMs >= 0 ? lastSpawnElapsedMs : t0);
             logApp("node exited: code=" + code + " after " + livedMs + "ms");
             boolean quickFailure = code != 0 && livedMs < QUICK_EXIT_MS;
             // Let the drain thread flush the node's final lines into
@@ -471,31 +548,29 @@ public class NodeService extends Service {
         pb.redirectErrorStream(true);
         logApp("launch: " + String.join(" ", cmd)
                 + " [telemetry " + (telemetry ? "ON (user opt-in)" : "off") + "]");
-        // F-2: on the first (direct) attempt, give the PREVIOUS
-        // session's process a bounded window to finish exiting before
-        // starting ours. Teardown only destroys it — if the user
-        // restarts immediately, it can still be flushing/closing the
-        // DB, and the new process then fails on ParityDB's exclusive
-        // lock. launch() runs on this session's worker thread, so the
-        // wait never blocks the UI. If it is still alive after the
-        // window, start anyway and let the failure be recorded as
-        // usual. The linker64 retry needs no wait: its predecessor
-        // in this same session has already exited.
-        if (!viaLinker) {
-            Process prev = nodeProcess;
-            if (prev != null && prev.isAlive()) {
-                logApp("previous node process still exiting; waiting up to 3s");
-                try {
-                    if (!prev.waitFor(3, TimeUnit.SECONDS)) {
-                        logApp("previous node process still alive after 3s;"
-                                + " starting anyway");
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-            }
-        }
+        // F-2 + audit finding 4: before spawning, give the PREVIOUS
+        // session's process a bounded window to finish exiting.
+        // Teardown only destroys it — if the user restarts immediately,
+        // it can still be flushing/closing the DB, and the new process
+        // then fails on ParityDB's exclusive lock. The old F-2 wait
+        // only covered a previous process this same service instance
+        // still referenced; a recreated instance (stop -> destroy ->
+        // fresh service) lost that reference while the child could
+        // still be exiting. The wait is now unified on
+        // awaitLeftoverNodeProcess(), which finds the leftover either
+        // via the field or via the pid file. launch() runs on this
+        // session's worker thread, so the wait never blocks the UI.
+        awaitLeftoverNodeProcess();
         Process proc = pb.start();
+        // Finding 7: the lifetime clock starts HERE, at the actual
+        // spawn — not before launch(), whose wait above could
+        // otherwise eat the quick-exit window and mask a failed start.
+        lastSpawnElapsedMs = SystemClock.elapsedRealtime();
+        // Finding 4: record the child pid so a future service instance
+        // can find (and wait for) this process after this instance is
+        // gone. Cleared by the worker when this process exits, and
+        // only if the file still names this pid.
+        writePidFile(proc.pid());
         // F-9: remember what this process was launched with, so the UI
         // can say "settings changed — restart to apply" when they
         // diverge — but only now that the process actually exists.
@@ -516,6 +591,150 @@ public class NodeService extends Service {
             }
         }
         return proc;
+    }
+
+    // ------------------------------------------------------------------
+    // Leftover node process (audit finding 4)
+    // ------------------------------------------------------------------
+
+    /**
+     * Wait — bounded — for the previous session's node process to
+     * finish exiting before a new one is spawned on the same database.
+     * Two ways the leftover can be known:
+     *
+     *   (a) same service instance: {@link #nodeProcess} still holds
+     *       the Process object, so identity is certain and isAlive()
+     *       is the exit test (this is the old F-2 wait, unified here);
+     *   (b) recreated instance: only the pid file survives. A recorded
+     *       pid is trusted ONLY after /proc/&lt;pid&gt;/cmdline shows
+     *       it still belongs to a quantus process — pids are reused,
+     *       and waiting on (let alone disturbing) a stranger's process
+     *       is not an option. A pid that fails the check is stale: the
+     *       record is dropped and startup proceeds at once.
+     *
+     * The leftover is NEVER killed — this method only waits. If it is
+     * still alive after {@link #LEFTOVER_WAIT_MS}, the launch fails
+     * with an IOException whose message (and a log line) records why,
+     * instead of spawning a second node that would lose the fight for
+     * ParityDB's exclusive lock.
+     */
+    private void awaitLeftoverNodeProcess() throws IOException {
+        final Process prev = nodeProcess;
+        final long leftoverPid;
+        final boolean trackByObject;
+        if (prev != null && prev.isAlive()) {
+            leftoverPid = prev.pid();
+            trackByObject = true;
+        } else {
+            long filePid = readPidFile();
+            if (filePid > 0 && isQuantusProcess(filePid)) {
+                leftoverPid = filePid;
+                trackByObject = false;
+            } else {
+                if (filePid > 0) {
+                    // Stale record: process gone, or pid reused.
+                    clearPidFileIfMatches(filePid);
+                }
+                return;
+            }
+        }
+        logApp("previous node process (pid " + leftoverPid
+                + ") still exiting; waiting up to 5s");
+        long deadline = SystemClock.elapsedRealtime() + LEFTOVER_WAIT_MS;
+        while (SystemClock.elapsedRealtime() < deadline) {
+            try {
+                Thread.sleep(LEFTOVER_POLL_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("interrupted while waiting for the"
+                        + " previous node process (pid " + leftoverPid + ") to exit");
+            }
+            boolean alive = trackByObject
+                    ? prev.isAlive() : isQuantusProcess(leftoverPid);
+            if (!alive) {
+                clearPidFileIfMatches(leftoverPid);
+                return;
+            }
+        }
+        logApp("previous node process (pid " + leftoverPid
+                + ") still running after 5s; not starting a second node");
+        throw new IOException("previous node process (pid " + leftoverPid
+                + ") has not exited yet; refusing to start a second node"
+                + " on the same database");
+    }
+
+    /**
+     * True while /proc says this pid is (still) one of ours: the
+     * directory exists and its cmdline names the node binary. Any read
+     * failure reads as "not ours" — a process we cannot identify is
+     * never waited on.
+     */
+    private static boolean isQuantusProcess(long pid) {
+        File procDir = new File("/proc/" + pid);
+        if (!procDir.isDirectory()) {
+            return false;
+        }
+        try (FileInputStream in = new FileInputStream(new File(procDir, "cmdline"));
+             ByteArrayOutputStream buf = new ByteArrayOutputStream()) {
+            byte[] chunk = new byte[512];
+            int n;
+            while ((n = in.read(chunk)) != -1) {
+                buf.write(chunk, 0, n);
+            }
+            return new String(buf.toByteArray(), StandardCharsets.UTF_8)
+                    .contains("quantus");
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private File pidFile() {
+        return new File(getFilesDir(), PID_FILE_NAME);
+    }
+
+    /** Record a spawned child's pid, atomically (tmp + rename). */
+    private void writePidFile(long pid) {
+        File tmp = new File(getFilesDir(), PID_FILE_NAME + ".tmp");
+        boolean done = false;
+        try {
+            try (FileOutputStream fos = new FileOutputStream(tmp)) {
+                fos.write(Long.toString(pid).getBytes(StandardCharsets.UTF_8));
+            }
+            done = tmp.renameTo(pidFile());
+        } catch (IOException ignored) {
+            // The pid file is a cross-instance courtesy, not a launch
+            // requirement: a failed write must not fail the launch
+            // (the same-instance wait still covers this instance).
+        } finally {
+            if (!done) {
+                tmp.delete();
+            }
+        }
+    }
+
+    /** The recorded pid, or -1 when there is no usable record. */
+    private long readPidFile() {
+        try {
+            File f = pidFile();
+            if (!f.isFile()) {
+                return -1;
+            }
+            byte[] data;
+            try (FileInputStream in = new FileInputStream(f)) {
+                data = in.readAllBytes();
+            }
+            return Long.parseLong(
+                    new String(data, StandardCharsets.UTF_8).trim());
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    /** Remove the pid file, but only while it still names this pid. */
+    private void clearPidFileIfMatches(long pid) {
+        if (readPidFile() == pid) {
+            pidFile().delete();
+        }
     }
 
     /**
@@ -601,8 +820,7 @@ public class NodeService extends Service {
             // got to. lastExitCode was already recorded by the worker.
             started.set(false);
         }
-        stopForeground(true);
-        stopSelf();
+        stopServiceNow();
     }
 
     // ------------------------------------------------------------------
@@ -845,7 +1063,7 @@ public class NodeService extends Service {
                     st.status = NodeState.Status.STARTING;
                 }
             }
-            updateNotificationMaybe();
+            updateNotificationMaybe(gen);
             return;
         }
         int peers = health.optInt("peers", 0);
@@ -890,7 +1108,7 @@ public class NodeService extends Service {
                         ? NodeState.Status.SYNCING : NodeState.Status.SYNCED;
             }
         }
-        updateNotificationMaybe();
+        updateNotificationMaybe(gen);
     }
 
     /** One JSON-RPC call to the loopback endpoint; null on any failure. */
@@ -910,6 +1128,12 @@ public class NodeService extends Service {
             conn.setConnectTimeout(1500);
             conn.setReadTimeout(2000);
             conn.setDoOutput(true);
+            // Audit finding 6: never follow a redirect away from the
+            // loopback endpoint, and never read an unbounded response —
+            // whatever answers on this port (the node, or anything
+            // else that grabbed it first) gets at most 64 KiB to
+            // convince us. A longer answer is a failed call.
+            conn.setInstanceFollowRedirects(false);
             try (OutputStream os = conn.getOutputStream()) {
                 os.write(body);
             }
@@ -918,7 +1142,7 @@ public class NodeService extends Service {
             }
             byte[] resp;
             try (java.io.InputStream in = conn.getInputStream()) {
-                resp = in.readAllBytes();
+                resp = readBounded(in, RPC_MAX_RESPONSE_BYTES);
             }
             JSONObject json = new JSONObject(new String(resp, StandardCharsets.UTF_8));
             Object result = json.opt("result");
@@ -930,6 +1154,26 @@ public class NodeService extends Service {
                 conn.disconnect();
             }
         }
+    }
+
+    /**
+     * Read a stream to its end, refusing to buffer more than
+     * {@code maxBytes}: crossing the cap is an IOException, which the
+     * RPC caller treats like any other failed call. (The log-file
+     * reader is deliberately NOT routed through here — that file is
+     * the app's own, hard-capped by rotation.)
+     */
+    private static byte[] readBounded(InputStream in, int maxBytes) throws IOException {
+        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        byte[] chunk = new byte[8192];
+        int n;
+        while ((n = in.read(chunk)) != -1) {
+            if (buf.size() + n > maxBytes) {
+                throw new IOException("response exceeds " + maxBytes + " bytes");
+            }
+            buf.write(chunk, 0, n);
+        }
+        return buf.toByteArray();
     }
 
     // ------------------------------------------------------------------
@@ -1033,8 +1277,21 @@ public class NodeService extends Service {
         }
     }
 
-    private void updateNotificationMaybe() {
+    private void updateNotificationMaybe(int gen) {
+        // Audit finding 5: a poll that was in flight while its session
+        // was being torn down must not (re-)post the status
+        // notification after the stop has settled — the generation
+        // check drops stale sessions, and the STOPPED check covers a
+        // stop that settled without a generation change of its own.
+        // (The stop paths also cancel the notification outright when
+        // they actually end the service; see stopServiceNow().)
+        if (gen != sessionGen.get()) {
+            return;
+        }
         NodeState st = NodeState.get();
+        if (st.status == NodeState.Status.STOPPED) {
+            return;
+        }
         String label = NodeState.label(this, st.status);
         String key = label + "|" + st.bestBlock + "|" + st.peers;
         if (key.equals(lastNotifText)) {

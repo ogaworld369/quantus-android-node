@@ -61,13 +61,17 @@ fi
 sed 's|<manifest |<manifest package="app.quantusnode.node" |' \
   "$APP_DIR/src/main/AndroidManifest.xml" > "$WORK/AndroidManifest.xml"
 
-# 3) aapt2 link: base APK with binary manifest (no resources in this app).
+# 3) Resources + aapt2 link: base APK with binary manifest. The app's
+#    only resource is res/xml/data_extraction_rules.xml (referenced by
+#    the manifest); compile it and pass the compiled output to link.
+"$BT/aapt2" compile --dir "$APP_DIR/src/main/res" -o "$WORK/res.zip"
 "$BT/aapt2" link -o "$WORK/base.apk" \
   -I "$ANDROID_JAR" \
   -A "$APP_DIR/assets" \
   --manifest "$WORK/AndroidManifest.xml" \
   --min-sdk-version 31 --target-sdk-version 35 \
-  --version-code 12 --version-name 0.1-mvp
+  --version-code 13 --version-name 0.1-mvp \
+  "$WORK/res.zip"
 
 # 4) Compile all app sources (plain Java + Android SDK APIs only).
 "$JAVA_HOME/bin/javac" -source 17 -target 17 \
