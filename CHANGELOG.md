@@ -5,6 +5,24 @@ shared directly by the maintainer; there is no public release yet.
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 16 — 2026-11-04
+- **Process-reference ownership fix (third external audit of the
+  versionCode 15 tree; see SECURITY.md).** The audit confirmed the
+  versionCode 14 fixes for findings 3 and 5 and the versionCode 15
+  sequence-B fix, and found one residual race in how the worker owns
+  the shared node-process reference: it registered its process
+  unconditionally after launch, and the exit-path clear used an
+  identity check that was not atomic with the assignment, so a stale
+  worker could overwrite a newer session's reference — or pass the
+  check and then null out the newer process's reference — leaving a
+  live node unpollable and unstoppable. Registration is now a
+  decision under the lifecycle lock: a process is stored only if,
+  inside the lock, its session is still the live one; a process that
+  is not accepted is destroyed and its pid record removed with it;
+  and the exit-path check-and-clear is indivisible under the same
+  lock. No behavior change in normal use; the node binary is the
+  versionCode 10 build.
+
 ## versionCode 15 — 2026-11-04
 - **Sequence-B race fix (found by an internal desk check of the
   versionCode 14 tree).** A START delivered while the previous

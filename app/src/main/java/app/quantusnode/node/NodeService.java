@@ -122,6 +122,22 @@ public class NodeService extends Service {
      */
     private final Object stateLock = new Object();
 
+    /**
+     * The live session's node process; null while none is registered.
+     * Ownership is serialized on {@link #stateLock} (third external
+     * audit, 2026-11-04): the worker REGISTERS a process only inside
+     * that lock, and only after re-confirming there that its session
+     * is still the live one; the exit path CLEARS the reference inside
+     * the same lock, identity check and assignment as one indivisible
+     * step. Until versionCode 15 both writes were unguarded — a stale
+     * worker could store its process over a newer session's
+     * reference, or pass the identity check, watch a newer process be
+     * registered, and then null THAT reference — leaving a live node
+     * unpollable and unstoppable. Reads stay plain volatile
+     * snapshots: the teardown paths snapshot-and-destroy under
+     * stateLock anyway, and the poller and the leftover wait only
+     * need an approximate view.
+     */
     private volatile Process nodeProcess;
 
     /**
@@ -485,19 +501,38 @@ public class NodeService extends Service {
                 finishAsStopped(gen, null);
                 return;
             }
-            nodeProcess = proc;
             final Process running = proc;
-            // N-6 / START-RACE window: the stop side may have run to
-            // completion while pb.start() was still creating this
-            // process (it saw nodeProcess == null and had nothing to
-            // destroy). Re-check immediately after the assignment; if
-            // this session is already torn down, kill the newborn
-            // process ourselves instead of orphaning it with the DB
-            // lock and RPC port held.
-            if (!started.get() || gen != sessionGen.get()) {
+            // N-6 / START-RACE window + third-audit ownership race:
+            // the stop side may have run to completion while
+            // pb.start() was still creating this process (it saw
+            // nodeProcess == null and had nothing to destroy), and
+            // launch() itself can return late to a worker whose
+            // session is already gone. Registration is therefore a
+            // stateLock decision: the process becomes the session's
+            // only if, inside the lock, this session is still the
+            // live one (started, current generation). Until
+            // versionCode 15 the assignment was unconditional and the
+            // staleness re-check and null-out that followed were
+            // separate unguarded steps, so a stale worker could
+            // overwrite a NEWER session's reference and then erase
+            // it — orphaning a live node with the DB lock and the
+            // RPC port held. A process that is not accepted never
+            // joins the session: it is destroyed here and its pid
+            // record removed (identity-checked, under PID_LOCK), so
+            // nothing of it is left for a later launch to trip over.
+            // The destroy and the pid clear run AFTER the lock is
+            // released: no stateLock -> PID_LOCK nesting is created.
+            boolean accepted;
+            synchronized (stateLock) {
+                accepted = started.get() && gen == sessionGen.get();
+                if (accepted) {
+                    nodeProcess = proc;
+                }
+            }
+            if (!accepted) {
                 logApp("session ended while the node was starting; destroying it");
-                nodeProcess = null;
                 proc.destroy();
+                clearPidFileIfMatches(proc.pid());
                 return;
             }
             logApp("node started (" + (triedLinker ? "via linker64" : "direct") + ")");
@@ -513,18 +548,33 @@ public class NodeService extends Service {
                 running.destroy();
                 return;
             } finally {
-                // F-1: clear the reference only if it still points at
-                // THIS session's process. This finally can run late,
-                // after a newer session has already stored its own
-                // process here; erasing that reference would leave the
-                // new process unpollable and unstoppable — an orphan
-                // holding the DB lock and the RPC port.
-                if (nodeProcess == running) {
-                    nodeProcess = null;
+                // F-1 + third-audit ownership race: clear the
+                // reference only if it still points at THIS session's
+                // process, with the check-and-clear indivisible under
+                // stateLock. This finally can run late, after a newer
+                // session has already stored its own process here; the
+                // identity check alone (the versionCode 8 fix) left a
+                // gap — pass the check, watch the newer process
+                // register, then null ITS reference — leaving it
+                // unpollable and unstoppable, an orphan holding the
+                // DB lock and the RPC port. Registration above takes
+                // the same lock, so the two can no longer interleave.
+                synchronized (stateLock) {
+                    if (nodeProcess == running) {
+                        nodeProcess = null;
+                    }
                 }
                 // Finding 4: same rule for the pid file — remove it
                 // only while it still names THIS process; a newer
-                // session's pid must survive this late cleanup.
+                // session's pid must survive this late cleanup. The
+                // reference goes first and the record second, in
+                // separate lock scopes (stateLock, then PID_LOCK —
+                // never nested): the reference is this instance's
+                // live handle, while the record is only a
+                // cross-instance hint that is re-verified via /proc
+                // before anyone waits on it; and by the time
+                // waitFor() has returned, this process is dead
+                // either way, so the order cannot strand a live one.
                 clearPidFileIfMatches(running.pid());
             }
             // Finding 7: lifetime is measured from the actual spawn
