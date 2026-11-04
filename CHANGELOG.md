@@ -3,7 +3,8 @@
 Pre-release development builds, newest first. Builds up to
 versionCode 18 were test builds shared directly by the maintainer
 and signed with the debug key; versionCode 19 / v0.1.0 is the first
-public release and the first build signed with the release key.
+build signed with the release key, and versionCode 20 / v0.1.0 is
+the first public release (published 2026-11-04).
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
@@ -34,7 +35,8 @@ node binary is unchanged unless a build says otherwise).
   node binary is the versionCode 10 build.
 
 ## versionCode 19 / v0.1.0 — 2026-11-04
-- **First public release, signed with the release key.** A dedicated
+- **First build signed with the release key** (itself never
+  published — the published v0.1.0 is versionCode 20). A dedicated
   distribution key (RSA 4096, kept outside this repository) was
   generated, and the release build is signed with it instead of the
   debug key used by every earlier build. The signing certificate's

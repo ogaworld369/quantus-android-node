@@ -261,6 +261,10 @@ genesis to the chain tip completed on 2026-11-03 (#341,592, about
 2 h 21 min of node uptime, peaking at 18 peers — see
 `../docs/DESIGN.md`). The bundled node binary is the release-profile
 build (53,411,080 bytes stripped as of versionCode 10), not a debug build.
+The published v0.1.0 release build (versionCode 20) repeated the
+full sync from a fresh install on 2026-11-05 (#349,518), and with
+telemetry opted in the node appeared in the public telemetry list
+the same day — the CA fix below is confirmed working end to end.
 
 Still not verified:
 
@@ -270,9 +274,6 @@ Still not verified:
   size plateau, and battery/thermal behaviour after the initial
   sync (the sync itself took the battery from 71% to 27%, including
   time on mobile data).
-- **Telemetry listing with the CA fix** (versionCode 5 and later):
-  the root cause was found and fixed; seeing this node appear in
-  the public telemetry list is still to be confirmed on device.
 - **Repeated stop → start cycles on device**: the races found in
   the 2026-11-04 audit are fixed in versionCode 8/9, verified by
   code inspection, not yet by an on-device soak.

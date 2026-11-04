@@ -4,7 +4,7 @@ Android-only, open-source app that runs a Quantus Network (QTC) full node on a p
 
 **Purpose: decentralization, not profit.** This node does not mine and earns no rewards. It syncs, verifies every block itself, and relays data to peers — so the network depends a little less on a small number of servers, and a little more on ordinary people with hardware they already own.
 
-Status: **Phase 1 MVP — full sync completed on a real device.** On 2026-11-03 the node started on a Pixel 9a (GrapheneOS) and completed a full sync from genesis to the chain tip (#341,592) in about 2 hours 21 minutes of node uptime, peaking at 18 peers. Current development builds (versionCode 9, shared directly by the maintainer — not a public release) add a telemetry TLS fix, phone-sized sync tuning, a settings lock, the fixes from the 2026-11-04 full audits, and an audited 9-language UI. Still in progress: the remaining on-device checks (hours of uptime, pruned database size, battery/heat). There is no public release yet. The release gates are listed in [docs/RELEASE.md](docs/RELEASE.md). Design: [docs/DESIGN.md](docs/DESIGN.md). Version history: [CHANGELOG.md](CHANGELOG.md).
+Status: **Phase 1 MVP — full sync completed on a real device.** On 2026-11-03 the node started on a Pixel 9a (GrapheneOS) and completed a full sync from genesis to the chain tip (#341,592) in about 2 hours 21 minutes of node uptime, peaking at 18 peers. The first public release — v0.1.0 (versionCode 20), published on [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases/tag/v0.1.0) on 2026-11-04 and signed with the project's release key — adds a telemetry TLS fix, phone-sized sync tuning, a settings lock, the fixes from the 2026-11-04 full audits, and an audited 9-language UI. The published build repeated a full sync from a fresh install on 2026-11-05 (#349,518), and the node was confirmed on the public telemetry list (opt-in) the same day. Still in progress: the remaining on-device checks (pruned database size plateau, battery/heat over long uptimes). The release gates are listed in [docs/RELEASE.md](docs/RELEASE.md). Design: [docs/DESIGN.md](docs/DESIGN.md). Version history: [CHANGELOG.md](CHANGELOG.md).
 
 Product concept: make the node's pulse visible — live block/peer visualization with a quiet "presence" (KEHAI) design, a local record of your contribution, and a quantum-threat watch. The UI speaks 9 languages (see [docs/I18N.md](docs/I18N.md); native-speaker improvements are very welcome). Telemetry listing is opt-in only (default off).
 
@@ -35,7 +35,7 @@ New to the app? Start with the Usage Guide — available in all 9 languages the 
 
 ## Security first
 
-The only secret is the node's P2P identity key, kept in app-private storage and excluded from cloud backup (`allowBackup=false`). RPC stays on loopback only. No analytics, no ads, no remote code loading — native code ships inside the signed APK only. Distribution is planned as signed APKs on GitHub Releases (and F-Droid), gated by [docs/RELEASE.md](docs/RELEASE.md).
+The only secret is the node's P2P identity key, kept in app-private storage and excluded from cloud backup (`allowBackup=false`). RPC stays on loopback only. No analytics, no ads, no remote code loading — native code ships inside the signed APK only. Distribution is signed APKs on GitHub Releases, gated by [docs/RELEASE.md](docs/RELEASE.md); an F-Droid listing is planned for a later phase.
 
 ## License
 
