@@ -5,6 +5,20 @@ shared directly by the maintainer; there is no public release yet.
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 12 — 2026-11-04
+- **Settings lock is now a switch row, with its purpose always
+  visible.** The lock was a borderless text button ("Lock settings"
+  / "Unlock settings") and its purpose was explained only in a note
+  shown while locked, which made it hard to understand. It is now
+  an iOS-style switch in the same shape as the telemetry row — the
+  switch position shows the state at a glance — with a short
+  always-visible explanation under it: it prevents accidental
+  changes to telemetry, display name, and language, and starting
+  or stopping the node is never locked. Behavior is unchanged
+  (same stored setting, the same three controls are disabled
+  while locked, still no PIN). The USAGE guides were reworded to
+  match the switch. The node binary is the versionCode 10 build.
+
 ## versionCode 11 — 2026-11-04
 - **UI refresh (visual only).** The dashboard is reorganized in an
   Apple-style dark grouped-list design: pure-black background,

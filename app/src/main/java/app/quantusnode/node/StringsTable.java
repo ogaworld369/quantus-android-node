@@ -64,6 +64,8 @@ public final class StringsTable {
     public static final String SETTINGS_LOCK = "settings_lock";
     public static final String SETTINGS_UNLOCK = "settings_unlock";
     public static final String SETTINGS_LOCKED_NOTE = "settings_locked_note";
+    /** Always-visible one-liner under the settings-lock switch. */
+    public static final String SETTINGS_LOCK_NOTE = "settings_lock_note";
     public static final String SETTINGS_RESTART_NOTE = "settings_restart_note";
     public static final String FOOTER_INFO = "footer_info";
     /** Format: %1$d = exit code. */
@@ -209,6 +211,7 @@ public final class StringsTable {
                 SETTINGS_LOCK, "設定をロック",
                 SETTINGS_UNLOCK, "ロックを解除",
                 SETTINGS_LOCKED_NOTE, "設定はロックされています。変更するにはロックを解除してください。",
+                SETTINGS_LOCK_NOTE, "テレメトリ・表示名・言語の誤変更を防ぎます。開始・停止はロックされません。",
                 SETTINGS_RESTART_NOTE, "設定を変更しました。反映するにはノードの再起動（停止 → 開始）が必要です。自動では再起動しません。",
                 FOOTER_INFO, "RPC は端末内 (127.0.0.1:9944) のみ · ログ: files/logs/node.log · v0.1-mvp",
                 NOTE_LAST_EXIT_CODE, "前回の終了コード: %1$d",
@@ -268,6 +271,7 @@ public final class StringsTable {
                 SETTINGS_LOCK, "Lock settings",
                 SETTINGS_UNLOCK, "Unlock settings",
                 SETTINGS_LOCKED_NOTE, "Settings are locked. Unlock to make changes.",
+                SETTINGS_LOCK_NOTE, "Prevents accidental changes to telemetry, display name, and language. Starting and stopping the node is never locked.",
                 SETTINGS_RESTART_NOTE, "Settings changed. To apply them, restart the node (Stop → Start). It never restarts automatically.",
                 FOOTER_INFO, "RPC stays on this device (127.0.0.1:9944) · Log: files/logs/node.log · v0.1-mvp",
                 NOTE_LAST_EXIT_CODE, "Last exit code: %1$d",
@@ -327,6 +331,7 @@ public final class StringsTable {
                 SETTINGS_LOCK, "锁定设置",
                 SETTINGS_UNLOCK, "解锁设置",
                 SETTINGS_LOCKED_NOTE, "设置已锁定。解锁后可更改。",
+                SETTINGS_LOCK_NOTE, "防止意外更改遥测、显示名称和语言。节点的启动和停止不会被锁定。",
                 SETTINGS_RESTART_NOTE, "设置已更改。要生效，请重启节点（停止 → 启动）。不会自动重启。",
                 FOOTER_INFO, "RPC 仅在本设备内 (127.0.0.1:9944) · 日志：files/logs/node.log · v0.1-mvp",
                 NOTE_LAST_EXIT_CODE, "上次退出代码：%1$d",
@@ -386,6 +391,7 @@ public final class StringsTable {
                 SETTINGS_LOCK, "Bloquear ajustes",
                 SETTINGS_UNLOCK, "Desbloquear ajustes",
                 SETTINGS_LOCKED_NOTE, "Los ajustes están bloqueados. Desbloquéalos para hacer cambios.",
+                SETTINGS_LOCK_NOTE, "Evita cambios accidentales en la telemetría, el nombre visible y el idioma. Iniciar y detener el nodo nunca se bloquea.",
                 SETTINGS_RESTART_NOTE, "Ajustes modificados. Para aplicarlos, reinicia el nodo (Detener → Iniciar). Nunca se reinicia automáticamente.",
                 FOOTER_INFO, "RPC solo en este dispositivo (127.0.0.1:9944) · Registro: files/logs/node.log · v0.1-mvp",
                 NOTE_LAST_EXIT_CODE, "Último código de salida: %1$d",
@@ -445,6 +451,7 @@ public final class StringsTable {
                 SETTINGS_LOCK, "सेटिंग्स लॉक करें",
                 SETTINGS_UNLOCK, "सेटिंग्स अनलॉक करें",
                 SETTINGS_LOCKED_NOTE, "सेटिंग्स लॉक हैं। बदलाव के लिए अनलॉक करें।",
+                SETTINGS_LOCK_NOTE, "टेलीमेट्री, प्रदर्शन नाम और भाषा में आकस्मिक बदलावों को रोकता है। नोड को शुरू या बंद करना कभी लॉक नहीं होता।",
                 SETTINGS_RESTART_NOTE, "सेटिंग बदल गई है। लागू करने के लिए नोड को फिर से शुरू करें (बंद करें → शुरू करें)। यह अपने आप पुनः शुरू नहीं होता।",
                 FOOTER_INFO, "RPC केवल इस डिवाइस पर (127.0.0.1:9944) · लॉग: files/logs/node.log · v0.1-mvp",
                 NOTE_LAST_EXIT_CODE, "पिछला निकास कोड: %1$d",
@@ -504,6 +511,7 @@ public final class StringsTable {
                 SETTINGS_LOCK, "قفل الإعدادات",
                 SETTINGS_UNLOCK, "إلغاء قفل الإعدادات",
                 SETTINGS_LOCKED_NOTE, "الإعدادات مقفلة. ألغِ القفل لإجراء تغييرات.",
+                SETTINGS_LOCK_NOTE, "يمنع التغييرات غير المقصودة في القياس عن بُعد واسم العرض واللغة. لا يتم قفل بدء العقدة أو إيقافها أبدًا.",
                 SETTINGS_RESTART_NOTE, "تم تغيير الإعدادات. لتطبيقها، أعد تشغيل العقدة (إيقاف ← بدء). لا تُعاد العقدة تلقائيًا أبدًا.",
                 FOOTER_INFO, "RPC على هذا الجهاز فقط (127.0.0.1:9944) · السجل: files/logs/node.log · v0.1-mvp",
                 NOTE_LAST_EXIT_CODE, "رمز الخروج الأخير: %1$d",
@@ -563,6 +571,7 @@ public final class StringsTable {
                 SETTINGS_LOCK, "설정 잠금",
                 SETTINGS_UNLOCK, "잠금 해제",
                 SETTINGS_LOCKED_NOTE, "설정이 잠겨 있습니다. 변경하려면 잠금을 해제하세요.",
+                SETTINGS_LOCK_NOTE, "텔레메트리, 표시 이름, 언어가 실수로 변경되는 것을 방지합니다. 노드 시작과 중지는 잠기지 않습니다.",
                 SETTINGS_RESTART_NOTE, "설정을 변경했습니다. 반영하려면 노드를 재시작(정지 → 시작)해야 합니다. 자동으로 재시작하지 않습니다.",
                 FOOTER_INFO, "RPC는 이 기기 내부만 (127.0.0.1:9944) · 로그: files/logs/node.log · v0.1-mvp",
                 NOTE_LAST_EXIT_CODE, "이전 종료 코드: %1$d",
@@ -622,6 +631,7 @@ public final class StringsTable {
                 SETTINGS_LOCK, "Заблокировать настройки",
                 SETTINGS_UNLOCK, "Разблокировать настройки",
                 SETTINGS_LOCKED_NOTE, "Настройки заблокированы. Разблокируйте, чтобы внести изменения.",
+                SETTINGS_LOCK_NOTE, "Предотвращает случайные изменения телеметрии, отображаемого имени и языка. Запуск и остановка узла не блокируются.",
                 SETTINGS_RESTART_NOTE, "Настройки изменены. Чтобы применить их, перезапустите узел (Остановить → Запустить). Автоматического перезапуска не происходит.",
                 FOOTER_INFO, "RPC только на этом устройстве (127.0.0.1:9944) · Журнал: files/logs/node.log · v0.1-mvp",
                 NOTE_LAST_EXIT_CODE, "Код прошлого завершения: %1$d",
@@ -681,6 +691,7 @@ public final class StringsTable {
                 SETTINGS_LOCK, "Verrouiller les réglages",
                 SETTINGS_UNLOCK, "Déverrouiller les réglages",
                 SETTINGS_LOCKED_NOTE, "Les réglages sont verrouillés. Déverrouillez-les pour les modifier.",
+                SETTINGS_LOCK_NOTE, "Empêche les modifications accidentelles de la télémétrie, du nom d'affichage et de la langue. Le démarrage et l'arrêt du nœud ne sont jamais verrouillés.",
                 SETTINGS_RESTART_NOTE, "Réglages modifiés. Pour les appliquer, redémarrez le nœud (Arrêter → Démarrer). Il ne redémarre jamais automatiquement.",
                 FOOTER_INFO, "RPC sur cet appareil uniquement (127.0.0.1:9944) · Journal : files/logs/node.log · v0.1-mvp",
                 NOTE_LAST_EXIT_CODE, "Dernier code de sortie : %1$d",

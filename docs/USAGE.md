@@ -43,7 +43,7 @@ You do not need to keep the app open. The node runs as a foreground service: it 
 - **Display name** — the name your node uses (also shown in telemetry if enabled). Leave blank to use the default name `quantus-android-node`. Applies from the next node start.
 - **Language** — follow the device setting, or pick one of 9 languages (Japanese, English, Simplified Chinese, Spanish, Hindi, Arabic, Korean, Russian, French).
 - **Share log** — shares the node log as text. This is what to attach when you report a problem. Before posting a log in a public place, check its contents first: it can include your node's public IP address and peer information.
-- **Lock settings** — locks the three settings above (telemetry, display name, language) so they cannot be changed by accident while the phone sits there running the node. It is a mis-tap guard only: there is no PIN, and starting or stopping the node is never locked. Tap **Unlock settings** when you want to change settings again.
+- **Lock settings** — locks the three settings above (telemetry, display name, language) so they cannot be changed by accident while the phone sits there running the node. It is a mis-tap guard only: there is no PIN, and starting or stopping the node is never locked. Turn **Lock settings** off when you want to change settings again.
 
 Settings never restart the node by themselves. If you change something while the node is running, the screen tells you a restart (Stop → Start) is needed.
 

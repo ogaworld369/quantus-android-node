@@ -43,7 +43,7 @@ No necesitas mantener la aplicación abierta. El nodo funciona como un servicio 
 - **Nombre visible** — el nombre que usa tu nodo (también se muestra en la telemetría si está activada). Déjalo vacío para usar el nombre por defecto `quantus-android-node`. Se aplica desde el siguiente inicio del nodo.
 - **Idioma** — sigue el ajuste del dispositivo o elige uno de 9 idiomas (japonés, inglés, chino simplificado, español, hindi, árabe, coreano, ruso, francés).
 - **Compartir registro** — comparte el registro del nodo como texto. Es lo que debes adjuntar al informar de un problema. Antes de pegar un registro en un lugar público, revisa su contenido: puede incluir la dirección IP pública de tu nodo e información de los pares.
-- **Bloquear ajustes** — bloquea los tres ajustes anteriores (telemetría, nombre visible e idioma) para que no se cambien por accidente mientras el teléfono queda ejecutando el nodo. Es solo una protección contra toques involuntarios: no hay PIN, y el inicio y la detención del nodo nunca se bloquean. Pulsa **Desbloquear ajustes** cuando quieras volver a cambiarlos.
+- **Bloquear ajustes** — bloquea los tres ajustes anteriores (telemetría, nombre visible e idioma) para que no se cambien por accidente mientras el teléfono queda ejecutando el nodo. Es solo una protección contra toques involuntarios: no hay PIN, y el inicio y la detención del nodo nunca se bloquean. Desactiva **Bloquear ajustes** cuando quieras volver a cambiarlos.
 
 Los ajustes nunca reinician el nodo por sí solos. Si cambias algo con el nodo en marcha, la pantalla te avisará de que es necesario reiniciar (Detener → Iniciar).
 

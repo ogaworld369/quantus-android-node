@@ -91,8 +91,7 @@ public class MainActivity extends Activity {
     private Switch telemetrySwitch;
     private EditText nodeNameInput;
     private Button languageButton;
-    private Button settingsLockButton;
-    private TextView settingsLockedNoteView;
+    private Switch settingsLockSwitch;
     private TextView restartNoteView;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -329,16 +328,35 @@ public class MainActivity extends Activity {
         // phone that sits somewhere running the node: while locked,
         // the telemetry switch, the name field and the language picker
         // are disabled. It is deliberately not an authentication
-        // feature (no PIN), and it never locks node start/stop.
-        settingsLockButton = textButton("", d);
-        settingsLockButton.setOnClickListener(v -> {
-            NodeSettings.setSettingsLocked(this,
-                    !NodeSettings.settingsLocked(this));
-            applySettingsLock();
+        // feature (no PIN), and it never locks node start/stop. Same
+        // switch row as telemetry — the position shows the state at a
+        // glance — with the purpose stated under it at all times, so
+        // it needs no separate explanation elsewhere.
+        settingsLockSwitch = new Switch(this);
+        settingsLockSwitch.setText(I18n.get(this, StringsTable.SETTINGS_LOCK));
+        settingsLockSwitch.setTextSize(15);
+        settingsLockSwitch.setTextColor(TEXT);
+        settingsLockSwitch.setTrackTintList(new ColorStateList(
+                new int[][]{{android.R.attr.state_checked}, {}},
+                new int[]{ACCENT, Color.rgb(0x39, 0x39, 0x3D)}));
+        settingsLockSwitch.setThumbTintList(new ColorStateList(
+                new int[][]{{android.R.attr.state_checked}, {}},
+                new int[]{Color.WHITE, Color.WHITE}));
+        // Set the position before attaching the listener, as with the
+        // telemetry switch. The listener ignores positions that already
+        // match the stored state, so applySettingsLock() syncing the
+        // switch cannot re-enter it.
+        settingsLockSwitch.setChecked(NodeSettings.settingsLocked(this));
+        settingsLockSwitch.setOnCheckedChangeListener((button, isChecked) -> {
+            if (isChecked != NodeSettings.settingsLocked(this)) {
+                NodeSettings.setSettingsLocked(this, isChecked);
+                applySettingsLock();
+            }
         });
-        settingsCard.addView(settingsLockButton, matchLp());
-        settingsLockedNoteView = text("", 12, TERTIARY);
-        settingsCard.addView(settingsLockedNoteView, matchLp(d, 2));
+        settingsCard.addView(settingsLockSwitch, matchLp());
+        TextView lockNote = text(
+                I18n.get(this, StringsTable.SETTINGS_LOCK_NOTE), 12, TERTIARY);
+        settingsCard.addView(lockNote, matchLp(d, 4));
         applySettingsLock();
 
         // 詳細・ログ — the fine print lives at the bottom, out of the
@@ -384,15 +402,12 @@ public class MainActivity extends Activity {
         if (languageButton != null) {
             languageButton.setEnabled(!locked);
         }
-        if (settingsLockButton != null) {
-            settingsLockButton.setText(I18n.get(this, locked
-                    ? StringsTable.SETTINGS_UNLOCK
-                    : StringsTable.SETTINGS_LOCK));
-        }
-        if (settingsLockedNoteView != null) {
-            settingsLockedNoteView.setText(locked
-                    ? I18n.get(this, StringsTable.SETTINGS_LOCKED_NOTE)
-                    : "");
+        if (settingsLockSwitch != null
+                && settingsLockSwitch.isChecked() != locked) {
+            // Sync the switch to the stored state. The listener sees
+            // the stored state already matching and does nothing, so
+            // this cannot loop.
+            settingsLockSwitch.setChecked(locked);
         }
     }
 
