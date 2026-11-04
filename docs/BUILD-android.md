@@ -41,9 +41,32 @@ cd chain
 cargo update -p rustix   # 1.1.2 -> 1.1.6（linux-raw-sys 0.11.0->0.12.1、libc 0.2.175->0.2.191 も連動）
 ```
 
-変更は `Cargo.lock` のみ（11行）。ソースコードのパッチは不要だった。
+変更は `Cargo.lock` のみ（11行）。**コンパイル検証（Phase 0）の時点では**、ソースコードのパッチは不要だった。ただし実機で動かす現行ビルドでは、次節の2パッチが必須になる。
 
-## 3. 環境変数（必須の一式）
+## 3. ソースコードのパッチ（出荷ビルドでは必須・2点）
+
+コンパイル検証だけなら不要だが、実機で動くバイナリを作るには、リポジトリの `patches/` にある2点をビルド前に適用すること。**どちらか一方でも欠けたままビルドすると、実機では使い物にならない**（§5 の手順どおりに作っても、プルーニングが効かずアーカイブ保存を強制される／ネットワーク開始直後に panic して即死する。いずれも実機で踏んだ実績がある）。
+
+### 3.1 プルーニングパッチ
+
+上流は全ノードにアーカイブ保存を強制する作りで、CLI の `--state-pruning` / `--blocks-pruning` 指定がコード側で無効化される。`patches/pruning-patch.diff`（`node/src/command.rs` への1ファイルの差分）を適用すると、数値を指定したときだけその指定が尊重されるようになる（未指定・`archive` 等を指定した場合は従来どおりの強制が維持される）。
+
+```sh
+cd chain
+patch -p1 < ../patches/pruning-patch.diff   # patches/ へのパスは配置に合わせて読み替える
+```
+
+### 3.2 DNS フォールバック（ベンダーパッチ）
+
+ノードをアプリから素のプロセスとして実行すると、litep2p の DNS 解決（hickory-resolver）が未初期化の ndk-context を呼んで `android context was not initialized` で panic する（ブートノードが全て /dns/ アドレスのため、ネットワーク開始直後に必ず踏む）。`patches/hickory-ndk-fallback-patch.diff` の冒頭に書かれた再現手順どおりに適用すること。要点は次の3つ:
+
+1. crates.io の ndk-context 0.1.1 と hickory-resolver 0.26.1 を `chain/vendor/` へコピーする
+2. パッチ内の3ファイル分の差分を vendor 側へ適用する
+3. `chain/Cargo.toml` に `[patch.crates-io]` エントリ（パッチ末尾のハンク）を追加し、この2クレートを vendor 版へ差し替える（`Cargo.lock` は cargo が更新する）
+
+適用後の DNS 解決は、JNI（Android コンテキストがある場合のみ）→ システムプロパティ `net.dns1`〜`net.dns4` → 公開 DNS（1.1.1.1 / 8.8.8.8）の順にフォールバックし、どの経路でも panic しない。
+
+## 4. 環境変数（必須の一式）
 
 以下の内容を `android-env.sh` として保存し、ビルド前に `source` するのが確実。
 NDK のパスは自分の配置に合わせて読み替えること。
@@ -74,7 +97,7 @@ export LD_LIBRARY_PATH="$LLVM/musl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--target=aarch64-linux-android35 --sysroot=$LLVM/sysroot -resource-dir $LLVM/lib/clang/18"
 ```
 
-## 4. ビルド
+## 5. ビルド
 
 ```sh
 cd chain
@@ -97,14 +120,14 @@ cargo build -p quantus-node --target aarch64-linux-android
 - NEEDED ライブラリ: `libstdc++.so` / `libc++_shared.so` / `libdl.so` / `libm.so` / `libc.so`。
   **注意: `libc++_shared.so` はアプリ側で同梱が必要**（NDK の `toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so` を使う）。リンク自体のブロッカーではないが、実機で動かす段階で必須になる。
 
-## 5. 既知の注意点
+## 6. 既知の注意点
 
 - **ホスト側ビルドが重い。** ランタイムの build 依存として `wasm-opt-sys`（Binaryen の C++ 全体）をホストでビルドする。さらに pallet-wormhole の build.rs が ZK 回路バイナリ生成（plonky2）をホスト・release プロファイルで回し、検証環境（4コア）では1回あたり約20分かかった。これはビルドのたび（ホスト向けと Wasm 向け）に繰り返し走るため、CI では成果物キャッシュの設計が重要になる。
 - **RAM の少ないマシンでは並列数を絞る。** 検証環境は RAM 7GB・スワップなしで、`cargo build` は `-j2` で実施しリンクまで完走した（ピーク約6.1GB使用）。スワップの追加は環境によっては権限で弾かれる（この VM では swapon 自体が Operation not permitted だった）。
 - **RocksDB と ring のネイティブコードは NDK clang で実コンパイルされる**（`librocksdb.a` / `libsnappy.a` / `libring_core_*.a` の生成を確認済み）。jemalloc（tikv-jemalloc-sys）はノードの既定依存グラフに含まれないので、Android での jemalloc 問題は既定ビルドでは発生しない。
 - **wasmtime / cranelift はコンパイル段階では素通りした**が、実行時のメモリ確保（pooling allocator 等）の挙動はコンパイルとは別問題。実機実行は未検証（次節）。
 
-## 6. 未検証（ここから先は「動く」ことの証明にはならない）
+## 7. 未検証（ここから先は「動く」ことの証明にはならない）
 
 リンクは通ったが、以下は依然として未検証。**リンク成功は「実機で動く」ことの証明ではない。**
 
@@ -118,5 +141,6 @@ cargo build -p quantus-node --target aarch64-linux-android
 
 - 所要時間: 約96分（debug の `target/` キャッシュがある状態での計測）
 - 成果物: 未 strip 77,885,328 bytes → strip 後 **53,403,896 bytes**（debug 版の 43.6%）。NEEDED は debug 版と同一で、`libc++_shared.so` の同梱が必要な点も不変
+- なお上記は §3.2 のベンダーパッチ適用前の初回 release ビルドの数値。**出荷バイナリはパッチ適用後の再ビルド版で、未 strip 77,890,168 bytes → strip 後 53,408,792 bytes**（同梱中のバイナリはこちら）
 - 前提の訂正: 上流の `[profile.release]` は opt-level=3 のみで **LTO を含まない**（LTO は別プロファイル `[profile.production]` 側）。「release は LTO でリンクメモリが溢れる」という当初の懸念は、このプロファイルでは発生しなかった
 - メモリの実態: ビルド中の MemAvailable は最小約49MB まで落ちたが枯渇には至らなかった。最大の消費者は最終リンクではなく、Wasm ビルド内の pallet-wormhole ビルドスクリプト（ZK 回路生成、RSS 約4.96GB）

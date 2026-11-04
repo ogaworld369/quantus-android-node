@@ -25,8 +25,27 @@ OUT_DIR="$APP_DIR/build/outputs/apk/debug"
 OUT_APK="$OUT_DIR/smoke-debug.apk"
 DEBUG_KS="$HOME/.android/debug.keystore"
 
+for so in libquantus_node.so libc++_shared.so; do
+  if [ ! -f "$APP_DIR/src/main/jniLibs/arm64-v8a/$so" ]; then
+    echo "ERROR: missing $APP_DIR/src/main/jniLibs/arm64-v8a/$so (see README.md)" >&2
+    exit 1
+  fi
+done
+
 rm -rf "$WORK"
 mkdir -p "$WORK/classes" "$WORK/dex" "$WORK/stage/lib/arm64-v8a" "$OUT_DIR"
+
+# P-5 (same countermeasure as the app build): a failed build must
+# never leave a stale APK at the final path (it was reproduced being
+# mistaken for the new build). Set the previous build aside first;
+# the fresh APK is moved to $OUT_APK only after every step —
+# signing included — has succeeded.
+if [ -f "$OUT_APK" ]; then
+  mv -f "$OUT_APK" "$OUT_APK.prev"
+fi
+if [ -f "$OUT_APK.idsig" ]; then
+  mv -f "$OUT_APK.idsig" "$OUT_APK.idsig.prev"
+fi
 
 # 1) Debug keystore (same well-known debug key AGP uses), created once.
 if [ ! -f "$DEBUG_KS" ]; then
@@ -74,7 +93,15 @@ cp "$APP_DIR/src/main/jniLibs/arm64-v8a/libquantus_node.so" \
 "$BT/apksigner" sign \
   --ks "$DEBUG_KS" --ks-pass pass:android \
   --ks-key-alias androiddebugkey --key-pass pass:android \
-  --out "$OUT_APK" "$WORK/aligned.apk"
+  --out "$WORK/signed.apk" "$WORK/aligned.apk"
+
+# Success-only placement (P-5): only now does the new APK take the
+# final path. On any earlier failure the path stays empty and the
+# previous build remains available as *.prev for comparison.
+mv -f "$WORK/signed.apk" "$OUT_APK"
+if [ -f "$WORK/signed.apk.idsig" ]; then
+  mv -f "$WORK/signed.apk.idsig" "$OUT_APK.idsig"
+fi
 
 echo "Built: $OUT_APK"
 ls -lh "$OUT_APK"

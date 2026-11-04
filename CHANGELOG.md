@@ -5,6 +5,29 @@ shared directly by the maintainer; there is no public release yet.
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 8 — 2026-11-04
+- Bug fixes from a full audit of the app sources (no
+  high-severity findings; five of the reported items are fixed
+  here, all in the node-service internals — no UI or translation
+  changes):
+  - Two stop → immediate-restart races: a finishing session could
+    clear the new session's process reference (leaving the new
+    node orphaned and unreachable), and a new start did not wait
+    for the previous process to release the database lock, so it
+    could fail on the spot. The finishing side now only clears
+    its own reference, and a new start waits — bounded, 3
+    seconds — for the previous process to exit first.
+  - The log-drain thread now survives unexpected exceptions
+    instead of dying silently, which would have stopped log
+    capture (and could have stalled the node on a full pipe).
+  - Display names no longer keep a leading '-' (the node's CLI
+    parser could misread it as another option and fail the
+    start).
+  - The bundled CA root set is now written atomically (write to
+    a temp file, verify the length, then rename), so a kill
+    mid-copy cannot leave a truncated bundle behind and break
+    telemetry TLS on the next start.
+
 ## versionCode 7 — 2026-11-03
 - Settings lock: a "Lock settings" button at the bottom of the
   settings section. While locked, the telemetry switch, the display
