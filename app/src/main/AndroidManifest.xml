@@ -23,6 +23,8 @@
          backup and device transfer. -->
     <application
         android:label="Quantus Node"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:extractNativeLibs="true"

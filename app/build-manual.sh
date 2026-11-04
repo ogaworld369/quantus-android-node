@@ -11,6 +11,20 @@
 # Inputs (env or defaults):
 #   ANDROID_HOME  (default: ~/workspace/toolchain/android-sdk)
 #   JAVA_HOME     (default: ~/workspace/toolchain/jdk-21)
+#   QUANTUS_SIGNING  "debug" (default) or "release".
+#     Release mode signs with the distribution key instead of the
+#     debug key. The keystore itself lives OUTSIDE this repository
+#     (never commit it); its location and the location of the file
+#     holding its password can be overridden with:
+#       QUANTUS_RELEASE_KS          (default: ~/workspace/release-signing/quantus-release.jks)
+#       QUANTUS_RELEASE_KS_PASS_FILE (default: ~/workspace/release-signing/keystore-password.txt)
+#       QUANTUS_RELEASE_ALIAS       (default: quantus-release)
+#     At signing time the password is loaded from that file into an
+#     environment variable and handed to apksigner as env:<name>
+#     (apksigner's file: source consumes one line per prompt, so it
+#     cannot serve both the keystore and the key password from one
+#     single-line file). No password value ever appears in this
+#     script or on the command line.
 # Prerequisite: the two .so files in native/ (see README.md)
 set -euo pipefail
 
@@ -24,6 +38,28 @@ WORK="$APP_DIR/build/manual"
 OUT_DIR="$APP_DIR/build/outputs/apk/debug"
 OUT_APK="$OUT_DIR/quantus-node-debug.apk"
 DEBUG_KS="$HOME/.android/debug.keystore"
+
+# Signing mode (see header). Default stays the debug key so day-to-day
+# development builds are unchanged; release builds must opt in.
+SIGNING="${QUANTUS_SIGNING:-debug}"
+if [ "$SIGNING" = "release" ]; then
+  REL_KS="${QUANTUS_RELEASE_KS:-$HOME/workspace/release-signing/quantus-release.jks}"
+  REL_PASS_FILE="${QUANTUS_RELEASE_KS_PASS_FILE:-$HOME/workspace/release-signing/keystore-password.txt}"
+  REL_ALIAS="${QUANTUS_RELEASE_ALIAS:-quantus-release}"
+  OUT_DIR="$APP_DIR/build/outputs/apk/release"
+  OUT_APK="$OUT_DIR/quantus-node-release.apk"
+  if [ ! -f "$REL_KS" ]; then
+    echo "ERROR: release keystore not found: $REL_KS" >&2
+    exit 1
+  fi
+  if [ ! -f "$REL_PASS_FILE" ]; then
+    echo "ERROR: release keystore password file not found: $REL_PASS_FILE" >&2
+    exit 1
+  fi
+elif [ "$SIGNING" != "debug" ]; then
+  echo "ERROR: QUANTUS_SIGNING must be 'debug' or 'release' (got: $SIGNING)" >&2
+  exit 1
+fi
 
 for so in libquantus_node.so libc++_shared.so; do
   if [ ! -f "$APP_DIR/native/$so" ]; then
@@ -70,7 +106,7 @@ sed 's|<manifest |<manifest package="app.quantusnode.node" |' \
   -A "$APP_DIR/assets" \
   --manifest "$WORK/AndroidManifest.xml" \
   --min-sdk-version 31 --target-sdk-version 35 \
-  --version-code 18 --version-name 0.1-mvp \
+  --version-code 19 --version-name 0.1.0 \
   "$WORK/res.zip"
 
 # 4) Compile all app sources (plain Java + Android SDK APIs only).
@@ -95,10 +131,20 @@ cp "$APP_DIR/native/libquantus_node.so" \
 
 # 7) Align (page-align .so) and sign (v1+v2+v3 via apksigner defaults).
 "$BT/zipalign" -f -p 4 "$WORK/app.apk" "$WORK/aligned.apk"
-"$BT/apksigner" sign \
-  --ks "$DEBUG_KS" --ks-pass pass:android \
-  --ks-key-alias androiddebugkey --key-pass pass:android \
-  --out "$WORK/signed.apk" "$WORK/aligned.apk"
+if [ "$SIGNING" = "release" ]; then
+  QUANTUS_KS_PASS="$(cat "$REL_PASS_FILE")"
+  export QUANTUS_KS_PASS
+  "$BT/apksigner" sign \
+    --ks "$REL_KS" --ks-pass env:QUANTUS_KS_PASS \
+    --ks-key-alias "$REL_ALIAS" --key-pass env:QUANTUS_KS_PASS \
+    --out "$WORK/signed.apk" "$WORK/aligned.apk"
+  unset QUANTUS_KS_PASS
+else
+  "$BT/apksigner" sign \
+    --ks "$DEBUG_KS" --ks-pass pass:android \
+    --ks-key-alias androiddebugkey --key-pass pass:android \
+    --out "$WORK/signed.apk" "$WORK/aligned.apk"
+fi
 
 # Success-only placement (P-5): only now does the new APK take the
 # final path. On any earlier failure the path stays empty and the

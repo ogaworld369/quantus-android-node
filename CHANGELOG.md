@@ -1,9 +1,33 @@
 # Changelog
 
-Pre-release development builds, newest first. These are test builds
-shared directly by the maintainer; there is no public release yet.
+Pre-release development builds, newest first. Builds up to
+versionCode 18 were test builds shared directly by the maintainer
+and signed with the debug key; versionCode 19 / v0.1.0 is the first
+public release and the first build signed with the release key.
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
+
+## versionCode 19 / v0.1.0 — 2026-11-04
+- **First public release, signed with the release key.** A dedicated
+  distribution key (RSA 4096, kept outside this repository) was
+  generated, and the release build is signed with it instead of the
+  debug key used by every earlier build. The signing certificate's
+  SHA-256 fingerprint is
+  65:BB:1A:5F:EF:27:D7:0B:E1:DD:12:FC:12:CE:34:84:B4:C8:48:FC:EC:A9:2F:88:98:CD:96:CB:27:84:F6:FF,
+  published in the GitHub Release notes so anyone can verify that a
+  downloaded APK (and every future update) carries the project's
+  signature. versionName is now 0.1.0. `build-manual.sh` gains an
+  opt-in release signing mode (`QUANTUS_SIGNING=release`); the
+  default debug-signed development build is unchanged. No app code
+  changes; the node binary is the versionCode 10 build.
+- **Launcher icon added.** Every build so far had shipped with no
+  icon (an empty `android:icon`); before publication this build
+  adds an adaptive icon — a bright core with
+  concentric green-to-teal pulse rings fading outward over a dark,
+  radially lit background — plus legacy and round PNG fallbacks at
+  every density. The mark sits inside the adaptive safe zone so it
+  survives circle and squircle masks, and it is drawn
+  programmatically (no external artwork).
 
 ## versionCode 18 — 2026-11-04
 - **Pid recording restored on runtimes where `Process.pid()` throws.**

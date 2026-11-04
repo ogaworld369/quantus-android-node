@@ -1,7 +1,10 @@
 // Canonical build definition for normal environments (Gradle + AGP).
 // The current build VM cannot run Gradle (Java network egress is blocked),
 // so the APK shipped from this VM is produced by build-manual.sh instead —
-// same applicationId, manifest, sources and native libs, debug signing.
+// same applicationId, manifest, sources and native libs. build-manual.sh
+// signs with the debug key by default and with the distribution release
+// key when QUANTUS_SIGNING=release (the keystore lives outside this
+// repository; see docs/RELEASE.md).
 //
 // For a Gradle build, stage the two native libraries first (they are not
 // in git, see README.md):
@@ -19,8 +22,8 @@ android {
         applicationId 'app.quantusnode.node'
         minSdk 31
         targetSdk 35
-        versionCode 18
-        versionName '0.1-mvp'
+        versionCode 19
+        versionName '0.1.0'
 
         ndk {
             // arm64-v8a only: quantus-node is built for aarch64-linux-android.
