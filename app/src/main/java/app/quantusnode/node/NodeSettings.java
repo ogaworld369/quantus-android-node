@@ -115,6 +115,19 @@ public final class NodeSettings {
         if (s.length() > MAX_NAME_CHARS) {
             s = s.substring(0, MAX_NAME_CHARS).trim();
         }
+        // F-6: strip leading '-' characters. The name is passed as a
+        // single argv element (no shell), so there is no injection
+        // risk — but a value starting with '-' can be misread by the
+        // node's CLI parser as another option instead of the --name
+        // value, failing the start. If nothing usable remains, the
+        // check below falls back to the default name.
+        int lead = 0;
+        while (lead < s.length() && s.charAt(lead) == '-') {
+            lead++;
+        }
+        if (lead > 0) {
+            s = s.substring(lead).trim();
+        }
         return s.isEmpty() ? DEFAULT_NODE_NAME : s;
     }
 }

@@ -27,6 +27,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -346,7 +347,15 @@ public class NodeService extends Service {
                 running.destroy();
                 return;
             } finally {
-                nodeProcess = null;
+                // F-1: clear the reference only if it still points at
+                // THIS session's process. This finally can run late,
+                // after a newer session has already stored its own
+                // process here; erasing that reference would leave the
+                // new process unpollable and unstoppable — an orphan
+                // holding the DB lock and the RPC port.
+                if (nodeProcess == running) {
+                    nodeProcess = null;
+                }
             }
             long livedMs = SystemClock.elapsedRealtime() - t0;
             logApp("node exited: code=" + code + " after " + livedMs + "ms");
@@ -461,6 +470,30 @@ public class NodeService extends Service {
         pb.redirectErrorStream(true);
         logApp("launch: " + String.join(" ", cmd)
                 + " [telemetry " + (telemetry ? "ON (user opt-in)" : "off") + "]");
+        // F-2: on the first (direct) attempt, give the PREVIOUS
+        // session's process a bounded window to finish exiting before
+        // starting ours. Teardown only destroys it — if the user
+        // restarts immediately, it can still be flushing/closing the
+        // DB, and the new process then fails on ParityDB's exclusive
+        // lock. launch() runs on this session's worker thread, so the
+        // wait never blocks the UI. If it is still alive after the
+        // window, start anyway and let the failure be recorded as
+        // usual. The linker64 retry needs no wait: its predecessor
+        // in this same session has already exited.
+        if (!viaLinker) {
+            Process prev = nodeProcess;
+            if (prev != null && prev.isAlive()) {
+                logApp("previous node process still exiting; waiting up to 3s");
+                try {
+                    if (!prev.waitFor(3, TimeUnit.SECONDS)) {
+                        logApp("previous node process still alive after 3s;"
+                                + " starting anyway");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
         return pb.start();
     }
 
@@ -485,8 +518,28 @@ public class NodeService extends Service {
             }
             File out = new File(getFilesDir(), "cacert.pem");
             if (!out.isFile() || out.length() != data.length) {
-                try (FileOutputStream fos = new FileOutputStream(out)) {
-                    fos.write(data);
+                // F-7: write atomically. A kill mid-write straight
+                // into cacert.pem would leave a truncated bundle that
+                // the node then fails telemetry TLS with. Write the
+                // full copy to a tmp file, verify its length, and
+                // rename it over the old file; on any failure remove
+                // the tmp and report the bundle as unavailable (the
+                // caller then relies on the SSL_CERT_DIR hint alone).
+                File tmp = new File(getFilesDir(), "cacert.pem.tmp");
+                boolean copied = false;
+                try {
+                    try (FileOutputStream fos = new FileOutputStream(tmp)) {
+                        fos.write(data);
+                    }
+                    copied = tmp.length() == data.length && tmp.renameTo(out);
+                } finally {
+                    if (!copied) {
+                        tmp.delete();
+                    }
+                }
+                if (!copied) {
+                    logApp("CA bundle copy failed (write/rename)");
+                    return null;
                 }
             }
             return out.getAbsolutePath();
@@ -551,10 +604,25 @@ public class NodeService extends Service {
                 new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = r.readLine()) != null) {
-                if (logSink != null) {
-                    logSink.write(line);
+                // F-3: the per-line work (log encode/write, attempt
+                // capture) must never kill this thread. If it died,
+                // logging and per-attempt evidence would stop — and
+                // once the pipe fills, the node's own writes block and
+                // the node stalls. Note the failure and keep draining.
+                // (The note itself goes through the same sink, so it
+                // is best-effort.) Stream-level IOException from
+                // readLine() still ends the thread, in the catch below.
+                try {
+                    if (logSink != null) {
+                        logSink.write(line);
+                    }
+                    capture.add(line);
+                } catch (Exception e) {
+                    try {
+                        logApp("output drain: line dropped after error: " + e);
+                    } catch (Exception ignored) {
+                    }
                 }
-                capture.add(line);
             }
         } catch (IOException ignored) {
             // Stream closed because the process ended; that is expected.
