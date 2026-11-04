@@ -500,6 +500,46 @@ public class NodeService extends Service {
                 }
                 finishAsStopped(gen, null);
                 return;
+            } catch (Throwable t) {
+                // vc17 safety net: launch() is meant to fail only with
+                // IOException, but the spawn sequence runs platform
+                // calls (Process.pid() above all) whose failure mode
+                // on some runtimes is an Error, not an exception — and
+                // an Error escaping this worker took the whole app
+                // process down on the first field run of the
+                // versionCode 13-16 builds, right after the "launch:"
+                // line, with neither "node started" nor "start
+                // failed" ever recorded. Whatever escapes is now
+                // treated exactly like a failed launch: the throwable
+                // is named in the log AND in the attempt evidence, so
+                // the cause survives for diagnosis; the linker64
+                // fallback gets its one try; after that the session
+                // stops cleanly instead of dying. Nothing is swallowed
+                // into a loop — the attempts stay bounded at
+                // direct + linker, as before.
+                String what = t.getClass().getName() + ": " + t.getMessage();
+                logApp("start error (" + (triedLinker ? "linker64" : "direct")
+                        + "): " + what);
+                capture.add("[app] start error: " + what);
+                attempts.add(new NodeState.Attempt(triedLinker,
+                        SystemClock.elapsedRealtime() - t0, null,
+                        capture.tailLines(), capture.totalLines()));
+                if (attempts.size() > 2) {
+                    attempts.remove(0);
+                }
+                publishAttempts(attempts, gen);
+                if (!triedLinker && gen == sessionGen.get()) {
+                    triedLinker = true;
+                    continue; // one fallback attempt, via linker64
+                }
+                synchronized (stateLock) {
+                    if (gen == sessionGen.get()) {
+                        NodeState.get().lastNote = I18n.format(
+                                this, StringsTable.NOTE_START_FAILED, what);
+                    }
+                }
+                finishAsStopped(gen, null);
+                return;
             }
             final Process running = proc;
             // N-6 / START-RACE window + third-audit ownership race:
@@ -532,7 +572,7 @@ public class NodeService extends Service {
             if (!accepted) {
                 logApp("session ended while the node was starting; destroying it");
                 proc.destroy();
-                clearPidFileIfMatches(proc.pid());
+                clearPidFileIfMatches(pidOf(proc));
                 return;
             }
             logApp("node started (" + (triedLinker ? "via linker64" : "direct") + ")");
@@ -575,7 +615,7 @@ public class NodeService extends Service {
                 // before anyone waits on it; and by the time
                 // waitFor() has returned, this process is dead
                 // either way, so the order cannot strand a live one.
-                clearPidFileIfMatches(running.pid());
+                clearPidFileIfMatches(pidOf(running));
             }
             // Finding 7: lifetime is measured from the actual spawn
             // (launch() hands the moment ProcessBuilder.start()
@@ -744,9 +784,10 @@ public class NodeService extends Service {
             // the cross-instance courtesy degrades — but the failure
             // is recorded, here in the log and in the attempt evidence
             // (via the returned outcome), never silently.
-            pidRecorded = writePidFile(proc.pid());
+            long newPid = pidOf(proc);
+            pidRecorded = newPid > 0 && writePidFile(newPid);
             if (!pidRecorded) {
-                logApp("pid record FAILED for pid " + proc.pid()
+                logApp("pid record FAILED for pid " + newPid
                         + "; a future service instance cannot wait for"
                         + " this process (this instance still tracks it)");
             }
@@ -808,7 +849,7 @@ public class NodeService extends Service {
         final long leftoverPid;
         final boolean trackByObject;
         if (prev != null && prev.isAlive()) {
-            leftoverPid = prev.pid();
+            leftoverPid = pidOf(prev);
             trackByObject = true;
         } else {
             long filePid = readPidFile();
@@ -878,6 +919,28 @@ public class NodeService extends Service {
     }
 
     /**
+     * The pid of a spawned child, or -1 when the runtime will not
+     * say. Every pid lookup in this class goes through here.
+     * Process.pid() is the one call in the spawn sequence whose
+     * failure mode is not an IOException: on a runtime where it is
+     * missing or unsupported it throws an Error (NoSuchMethodError,
+     * UnsupportedOperationException), and an Error escaping the
+     * worker thread is fatal to the whole app process — the vc17
+     * field failure died in exactly this window, right after the
+     * "launch:" log line, before "node started" or "start failed"
+     * could ever be recorded. A -1 here simply means "no pid": the
+     * pid record is a cross-instance courtesy, and bookkeeping must
+     * never be able to fail — or crash — a launch.
+     */
+    private static long pidOf(Process p) {
+        try {
+            return p.pid();
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /**
      * Record a spawned child's pid, atomically (tmp + rename), and
      * report whether the record is in place. Called with
      * {@link #PID_LOCK} held, as part of the spawn sequence itself.
@@ -894,8 +957,11 @@ public class NodeService extends Service {
                 fos.write(Long.toString(pid).getBytes(StandardCharsets.UTF_8));
             }
             done = tmp.renameTo(pidFile());
-        } catch (IOException ignored) {
-            // Reported by the caller via the return value.
+        } catch (IOException | RuntimeException ignored) {
+            // Reported by the caller via the return value. The
+            // RuntimeException arm is belt and braces (vc17): nothing
+            // in the pid-recording path may ever escape and turn into
+            // a failure — or a crash — of the launch itself.
         } finally {
             if (!done) {
                 tmp.delete();

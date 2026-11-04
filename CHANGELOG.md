@@ -5,6 +5,31 @@ shared directly by the maintainer; there is no public release yet.
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 17 — 2026-11-04
+- **Field-crash fix: the app died the moment Start was pressed.**
+  On the first device run of the versionCode 13–16 builds (which
+  jumped straight from versionCode 11), pressing Start killed the
+  whole app. The node log shows the `[app] launch:` line repeated,
+  but never `node started` or `start failed` — the worker thread
+  died inside the spawn sequence, after the launch log and before
+  any point that records an outcome, from something that is not an
+  IOException: an Error or RuntimeException escaping `launch()`.
+  The only new machinery in that window since versionCode 12 is the
+  pid recording, and `Process.pid()` is the one call there whose
+  failure mode is an Error on runtimes where it is missing or
+  unsupported. The exact throwable is not yet confirmed — that is
+  what the new safety net below is for. Changes: every `Process.pid()`
+  call now goes through a `pidOf()` helper that returns -1 instead
+  of throwing, a pid that cannot be obtained simply leaves the
+  launch unrecorded (pid bookkeeping already never failed a launch),
+  and `writePidFile` also absorbs RuntimeExceptions. The worker's
+  launch loop additionally catches any other escaping Throwable,
+  names it in the app log ("start error (direct): <class>: <msg>")
+  and in the attempt evidence, then follows the normal failed-start
+  flow — one linker64 retry, then a clean stop. No UI, settings,
+  arguments, or lock-design changes; the node binary is the
+  versionCode 10 build.
+
 ## versionCode 16 — 2026-11-04
 - **Process-reference ownership fix (third external audit of the
   versionCode 15 tree; see SECURITY.md).** The audit confirmed the
