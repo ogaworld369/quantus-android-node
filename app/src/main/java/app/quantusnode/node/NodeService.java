@@ -460,12 +460,14 @@ public class NodeService extends Service {
         while (started.get() && gen == sessionGen.get()) {
             Process proc = null;
             long spawnElapsedMs = -1;
+            long resolvedPid = -1;
             long t0 = SystemClock.elapsedRealtime();
             AttemptCapture capture = new AttemptCapture();
             try {
                 LaunchOutcome outcome = launch(bin, triedLinker, gen);
                 proc = outcome.process;
                 spawnElapsedMs = outcome.spawnElapsedMs;
+                resolvedPid = outcome.resolvedPid;
                 if (!outcome.pidRecorded) {
                     // Finding 4: a launch whose pid never got recorded
                     // is one a future service instance cannot wait
@@ -572,7 +574,13 @@ public class NodeService extends Service {
             if (!accepted) {
                 logApp("session ended while the node was starting; destroying it");
                 proc.destroy();
-                clearPidFileIfMatches(pidOf(proc));
+                // Clear the pid record by the pid launch() resolved
+                // for THIS attempt (versionCode 18) — never by
+                // re-probing pid(), which is exactly the call that
+                // does not work on the affected runtimes.
+                if (resolvedPid > 0) {
+                    clearPidFileIfMatches(resolvedPid);
+                }
                 return;
             }
             logApp("node started (" + (triedLinker ? "via linker64" : "direct") + ")");
@@ -615,7 +623,11 @@ public class NodeService extends Service {
                 // before anyone waits on it; and by the time
                 // waitFor() has returned, this process is dead
                 // either way, so the order cannot strand a live one.
-                clearPidFileIfMatches(pidOf(running));
+                // The pid used is the one launch() resolved for this
+                // attempt (versionCode 18), not a fresh pid() probe.
+                if (resolvedPid > 0) {
+                    clearPidFileIfMatches(resolvedPid);
+                }
             }
             // Finding 7: lifetime is measured from the actual spawn
             // (launch() hands the moment ProcessBuilder.start()
@@ -674,11 +686,22 @@ public class NodeService extends Service {
         final long spawnElapsedMs;
         /** False when the pid record could not be written (finding 4). */
         final boolean pidRecorded;
+        /**
+         * The child pid, resolved exactly once by launch()
+         * (versionCode 18): {@code Process.pid()} where the runtime
+         * allows it, the /proc-scan result where it does not, and -1
+         * when neither worked. The worker clears the pid record by
+         * THIS value — re-probing pid() at cleanup time would fail
+         * again on exactly the runtimes that needed the fallback.
+         */
+        final long resolvedPid;
 
-        LaunchOutcome(Process process, long spawnElapsedMs, boolean pidRecorded) {
+        LaunchOutcome(Process process, long spawnElapsedMs,
+                      boolean pidRecorded, long resolvedPid) {
             this.process = process;
             this.spawnElapsedMs = spawnElapsedMs;
             this.pidRecorded = pidRecorded;
+            this.resolvedPid = resolvedPid;
         }
     }
 
@@ -766,6 +789,7 @@ public class NodeService extends Service {
         final Process proc;
         final long spawnElapsedMs;
         final boolean pidRecorded;
+        final long resolvedPid;
         synchronized (PID_LOCK) {
             awaitLeftoverNodeProcess();
             proc = pb.start();
@@ -783,8 +807,13 @@ public class NodeService extends Service {
             // still tracks the process through its Process handle; only
             // the cross-instance courtesy degrades — but the failure
             // is recorded, here in the log and in the attempt evidence
-            // (via the returned outcome), never silently.
-            long newPid = pidOf(proc);
+            // (via the returned outcome), never silently. Resolution
+            // happens exactly once, here (resolveChildPid), and the
+            // result travels back in the outcome: the worker's
+            // cleanups clear the record by that value instead of
+            // re-probing pid() at cleanup time (versionCode 18).
+            long newPid = resolveChildPid(proc);
+            resolvedPid = newPid;
             pidRecorded = newPid > 0 && writePidFile(newPid);
             if (!pidRecorded) {
                 logApp("pid record FAILED for pid " + newPid
@@ -811,7 +840,7 @@ public class NodeService extends Service {
                 st.launchedNodeName = nodeName;
             }
         }
-        return new LaunchOutcome(proc, spawnElapsedMs, pidRecorded);
+        return new LaunchOutcome(proc, spawnElapsedMs, pidRecorded, resolvedPid);
     }
 
     // ------------------------------------------------------------------
@@ -920,7 +949,7 @@ public class NodeService extends Service {
 
     /**
      * The pid of a spawned child, or -1 when the runtime will not
-     * say. Every pid lookup in this class goes through here.
+     * say. Every Process.pid() call in this class goes through here.
      * Process.pid() is the one call in the spawn sequence whose
      * failure mode is not an IOException: on a runtime where it is
      * missing or unsupported it throws an Error (NoSuchMethodError,
@@ -933,10 +962,208 @@ public class NodeService extends Service {
      * never be able to fail — or crash — a launch.
      */
     private static long pidOf(Process p) {
+        return pidOf(p, null);
+    }
+
+    /**
+     * As {@link #pidOf(Process)}, additionally handing the caught
+     * throwable back through {@code errorOut} (when given), so a
+     * caller that wants to NAME the failure in the log — the
+     * versionCode 18 pid resolution does — need not probe pid() a
+     * second time to find out why it failed.
+     */
+    private static long pidOf(Process p, Throwable[] errorOut) {
         try {
             return p.pid();
         } catch (Throwable t) {
+            if (errorOut != null && errorOut.length > 0) {
+                errorOut[0] = t;
+            }
             return -1;
+        }
+    }
+
+    /**
+     * Resolve a freshly spawned child's pid, exactly once per launch
+     * (versionCode 18). Primary route: {@link #pidOf}. The versionCode
+     * 17 field run confirmed that on the target device class
+     * Process.pid() itself throws, so every launch logged "pid record
+     * FAILED for pid -1": the node ran, but the finding-4 pid record
+     * — and with it the cross-instance leftover wait — stayed
+     * degraded on that runtime. The fallback is a bounded /proc scan
+     * for this process's own child running the node binary (see
+     * {@link #scanForNodeChildPid}). Whichever route succeeds, the
+     * outcome is logged when the fallback was needed, including the
+     * class of the throwable pid() threw. The whole method is
+     * degrade-safe by construction: any failure anywhere yields -1
+     * ("no pid"), and bookkeeping must never fail — or crash — the
+     * launch it serves (the versionCode 17 rule, kept). Called from
+     * launch() with {@link #PID_LOCK} held, as part of the spawn
+     * sequence; the scan's bounded retry therefore also runs under
+     * that lock, which launches do not mind — they are rare and
+     * already serialized by it.
+     */
+    private long resolveChildPid(Process proc) {
+        try {
+            Throwable[] pidError = new Throwable[1];
+            long pid = pidOf(proc, pidError);
+            if (pid > 0) {
+                return pid;
+            }
+            String why = pidError[0] != null
+                    ? pidError[0].getClass().getName() : "no error captured";
+            long scanned = scanForNodeChildPid();
+            if (scanned > 0) {
+                logApp("pid() unavailable (" + why + "); recovered pid "
+                        + scanned + " via /proc scan");
+                return scanned;
+            }
+            logApp("pid() unavailable (" + why + "); /proc scan found"
+                    + " no child pid — pid record skipped");
+            return -1;
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /**
+     * Find the node child's pid without Process.pid(): this process's
+     * children (by /proc ppid) whose cmdline names the node library.
+     * The child can still be mid-exec in the instant after
+     * ProcessBuilder.start() returns, so the scan retries for about
+     * a second (10 passes, 100 ms apart) before giving up. Exactly
+     * one candidate is the answer. If several survive every pass —
+     * e.g. a previous child still exiting alongside the new one —
+     * only an exact argv[0] match with the node binary's absolute
+     * path may disambiguate, and only if it leaves exactly one;
+     * anything else returns -1 rather than guessing a pid that the
+     * finding-4 leftover wait would then trust. Best-effort
+     * throughout: every read failure simply removes that entry from
+     * consideration (a zombie child, for instance, has an empty
+     * cmdline and never becomes a candidate).
+     */
+    private long scanForNodeChildPid() {
+        // android.os.Process, not java.lang.Process: the app
+        // process's own pid is always available here.
+        final int myPid = android.os.Process.myPid();
+        final String binPath = new File(
+                getApplicationInfo().nativeLibraryDir, NODE_LIB).getAbsolutePath();
+        List<Long> candidates = new ArrayList<>();
+        for (int pass = 0; pass < 10; pass++) {
+            candidates = collectNodeChildPids(myPid);
+            if (candidates.size() == 1) {
+                return candidates.get(0);
+            }
+            if (pass < 9) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return -1;
+                }
+            }
+        }
+        if (candidates.size() > 1) {
+            long match = -1;
+            for (long pid : candidates) {
+                if (binPath.equals(argv0(pid))) {
+                    if (match != -1) {
+                        return -1; // two exact matches: refuse to guess
+                    }
+                    match = pid;
+                }
+            }
+            return match;
+        }
+        return -1;
+    }
+
+    /**
+     * One /proc pass: the pids whose parent is {@code myPid} and
+     * whose cmdline names the node library. /proc is world-readable
+     * enough for a process to see its own children; any entry that
+     * cannot be read is skipped, never fatal.
+     */
+    private static List<Long> collectNodeChildPids(int myPid) {
+        List<Long> out = new ArrayList<>();
+        String[] entries = new File("/proc").list();
+        if (entries == null) {
+            return out;
+        }
+        for (String name : entries) {
+            if (name.isEmpty() || !Character.isDigit(name.charAt(0))) {
+                continue;
+            }
+            final long pid;
+            try {
+                pid = Long.parseLong(name);
+            } catch (NumberFormatException e) {
+                continue;
+            }
+            if (readParentPid(pid) != myPid) {
+                continue;
+            }
+            String cmdline = readCmdline(pid);
+            if (cmdline != null && cmdline.contains(NODE_LIB)) {
+                out.add(pid);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * The parent pid from /proc/&lt;pid&gt;/stat, or -1 when
+     * unreadable. Field 2 (comm) is parenthesized and may itself
+     * contain spaces or parentheses, so parsing starts after the
+     * LAST ')': the whitespace-separated fields that follow are
+     * state first, then ppid.
+     */
+    private static long readParentPid(long pid) {
+        byte[] data = readProcFile(pid, "stat");
+        if (data == null) {
+            return -1;
+        }
+        String stat = new String(data, StandardCharsets.UTF_8);
+        int close = stat.lastIndexOf(')');
+        if (close < 0 || close + 1 >= stat.length()) {
+            return -1;
+        }
+        String[] fields = stat.substring(close + 1).trim().split("\\s+");
+        if (fields.length < 2) {
+            return -1;
+        }
+        try {
+            return Long.parseLong(fields[1]); // [0]=state, [1]=ppid
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    /** The NUL-separated cmdline of a process as one string, or null when unreadable. */
+    private static String readCmdline(long pid) {
+        byte[] data = readProcFile(pid, "cmdline");
+        if (data == null) {
+            return null;
+        }
+        return new String(data, StandardCharsets.UTF_8);
+    }
+
+    /** argv[0] of a process — the first NUL-separated cmdline token — or null. */
+    private static String argv0(long pid) {
+        String cmdline = readCmdline(pid);
+        if (cmdline == null) {
+            return null;
+        }
+        int nul = cmdline.indexOf('\0');
+        return nul >= 0 ? cmdline.substring(0, nul) : cmdline;
+    }
+
+    private static byte[] readProcFile(long pid, String name) {
+        try (FileInputStream in = new FileInputStream(
+                new File("/proc/" + pid, name))) {
+            return in.readAllBytes();
+        } catch (IOException | RuntimeException e) {
+            return null;
         }
     }
 

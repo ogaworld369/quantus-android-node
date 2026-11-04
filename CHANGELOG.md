@@ -5,6 +5,28 @@ shared directly by the maintainer; there is no public release yet.
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 18 — 2026-11-04
+- **Pid recording restored on runtimes where `Process.pid()` throws.**
+  The versionCode 17 field run confirmed the diagnosis: on the
+  target device (Pixel 9a / GrapheneOS) `Process.pid()` throws, so
+  versionCode 17's safety net caught it and the node started, but
+  the pid was never recorded ("pid record FAILED for pid -1") and
+  the cross-instance leftover wait (external audit finding 4) stayed
+  degraded on that device class. `launch()` now resolves the child
+  pid exactly once: `Process.pid()` first, and when that is
+  unavailable, a bounded /proc scan — this process's own children
+  (ppid parsed robustly from `/proc/<pid>/stat`) whose cmdline
+  names the node library, retried for about a second and narrowed
+  by an exact argv[0] match when ambiguous. The resolved pid
+  travels back with the launch outcome; the pid file records it and
+  the worker's cleanups clear the record by that same value instead
+  of re-probing `pid()`. When the fallback route is used, the app
+  log names the exception class `pid()` threw and the pid the scan
+  recovered. If neither route yields a pid, the launch still
+  proceeds unrecorded, exactly as in versionCode 17. No UI,
+  settings, arguments, or lock-design changes; the node binary is
+  the versionCode 10 build.
+
 ## versionCode 17 — 2026-11-04
 - **Field-crash fix: the app died the moment Start was pressed.**
   On the first device run of the versionCode 13–16 builds (which
