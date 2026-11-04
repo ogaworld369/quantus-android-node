@@ -19,7 +19,7 @@
 ## Gate 2: リリースビルド
 
 - [x] `cargo build --release` の Android 向けビルドが完走する（確認済み。fat LTO はビルド機のメモリ不足で不採用、thin LTO は実験の結果サイズ減に寄与せず不採用 — 設計書「その5」参照）
-- [x] release バイナリで APK を組み直し、サイズと同梱物を確認する（strip 後 約53.4MB、テスト配布版 versionCode 4〜7 で実施済み）
+- [x] release バイナリで APK を組み直し、サイズと同梱物を確認する（strip 後 約53.4MB、テスト配布版 versionCode 4〜10 で実施済み（vc10 は依存関係のセキュリティ更新を反映した再ビルド版、strip 後 53,411,080 bytes））
 - [ ] バージョン番号を確定する（初回公開は v0.1.0）
 
 ## Gate 3: 署名

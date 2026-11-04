@@ -26,6 +26,9 @@ seed*
 # Substrate's on-disk node key name, which has no extension)
 *.key
 *.pem
+# Exception: the bundled Mozilla CA root bundle is a public certificate
+# set, intentionally shipped in the APK (see app/assets/CA-SOURCE.txt).
+!app/assets/cacert.pem
 secret_ed25519
 node-key
 

@@ -30,6 +30,7 @@ it has synced.
   ```
   --chain mainnet --base-path <filesDir>/node --name <display name>
   --state-pruning 256 --blocks-pruning 256
+  --trie-cache-size 134217728 --max-blocks-per-request 128
   --rpc-port 9944 --rpc-methods safe [--no-telemetry]
   ```
 
@@ -103,7 +104,7 @@ Dark, minimal, quiet — the "気配" (presence) design:
 
 | file | bytes | what it is |
 |---|---|---|
-| `libquantus_node.so` | 53,408,792 | `quantus-node` cross-built for `aarch64-linux-android`, release profile (pruning patch + DNS-fallback vendor patch + h2 update applied), then stripped. A debug-profile build is ~123 MB instead |
+| `libquantus_node.so` | 53,411,080 | `quantus-node` cross-built for `aarch64-linux-android`, release profile (pruning patch + DNS-fallback vendor patch + the dependency security updates listed in `../SECURITY.md`), then stripped. A debug-profile build is ~123 MB instead |
 | `libc++_shared.so` | 1,794,776 | NDK r27d `sysroot/usr/lib/aarch64-linux-android/libc++_shared.so` — required: it is in the node's `NEEDED` list |
 
 How the node binary itself is cross-built (Rust 1.93.0, NDK r27d,
@@ -253,12 +254,27 @@ checks and code re-reading only.
 
 ## Not yet verified (honest list)
 
-- **Everything on a real device.** Foreground-service behaviour on
-  GrapheneOS, process exec from `nativeLibraryDir` for the long-running
-  node (the smoke app only proves `--version`-class starts), RPC
-  answers, sync progress, battery/thermal behaviour, and long-run
-  stability are all unknown until this APK runs on the Pixel 9a.
+Verified since the first version of this list: on a real Pixel 9a
+(GrapheneOS) the node runs as a child process from
+`nativeLibraryDir`, the local RPC answers, and a full sync from
+genesis to the chain tip completed on 2026-11-03 (#341,592, about
+2 h 21 min of node uptime, peaking at 18 peers — see
+`../docs/DESIGN.md`). The bundled node binary is the release-profile
+build (53,411,080 bytes stripped as of versionCode 10), not a debug build.
+
+Still not verified:
+
+- **Other devices.** Only the Pixel 9a on GrapheneOS is confirmed;
+  other makers' battery savers may stop the resident service.
+- **Steady-state numbers over many hours**: the pruned database
+  size plateau, and battery/thermal behaviour after the initial
+  sync (the sync itself took the battery from 71% to 27%, including
+  time on mobile data).
+- **Telemetry listing with the CA fix** (versionCode 5 and later):
+  the root cause was found and fixed; seeing this node appear in
+  the public telemetry list is still to be confirmed on device.
+- **Repeated stop → start cycles on device**: the races found in
+  the 2026-11-04 audit are fixed in versionCode 8/9, verified by
+  code inspection, not yet by an on-device soak.
 - The Gradle route (expected fine on a normal network, unproven here).
-- The node binary is a debug-profile Rust build; a release build is
-  still outstanding (see `../docs/BUILD-android.md`).
 - Quantum-watch external threat information: stub by design (above).

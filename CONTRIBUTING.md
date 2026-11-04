@@ -14,4 +14,4 @@ Thank you for helping decentralize the Quantus Network.
 
 ## Pull requests
 - Keep PRs focused; describe how you tested (see the PR template).
-- By contributing you agree your work is licensed under the project's license (to be confirmed, Apache-2.0 candidate).
+- By contributing you agree your work is licensed under the project's license, Apache-2.0 (see `LICENSE`).

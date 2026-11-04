@@ -5,6 +5,20 @@ shared directly by the maintainer; there is no public release yet.
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 10 — 2026-11-04
+- **Node binary rebuilt with security-updated dependencies.** A
+  re-audit against the current RustSec database found 22 advisories
+  in the shipped binary's dependency closure; 20 are resolved by
+  semver-compatible lockfile updates: wasmtime 36.0.13 -> 36.0.20
+  (including two critical Cranelift miscompilations), quinn-proto
+  0.11.15 -> 0.11.19, rustls 0.23.32 -> 0.23.46, rustls-webpki
+  0.103.13 -> 0.103.16, and the zstd stack. Two advisories remain
+  (no compatible fix exists; see SECURITY.md for the exact status,
+  which also corrects earlier wording about ring /
+  curve25519-dalek / anyhow). The app code is unchanged from
+  versionCode 9; the on-device checks for this binary are part of
+  the ongoing Gate 1 verification.
+
 ## versionCode 9 — 2026-11-04
 - Finishing touches ahead of an external audit (app internals and
   documentation; no new features):
