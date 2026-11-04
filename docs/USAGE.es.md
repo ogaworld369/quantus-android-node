@@ -4,7 +4,7 @@
 
 Esta aplicación ejecuta un **nodo completo no validador** de Quantus Network (red principal de QTC) en un teléfono Android. Sincroniza la cadena, verifica cada bloque por sí mismo y retransmite datos a sus pares. **No** mina y **no** tiene billetera: nunca toca frases semilla ni claves de recompensa.
 
-> Estado: pre-lanzamiento (Phase 1 MVP). Aún no hay una versión pública; las compilaciones de prueba las comparte directamente el mantenedor. Cuando comiencen las publicaciones, los APK firmados se publicarán en GitHub Releases con sumas de verificación SHA-256.
+> Estado: v0.1.0 publicada (2026-11-04). El APK firmado está disponible en [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) con suma de verificación SHA-256. Las compilaciones de prueba anteriores las compartía directamente el mantenedor.
 
 ## Requisitos
 
