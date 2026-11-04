@@ -1,0 +1,26 @@
+diff --git a/node/src/command.rs b/node/src/command.rs
+index 819e566..e71e332 100644
+--- a/node/src/command.rs
++++ b/node/src/command.rs
+@@ -574,9 +574,18 @@ pub fn run() -> sc_cli::Result<()> {
+ 			log::info!("Run until exit ....");
+ 			let runner = cli.create_runner(&cli.run)?;
+ 			runner.run_node_until_exit(|mut config| async move {
+-				//Obligatory configuration for all node holders
+-				config.blocks_pruning = BlocksPruning::KeepFinalized;
+-				config.state_pruning = Some(PruningMode::ArchiveCanonical);
++				// Obligatory configuration for all node holders: archive storage
++				// remains the default, but an explicitly requested numeric pruning
++				// window (`--state-pruning <N>` / `--blocks-pruning <N>`) is honored
++				// so resource-constrained nodes (e.g. phones) can opt into a bounded
++				// database. When the flags are absent or an archive mode is given,
++				// the historical forced values below still apply.
++				if !matches!(config.blocks_pruning, BlocksPruning::Some(_)) {
++					config.blocks_pruning = BlocksPruning::KeepFinalized;
++				}
++				if config.state_pruning.as_ref().map_or(true, |mode| mode.is_archive()) {
++					config.state_pruning = Some(PruningMode::ArchiveCanonical);
++				}
+ 
+ 				// Note: We parse node_key_file here to make a Dilithium keypair.
+ 				// We then override the net config object parsed by sc_cli so we don't have to

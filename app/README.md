@@ -92,7 +92,7 @@ Dark, minimal, quiet — the "気配" (presence) design:
     Français, or "follow device settings" (the default). Applies to
     the dashboard immediately (activity recreate) and to the service
     notification the next time it is rebuilt. All strings live in
-    `StringsTable.java` (38 keys × 9 languages, mechanically checked
+    `StringsTable.java` (50 keys × 9 languages, mechanically checked
     for completeness); the full table and contribution guide are in
     `../docs/I18N.md`. Numbers always render with ASCII digits in
     every language, and Arabic mirrors the layout (RTL).
@@ -103,7 +103,7 @@ Dark, minimal, quiet — the "気配" (presence) design:
 
 | file | bytes | what it is |
 |---|---|---|
-| `libquantus_node.so` | 122,615,272 | `quantus-node` cross-built for `aarch64-linux-android` (pruning patch + h2 update applied), then stripped |
+| `libquantus_node.so` | 53,408,792 | `quantus-node` cross-built for `aarch64-linux-android`, release profile (pruning patch + DNS-fallback vendor patch + h2 update applied), then stripped. A debug-profile build is ~123 MB instead |
 | `libc++_shared.so` | 1,794,776 | NDK r27d `sysroot/usr/lib/aarch64-linux-android/libc++_shared.so` — required: it is in the node's `NEEDED` list |
 
 How the node binary itself is cross-built (Rust 1.93.0, NDK r27d,

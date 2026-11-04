@@ -8,4 +8,4 @@ We will acknowledge reports as soon as we reasonably can and will credit reporte
 
 ## Scope notes
 - This app holds no wallet secrets by design; its only secret is the node P2P identity key.
-- Signed release APKs and checksums are published on the Releases page. Builds from other sources should not be trusted.
+- There is no public release yet. When public releases begin, signed release APKs and their SHA-256 checksums will be published on the Releases page. Builds from other sources should not be trusted.
