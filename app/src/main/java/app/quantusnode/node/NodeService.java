@@ -182,18 +182,49 @@ public class NodeService extends Service {
             return START_NOT_STICKY;
         }
         if (!started.compareAndSet(false, true)) {
-            // Already running: nothing new to start. This duplicate
-            // START still becomes the live session's stop authority
-            // (finding 3, case (b) on sessionStopId): it is the newest
-            // start command delivered for this session, and if the
-            // session later ends on its own, stopSelfResult() must be
-            // given THIS startId or it declines and the service
-            // lingers. Updated under stateLock, like every other
-            // write to that field.
+            // The CAS failing does not by itself mean a session is
+            // live: decide that under stateLock, against the real
+            // state. (Until versionCode 14 this branch always treated
+            // the START as a duplicate; see the sequence-B case below.)
             synchronized (stateLock) {
-                sessionStopId = startId;
+                if (started.get()) {
+                    // Genuinely already running: nothing new to
+                    // start. This duplicate START still becomes the
+                    // live session's stop authority (finding 3,
+                    // case (b) on sessionStopId): it is the newest
+                    // start command delivered for this session, and
+                    // if the session later ends on its own,
+                    // stopSelfResult() must be given THIS startId or
+                    // it declines and the service lingers. Updated
+                    // under stateLock, like every other write to
+                    // that field.
+                    sessionStopId = startId;
+                    return START_NOT_STICKY;
+                }
+                // Sequence B (found by the internal desk check of
+                // versionCode 14, fixed in versionCode 15): this
+                // START was delivered while the previous session's
+                // worker was mid-teardown inside finishAsStopped()
+                // — holding stateLock, with `started` not yet
+                // cleared — so the CAS above mistook it for a
+                // duplicate and it waited on this lock. That teardown
+                // is complete now: it clears `started` inside the
+                // same locked section, so observing false here, lock
+                // in hand, means no session is live. Treating this
+                // START as a duplicate would consume it — the
+                // finish's stopSelfResult() declines precisely
+                // because this newer startId exists, the service
+                // stays in the foreground, and nobody ever creates
+                // a session: a node-less service lingers. Instead,
+                // claim the start here, still under the lock, and
+                // fall through to the normal session establishment
+                // below; the establishment block records THIS
+                // startId as the session's creator, exactly as for
+                // a start that won the CAS. `started` is only ever
+                // set by this method, on this (main) thread, so the
+                // claim cannot race another claim.
+                started.set(true);
             }
-            return START_NOT_STICKY;
         }
 
         // Foreground first, promptly, before any heavy work.

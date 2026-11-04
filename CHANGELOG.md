@@ -5,6 +5,20 @@ shared directly by the maintainer; there is no public release yet.
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 15 — 2026-11-04
+- **Sequence-B race fix (found by an internal desk check of the
+  versionCode 14 tree).** A START delivered while the previous
+  session's worker was mid-teardown could be mistaken for a
+  duplicate start: the teardown's `stopSelfResult()` then declined
+  because of that newer startId, the service stayed in the
+  foreground, and the start was consumed without ever creating a
+  session — a node-less foreground service lingered. The
+  duplicate-vs-new decision is now made under the lifecycle lock
+  against the real state: if the previous session has already
+  finished, the racing START claims the start and creates a session
+  through the normal establishment flow. No behavior change in
+  normal use; the node binary is the versionCode 10 build.
+
 ## versionCode 14 — 2026-11-04
 - **Re-audit follow-ups (2026-11-04 ChatGPT re-audit of versionCode
   13; see SECURITY.md).** The re-audit confirmed the versionCode 13
