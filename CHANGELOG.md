@@ -7,6 +7,32 @@ public release and the first build signed with the release key.
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 20 / v0.1.0 — 2026-11-04
+- **Pre-release fix: the dashboard no longer loses the scroll
+  position.** On the device, swiping up to read the lower cards
+  made the page slide back down on its own within a second: the
+  1 s refresh's `setText` calls trigger a layout pass, and during
+  that pass the `ScrollView` drifted toward a focused child.
+  `refresh()` now records the scroll position on entry and
+  restores it (posted, so it lands after the new layout) whenever
+  the user is scrolled away from the top; the start/stop button,
+  the language button and the two settings switches are no
+  longer focusable in touch mode, so a tap cannot turn them into
+  the anchor the ScrollView re-centres on; and the two multi-line
+  notes (details, restart-to-apply) are only re-set when their
+  text actually changed. The settings handlers get the same
+  protection at their own entry points, because their state
+  changes can re-lay out the page before refresh() ever runs:
+  the settings-lock handler (which enables/disables the whole
+  settings block via `applySettingsLock()`) and the telemetry
+  handler (which rewrites the restart note via refresh()) now
+  capture the scroll offset before changing anything and
+  restore it afterwards, and a language pick — which recreates
+  the activity — carries the offset across the recreate.
+  Still v0.1.0 — versionCode 19 was never published — and still
+  signed with the release key. No service or node changes; the
+  node binary is the versionCode 10 build.
+
 ## versionCode 19 / v0.1.0 — 2026-11-04
 - **First public release, signed with the release key.** A dedicated
   distribution key (RSA 4096, kept outside this repository) was

@@ -93,6 +93,12 @@ public class MainActivity extends Activity {
     private Button languageButton;
     private Switch settingsLockSwitch;
     private TextView restartNoteView;
+    private ScrollView scrollView;
+    /** Last text actually set on noteView / restartNoteView. */
+    private String lastNoteText;
+    private String lastRestartNoteText;
+    /** Scroll offset carried across a language-change recreate(). */
+    private static int scrollYAfterRecreate = 0;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private long lastBestSeen = -1;
@@ -118,6 +124,14 @@ public class MainActivity extends Activity {
         getWindow().getDecorView().setLayoutDirection(dir);
         buildUi();
         refresh();
+        // A language change recreates the activity; if the user
+        // was scrolled down when they picked the language, land
+        // back at the same offset instead of the top.
+        if (scrollYAfterRecreate > 0) {
+            final int y = scrollYAfterRecreate;
+            scrollYAfterRecreate = 0;
+            restoreScrollLater(y);
+        }
     }
 
     @Override
@@ -196,6 +210,10 @@ public class MainActivity extends Activity {
         toggleButton.setBackground(startPill);
         toggleButton.setTextColor(Color.BLACK);
         toggleButton.setOnClickListener(v -> onToggleClicked());
+        // Not focusable in touch mode: a tapped control must not
+        // become the anchor the ScrollView re-centres on when the
+        // 1 s refresh re-lays out the page (see refresh()).
+        toggleButton.setFocusableInTouchMode(false);
         LinearLayout.LayoutParams toggleLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, (int) (50 * d));
         toggleLp.topMargin = (int) (12 * d);
@@ -254,9 +272,16 @@ public class MainActivity extends Activity {
         // the UI does not itself "change" the setting.
         telemetrySwitch.setChecked(NodeSettings.telemetryEnabled(this));
         telemetrySwitch.setOnCheckedChangeListener((button, isChecked) -> {
-            NodeSettings.setTelemetryEnabled(this, isChecked);
-            refresh();
+            // The change rewrites the restart note via refresh(),
+            // which can grow or shrink the settings card mid-page;
+            // hold the scroll position across the whole handler,
+            // not just inside refresh().
+            runPreservingScroll(() -> {
+                NodeSettings.setTelemetryEnabled(this, isChecked);
+                refresh();
+            });
         });
+        telemetrySwitch.setFocusableInTouchMode(false);
         settingsCard.addView(telemetrySwitch, matchLp());
 
         TextView privacyNote = text(
@@ -318,6 +343,7 @@ public class MainActivity extends Activity {
         languageButton = textButton(currentLanguageLabel(), d);
         languageButton.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         languageButton.setOnClickListener(v -> showLanguageDialog());
+        languageButton.setFocusableInTouchMode(false);
         langRow.addView(languageButton, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -349,10 +375,21 @@ public class MainActivity extends Activity {
         settingsLockSwitch.setChecked(NodeSettings.settingsLocked(this));
         settingsLockSwitch.setOnCheckedChangeListener((button, isChecked) -> {
             if (isChecked != NodeSettings.settingsLocked(this)) {
-                NodeSettings.setSettingsLocked(this, isChecked);
-                applySettingsLock();
+                // applySettingsLock() flips the enabled state of
+                // the whole settings block (and may re-sync this
+                // switch) — state changes that re-lay out the page
+                // around the user's scroll position. Capture the
+                // position here, at the handler's entry, before any
+                // of that runs, and restore it once it has all
+                // settled; refresh()'s own save/restore never sees
+                // this path, because the handler does not call it.
+                runPreservingScroll(() -> {
+                    NodeSettings.setSettingsLocked(this, isChecked);
+                    applySettingsLock();
+                });
             }
         });
+        settingsLockSwitch.setFocusableInTouchMode(false);
         settingsCard.addView(settingsLockSwitch, matchLp());
         TextView lockNote = text(
                 I18n.get(this, StringsTable.SETTINGS_LOCK_NOTE), 12, TERTIARY);
@@ -383,11 +420,11 @@ public class MainActivity extends Activity {
         TextView foot = text(I18n.get(this, StringsTable.FOOTER_INFO), 12, TERTIARY);
         root.addView(foot, matchLp(d, 16));
 
-        ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(BG);
-        scroll.setLayoutDirection(dir);
-        scroll.addView(root);
-        setContentView(scroll);
+        scrollView = new ScrollView(this);
+        scrollView.setBackgroundColor(BG);
+        scrollView.setLayoutDirection(dir);
+        scrollView.addView(root);
+        setContentView(scrollView);
     }
 
     /** Enable or disable the settings controls to match the lock. */
@@ -439,6 +476,12 @@ public class MainActivity extends Activity {
         new AlertDialog.Builder(this)
                 .setTitle(I18n.get(this, StringsTable.SETTINGS_LANGUAGE))
                 .setSingleChoiceItems(items, checked, (dialog, which) -> {
+                    // recreate() rebuilds the whole screen; carry
+                    // the scroll position across it (onCreate
+                    // restores it) so picking a language does not
+                    // throw the user back to the top of the page.
+                    scrollYAfterRecreate =
+                            scrollView != null ? scrollView.getScrollY() : 0;
                     NodeSettings.setLanguageRaw(
                             this, which == 0 ? "" : tags[which - 1]);
                     dialog.dismiss();
@@ -646,11 +689,52 @@ public class MainActivity extends Activity {
     }
 
     // ------------------------------------------------------------------
+    // Scroll position keeping (the page must never move on its own)
+    // ------------------------------------------------------------------
+
+    /**
+     * Posts a restore of the given scroll offset, to land after
+     * the layout pass the pending changes are about to trigger —
+     * posted, not a direct scrollTo, so it applies against the
+     * new layout. A no-op at the top of the page (offset 0): a
+     * user who is not scrolled down has nothing to lose.
+     */
+    private void restoreScrollLater(final int y) {
+        if (y > 0 && scrollView != null) {
+            scrollView.post(() -> scrollView.scrollTo(0, y));
+        }
+    }
+
+    /**
+     * Runs a settings change with the scroll position held: the
+     * offset is captured at the handler's entry — before the
+     * change's own view-state flips (enabling/disabling the
+     * settings block, a note growing or shrinking via refresh())
+     * can re-lay out the page and shift the offset — and restored
+     * once the change has fully run.
+     */
+    private void runPreservingScroll(Runnable change) {
+        final int y = scrollView != null ? scrollView.getScrollY() : 0;
+        change.run();
+        restoreScrollLater(y);
+    }
+
+    // ------------------------------------------------------------------
     // Refresh (1 s tick while visible; reads NodeState + TrackStore only)
     // ------------------------------------------------------------------
 
     private void refresh() {
         NodeState st = NodeState.get();
+
+        // Remember where the user has scrolled to. The setText
+        // calls below trigger a layout pass, and during that pass
+        // the ScrollView can drift toward a focused child — on the
+        // device this read as "swipe up to see the lower cards and
+        // the page slides back down on its own". The position is
+        // restored at the end of refresh(); a user sitting at the
+        // very top (scrollY == 0) is left alone.
+        final int savedScrollY =
+                scrollView != null ? scrollView.getScrollY() : 0;
 
         statusView.setText(NodeState.label(this, st.status));
         StringBuilder note = new StringBuilder();
@@ -701,7 +785,14 @@ public class MainActivity extends Activity {
                 n++;
             }
         }
-        noteView.setText(note.toString());
+        String noteText = note.toString();
+        if (!noteText.equals(lastNoteText)) {
+            // Skip the setText when the (potentially long,
+            // multi-line) text is unchanged, so an idle tick does
+            // not re-measure it and disturb the scroll position.
+            lastNoteText = noteText;
+            noteView.setText(noteText);
+        }
 
         bestView.setText(st.bestBlock >= 0 ? "#" + st.bestBlock : "—");
         highestView.setText(st.highestBlock >= 0 ? "#" + st.highestBlock : "—");
@@ -763,7 +854,14 @@ public class MainActivity extends Activity {
                 restartNote = I18n.get(this, StringsTable.SETTINGS_RESTART_NOTE);
             }
         }
-        restartNoteView.setText(restartNote);
+        if (!restartNote.equals(lastRestartNoteText)) {
+            lastRestartNoteText = restartNote;
+            restartNoteView.setText(restartNote);
+        }
+
+        // Restore the scroll position captured at the top, once
+        // the layout pass this refresh triggered has settled.
+        restoreScrollLater(savedScrollY);
     }
 
     private String formatDuration(long ms) {
