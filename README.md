@@ -39,4 +39,4 @@ The only secret is the node's P2P identity key, kept in app-private storage and 
 
 ## License
 
-To be confirmed — Apache-2.0 is the leading candidate, matching upstream.
+Apache License 2.0 — see [LICENSE](LICENSE). (The upstream node's crates declare Apache-2.0; its repository root LICENSE is MIT — the two are compatible for this use, and this app itself is Apache-2.0.)
