@@ -223,15 +223,25 @@ public class NodeService extends Service {
         // destroy as a quick failed start and retry it. finishAsStopped
         // then runs the locked, generation-checked teardown for the
         // session that is current right now.
-        final int gen = sessionGen.get();
-        started.set(false);
-        logApp("foreground service timed out by the system; stopping node");
-        NodeState.get().lastNote = I18n.get(this, StringsTable.NOTE_FGS_TIMEOUT);
-        Process p = nodeProcess;
-        if (p != null) {
-            p.destroy();
+        // F-8: the whole sequence — reading the generation, stamping
+        // the timeout note, and finishing — runs under stateLock, like
+        // the other stop paths do. This used to read the generation
+        // outside the lock and write lastNote unconditionally, so a
+        // timeout racing a stop + fresh start could stamp its note
+        // onto the NEW session. Under the lock the generation cannot
+        // move between the read and finishAsStopped's own check (that
+        // method re-takes the lock; monitors are reentrant).
+        synchronized (stateLock) {
+            final int gen = sessionGen.get();
+            started.set(false);
+            logApp("foreground service timed out by the system; stopping node");
+            NodeState.get().lastNote = I18n.get(this, StringsTable.NOTE_FGS_TIMEOUT);
+            Process p = nodeProcess;
+            if (p != null) {
+                p.destroy();
+            }
+            finishAsStopped(gen, null);
         }
-        finishAsStopped(gen, null);
     }
 
     @Override
@@ -441,18 +451,9 @@ public class NodeService extends Service {
             cmd.add("--no-telemetry");
         }
 
-        // Remember what this process was launched with, so the UI can
-        // say "settings changed — restart to apply" when they diverge.
-        // Generation-gated like every other state write: a launch that
-        // completes after its session was torn down must not stamp its
-        // snapshot over a newer session's.
-        synchronized (stateLock) {
-            if (gen == sessionGen.get()) {
-                NodeState st = NodeState.get();
-                st.launchedTelemetry = telemetry;
-                st.launchedNodeName = nodeName;
-            }
-        }
+        // The "what was this process launched with" snapshot is NOT
+        // written here: it is recorded at the end of this method,
+        // after pb.start() has succeeded (F-9).
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.environment().put("LD_LIBRARY_PATH", nativeDir);
@@ -494,7 +495,27 @@ public class NodeService extends Service {
                 }
             }
         }
-        return pb.start();
+        Process proc = pb.start();
+        // F-9: remember what this process was launched with, so the UI
+        // can say "settings changed — restart to apply" when they
+        // diverge — but only now that the process actually exists.
+        // This used to be recorded BEFORE pb.start(), so a launch that
+        // threw IOException left a snapshot behind for a process that
+        // never started. (The failed attempt still leaves its own
+        // record in the session's attempt list, which is where failure
+        // evidence belongs.) Generation-gated like every other state
+        // write: a launch that completes after its session was torn
+        // down must not stamp its snapshot over a newer session's.
+        // launch() serves both the direct attempt and the linker64
+        // retry, so the retry's successful start is recorded here too.
+        synchronized (stateLock) {
+            if (gen == sessionGen.get()) {
+                NodeState st = NodeState.get();
+                st.launchedTelemetry = telemetry;
+                st.launchedNodeName = nodeName;
+            }
+        }
+        return proc;
     }
 
     /**
@@ -771,14 +792,25 @@ public class NodeService extends Service {
 
     private void runPoller(int gen) {
         while (pollerOn.get() && gen == sessionGen.get()) {
+            // P-4: fixed rate, not fixed delay. The sleep used to be a
+            // flat POLL_MS after the work, so the real period was "two
+            // RPC calls + 3 s" — up to ~10 s when both calls ran into
+            // their timeouts — which also stretched the periodic
+            // uptime save riding this loop. Time the cycle's work and
+            // sleep only the remainder; if the work alone overruns
+            // POLL_MS the next cycle starts at once (floor 0 is safe:
+            // pollOnce itself blocks on the RPC, so this cannot spin).
+            long cycleStartMs = SystemClock.elapsedRealtime();
             try {
                 pollOnce(gen);
             } catch (Exception ignored) {
                 // A failed poll is a state ("starting"), never a crash.
             }
             saveUptimePeriodically(gen);
+            long sleepMs = Math.max(0,
+                    POLL_MS - (SystemClock.elapsedRealtime() - cycleStartMs));
             try {
-                Thread.sleep(POLL_MS);
+                Thread.sleep(sleepMs);
             } catch (InterruptedException e) {
                 return;
             }

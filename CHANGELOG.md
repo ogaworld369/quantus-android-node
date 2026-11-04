@@ -5,6 +5,29 @@ shared directly by the maintainer; there is no public release yet.
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 9 — 2026-11-04
+- Finishing touches ahead of an external audit (app internals and
+  documentation; no new features):
+  - The foreground-service timeout path now reads its session
+    generation under the same lock as the other stop paths, so a
+    timeout racing a manual restart cannot stamp a note on the
+    wrong session.
+  - The per-attempt start snapshot is now recorded only after the
+    process actually starts, so a failed launch no longer leaves
+    a record for a process that never existed.
+  - The dashboard ripple now fires only when the best block
+    increases after sync has completed — during the initial sync
+    it no longer ripples almost continuously.
+  - Polling now holds closer to its intended interval instead of
+    stretching toward ~10 seconds when RPC calls are slow.
+  - Sharing the log reads the file in the background instead of
+    on the UI thread.
+  - SECURITY.md gained a "Security notes" section (dependency
+    advisory status, design boundaries, accepted known items,
+    audit record), and all 9 usage guides now warn that a shared
+    log can contain the node's public IP address and peer
+    information.
+
 ## versionCode 8 — 2026-11-04
 - Bug fixes from a full audit of the app sources (no
   high-severity findings; five of the reported items are fixed

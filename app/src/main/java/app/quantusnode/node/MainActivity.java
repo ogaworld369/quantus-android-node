@@ -443,19 +443,31 @@ public class MainActivity extends Activity {
      * log yet (or it is empty), say so instead of opening the sheet.
      */
     private void onShareLogClicked() {
-        File logFile = new File(new File(getFilesDir(), "logs"), "node.log");
-        String logText = null;
-        try {
-            if (logFile.isFile() && logFile.length() > 0) {
-                byte[] all;
-                try (FileInputStream in = new FileInputStream(logFile)) {
-                    all = in.readAllBytes();
+        final File logFile = new File(new File(getFilesDir(), "logs"), "node.log");
+        // F-10: the log can be up to 512 KB. Reading it here, on the
+        // UI thread, made the tap visibly stutter, so the read moves
+        // to a throwaway background thread; the result is handed back
+        // to the UI thread, which alone shows the toast / share sheet.
+        new Thread(() -> {
+            String read = null;
+            try {
+                if (logFile.isFile() && logFile.length() > 0) {
+                    byte[] all;
+                    try (FileInputStream in = new FileInputStream(logFile)) {
+                        all = in.readAllBytes();
+                    }
+                    read = new String(all, StandardCharsets.UTF_8);
                 }
-                logText = new String(all, StandardCharsets.UTF_8);
+            } catch (IOException ignored) {
+                // Fall through to the "no log" message, as before.
             }
-        } catch (IOException ignored) {
-            // Fall through to the "no log" message below.
-        }
+            final String logText = read;
+            runOnUiThread(() -> shareLog(logText));
+        }, "share-log-read").start();
+    }
+
+    /** UI-thread half of share-log: the "no log" toast, or the sheet. */
+    private void shareLog(String logText) {
         if (logText == null || logText.trim().isEmpty()) {
             Toast.makeText(this, I18n.get(this, StringsTable.LOG_MISSING_NOTE),
                     Toast.LENGTH_LONG).show();
@@ -545,9 +557,20 @@ public class MainActivity extends Activity {
         highestView.setText(st.highestBlock >= 0 ? "#" + st.highestBlock : "—");
         peersView.setText(st.peers >= 0 ? String.valueOf(st.peers) : "—");
 
-        // The pulse: exactly one ripple per newly observed best block.
+        // The pulse: exactly one ripple per newly observed best block —
+        // and only when the node is no longer in its initial sync
+        // (F-12). "Changed" used to be enough, so a decrease (reorg,
+        // re-observation) emitted a ripple too, and during the initial
+        // sync the best block moved on almost every 1 s refresh, so
+        // ripples ran nearly continuously. The design is one quiet
+        // ripple when a new block arrives at the head: require an
+        // increase, and require the sync state the dashboard already
+        // displays to not be SYNCING (NodeService derives it from
+        // system_health.isSyncing and the best-vs-highest gap in
+        // system_syncState — no new state is fetched for this).
         if (!firstRefresh && st.bestBlock >= 0 && lastBestSeen >= 0
-                && st.bestBlock != lastBestSeen) {
+                && st.bestBlock > lastBestSeen
+                && st.status != NodeState.Status.SYNCING) {
             pulseView.pulse();
         }
         if (st.bestBlock >= 0) {
