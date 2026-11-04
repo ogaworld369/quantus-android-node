@@ -75,6 +75,8 @@ public class MainActivity extends Activity {
     private Switch telemetrySwitch;
     private EditText nodeNameInput;
     private Button languageButton;
+    private Button settingsLockButton;
+    private TextView settingsLockedNoteView;
     private TextView restartNoteView;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -264,6 +266,25 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT));
         root.addView(spacer(d, 14));
 
+        // 設定ロック — a mis-tap guard for the settings above, for a
+        // phone that sits somewhere running the node: while locked,
+        // the telemetry switch, the name field and the language picker
+        // are disabled. It is deliberately not an authentication
+        // feature (no PIN), and it never locks node start/stop.
+        settingsLockButton = new Button(this);
+        settingsLockButton.setOnClickListener(v -> {
+            NodeSettings.setSettingsLocked(this,
+                    !NodeSettings.settingsLocked(this));
+            applySettingsLock();
+        });
+        root.addView(settingsLockButton, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        settingsLockedNoteView = text("", 11, DIM);
+        root.addView(settingsLockedNoteView);
+        root.addView(spacer(d, 14));
+        applySettingsLock();
+
         // ログ共有 — the node's whole log lives in the app-private
         // directory and cannot be reached from outside; this button
         // is the one way out, and it only ever fires on the user's
@@ -284,6 +305,30 @@ public class MainActivity extends Activity {
         scroll.setLayoutDirection(dir);
         scroll.addView(root);
         setContentView(scroll);
+    }
+
+    /** Enable or disable the settings controls to match the lock. */
+    private void applySettingsLock() {
+        boolean locked = NodeSettings.settingsLocked(this);
+        if (telemetrySwitch != null) {
+            telemetrySwitch.setEnabled(!locked);
+        }
+        if (nodeNameInput != null) {
+            nodeNameInput.setEnabled(!locked);
+        }
+        if (languageButton != null) {
+            languageButton.setEnabled(!locked);
+        }
+        if (settingsLockButton != null) {
+            settingsLockButton.setText(I18n.get(this, locked
+                    ? StringsTable.SETTINGS_UNLOCK
+                    : StringsTable.SETTINGS_LOCK));
+        }
+        if (settingsLockedNoteView != null) {
+            settingsLockedNoteView.setText(locked
+                    ? I18n.get(this, StringsTable.SETTINGS_LOCKED_NOTE)
+                    : "");
+        }
     }
 
     /** Picker label for the currently stored language choice. */

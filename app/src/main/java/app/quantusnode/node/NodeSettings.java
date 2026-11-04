@@ -18,6 +18,11 @@ import android.content.SharedPreferences;
  *     default); otherwise one of the language tags in
  *     {@link StringsTable#TAGS}. A display preference only — it is
  *     never transmitted anywhere.
+ *   - settings lock (default OFF): a mis-tap guard for the settings
+ *     above, for a phone that sits somewhere running the node. While
+ *     locked, the settings controls are disabled in the UI. It holds
+ *     no credential and locks nothing else — node start/stop always
+ *     stays available.
  *
  * Both live in the app's private SharedPreferences and are read by
  * {@link NodeService} at launch time only, so changing them never
@@ -35,6 +40,7 @@ public final class NodeSettings {
     private static final String KEY_TELEMETRY = "telemetry_enabled";
     private static final String KEY_NODE_NAME = "node_name";
     private static final String KEY_LANGUAGE = "language";
+    private static final String KEY_SETTINGS_LOCKED = "settings_locked";
 
     /** Display names are capped so they stay sane in lists and logs. */
     private static final int MAX_NAME_CHARS = 64;
@@ -73,6 +79,15 @@ public final class NodeSettings {
 
     public static void setLanguageRaw(Context ctx, String tag) {
         prefs(ctx).edit().putString(KEY_LANGUAGE, tag == null ? "" : tag).apply();
+    }
+
+    /** Whether the settings UI is locked against accidental changes. */
+    public static boolean settingsLocked(Context ctx) {
+        return prefs(ctx).getBoolean(KEY_SETTINGS_LOCKED, false);
+    }
+
+    public static void setSettingsLocked(Context ctx, boolean locked) {
+        prefs(ctx).edit().putBoolean(KEY_SETTINGS_LOCKED, locked).apply();
     }
 
     /**
