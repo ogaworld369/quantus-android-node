@@ -11,17 +11,26 @@
   every domain means a new device starts as a fresh node with a fresh
   identity, which is the correct behavior for a node key.
 
-  (External audit follow-up, 2026-11-04, finding 2.)
+  All five domains are excluded — root, file, database, sharedpref
+  and external — so the exclusion does not depend on which storage
+  area a future version of the app happens to use.
+
+  (External audit follow-up, 2026-11-04, finding 2; domain coverage
+  completed in versionCode 14.)
 -->
 <data-extraction-rules>
     <cloud-backup>
+        <exclude domain="root" path="." />
         <exclude domain="file" path="." />
         <exclude domain="database" path="." />
         <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
     </cloud-backup>
     <device-transfer>
+        <exclude domain="root" path="." />
         <exclude domain="file" path="." />
         <exclude domain="database" path="." />
         <exclude domain="sharedpref" path="." />
+        <exclude domain="external" path="." />
     </device-transfer>
 </data-extraction-rules>

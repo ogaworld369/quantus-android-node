@@ -81,6 +81,21 @@ public class NodeService extends Service {
     private static final long LEFTOVER_WAIT_MS = 5000;
     private static final long LEFTOVER_POLL_MS = 100;
 
+    /**
+     * Serializes every pid-file operation AND the spawn sequence
+     * itself (audit finding 4, re-audit): launch() holds this lock
+     * across "wait for leftover -> spawn -> record pid", so a second
+     * launch can never slip into the gap between a process starting
+     * and its pid being on record; and the record's check-and-clear
+     * is indivisible under the same lock, so a late cleanup cannot
+     * pass the check, watch a newer session overwrite the record, and
+     * then delete the NEWER process's pid. Static on purpose: it must
+     * work across service instances (a destroyed-and-recreated service
+     * is a new object in the same process) — the same reason
+     * LogSink's lock is class-level (N-11).
+     */
+    private static final Object PID_LOCK = new Object();
+
     private final AtomicBoolean started = new AtomicBoolean(false);
     private final AtomicBoolean pollerOn = new AtomicBoolean(false);
 
@@ -111,28 +126,31 @@ public class NodeService extends Service {
 
     /**
      * The startId to hand to {@code stopSelfResult()} when this service
-     * ends itself (external audit 2026-11-04, finding 3). Recorded when
-     * the session is established — the startId of the ACTION_START that
-     * created it — and OVERWRITTEN by an ACTION_STOP for this session:
-     * the stop command is then by definition the latest command the
-     * service has received, so ending the service on its authority is
-     * always correct. If a NEWER start command has arrived since the
-     * recorded one, stopSelfResult() declines and a delayed finish from
-     * this session cannot stopForeground()/stop the service out from
-     * under the newer session.
+     * ends itself (external audit 2026-11-04, finding 3). Guarded by
+     * {@link #stateLock}: every read and write happens under it, bound
+     * to the live session, and it is updated at exactly three moments:
+     * (a) when a session is established — the startId of the
+     * ACTION_START that created it; (b) when a duplicate START arrives
+     * while that session is live — that START's startId: it is the
+     * newest start command for the same session, and the one
+     * stopSelfResult() must be given, because with the older one it
+     * would decline ("a newer start exists") and leave a node-less
+     * foreground service lingering after a natural exit; (c) when an
+     * ACTION_STOP arrives — its startId, the latest command by
+     * definition, so ending the service on its authority is always
+     * correct.
+     *
+     * The versionCode 13 version re-read this shared field at stop
+     * time, outside the lock; the re-audit showed that a session
+     * starting in that gap could lend the finishing session its
+     * (newer) startId and be stopped by it. The stop sequence now
+     * runs as one locked unit — generation re-check, stopId read,
+     * stopSelfResult(), and on acceptance stopForeground() plus the
+     * notification cancel (see {@link #stopServiceNowLocked}) — and
+     * onStartCommand takes the same lock to establish a session or
+     * refresh this value, so a START cannot interleave inside it.
      */
-    private volatile int sessionStopId = -1;
-
-    /**
-     * Wall-clock (elapsedRealtime) moment the current child process
-     * actually spawned — set inside launch() immediately after
-     * ProcessBuilder.start() returns (audit finding 7). The worker
-     * measures the child's lifetime from here, NOT from before
-     * launch(): launch() can spend seconds waiting for a previous
-     * process to exit, and folding that wait into the lifetime would
-     * mask a quick failed start and skip the linker64 retry.
-     */
-    private volatile long lastSpawnElapsedMs = -1;
+    private int sessionStopId = -1;
 
     private volatile long sessionStartElapsedMs = -1;
     private volatile long baseUptimeMs = 0;
@@ -164,7 +182,18 @@ public class NodeService extends Service {
             return START_NOT_STICKY;
         }
         if (!started.compareAndSet(false, true)) {
-            return START_NOT_STICKY; // already running: nothing to do
+            // Already running: nothing new to start. This duplicate
+            // START still becomes the live session's stop authority
+            // (finding 3, case (b) on sessionStopId): it is the newest
+            // start command delivered for this session, and if the
+            // session later ends on its own, stopSelfResult() must be
+            // given THIS startId or it declines and the service
+            // lingers. Updated under stateLock, like every other
+            // write to that field.
+            synchronized (stateLock) {
+                sessionStopId = startId;
+            }
+            return START_NOT_STICKY;
         }
 
         // Foreground first, promptly, before any heavy work.
@@ -311,23 +340,41 @@ public class NodeService extends Service {
             saveUptimeLocked();
             sessionStartElapsedMs = -1; // no live session any more
             NodeState.get().status = NodeState.Status.STOPPED;
+            // The self-stop is decided and executed inside this same
+            // locked section (finding 3, re-audit): no START can slip
+            // between the teardown above and stopSelfResult() and be
+            // torn down together with this session.
+            stopServiceNowLocked();
         }
-        stopServiceNow();
     }
 
     /**
      * End the service itself, startId-checked (external audit
-     * 2026-11-04, finding 3): stopSelfResult() performs the stop only
-     * if the recorded startId is still the most recent start command.
-     * If a newer START has arrived since — e.g. start commands queued
-     * back-to-back — it returns false and BOTH the self-stop and the
-     * stopForeground() are skipped, so a finishing old session cannot
-     * tear down the foreground state of the service a new session is
-     * about to use. When the stop does go through, the status
-     * notification is also cancelled outright (finding 5, insurance
-     * against a stale notify() landing after the stop has settled).
+     * 2026-11-04, finding 3). MUST be called with {@link #stateLock}
+     * held, as the last step of a teardown that has already
+     * re-checked its generation inside the same locked section: the
+     * stopId read here, the stopSelfResult() call and — when it
+     * accepts — stopForeground() plus the notification cancel are one
+     * locked unit, and onStartCommand takes the same lock to
+     * establish a session or refresh the stopId, so no START can
+     * interleave between the check and the act. (VersionCode 13 read
+     * the shared stopId field here, at call time and outside the
+     * lock; the re-audit showed a session starting in that gap could
+     * lend its newer startId to the finishing one and be stopped by
+     * it.)
+     *
+     * stopSelfResult() performs the stop only if the given startId is
+     * still the most recent start command. If a newer START has been
+     * delivered since, it returns false and BOTH the self-stop and
+     * the stopForeground() are skipped — the service and its
+     * foreground state belong to the newer session now, and this
+     * session stops nothing. When the stop does go through, the
+     * status notification is also cancelled outright (finding 5,
+     * insurance against a stale notify() landing after the stop has
+     * settled; the notify side is serialized on this same lock, see
+     * updateNotificationMaybe).
      */
-    private void stopServiceNow() {
+    private void stopServiceNowLocked() {
         boolean doStop = stopSelfResult(sessionStopId);
         if (doStop) {
             stopForeground(true);
@@ -365,10 +412,22 @@ public class NodeService extends Service {
         boolean triedLinker = false;
         while (started.get() && gen == sessionGen.get()) {
             Process proc = null;
+            long spawnElapsedMs = -1;
             long t0 = SystemClock.elapsedRealtime();
             AttemptCapture capture = new AttemptCapture();
             try {
-                proc = launch(bin, triedLinker, gen);
+                LaunchOutcome outcome = launch(bin, triedLinker, gen);
+                proc = outcome.process;
+                spawnElapsedMs = outcome.spawnElapsedMs;
+                if (!outcome.pidRecorded) {
+                    // Finding 4: a launch whose pid never got recorded
+                    // is one a future service instance cannot wait
+                    // for; that belongs in this attempt's evidence,
+                    // not only in the log (launch() logged it too).
+                    capture.add("[app] pid record failed for this attempt;"
+                            + " cross-instance leftover tracking is"
+                            + " degraded for this process");
+                }
             } catch (IOException e) {
                 logApp("start failed (" + (triedLinker ? "linker64" : "direct")
                         + "): " + e.getMessage());
@@ -438,13 +497,15 @@ public class NodeService extends Service {
                 clearPidFileIfMatches(running.pid());
             }
             // Finding 7: lifetime is measured from the actual spawn
-            // (recorded by launch() just after ProcessBuilder.start()),
-            // so the wait for a previous process inside launch() does
-            // not inflate it and hide a quick failed start. The pre-
-            // launch t0 remains only as a fallback for a spawn that
-            // somehow left no timestamp.
+            // (launch() hands the moment ProcessBuilder.start()
+            // returned back with the process, as a per-attempt value —
+            // it was a shared field until the re-audit), so the wait
+            // for a previous process inside launch() does not inflate
+            // it and hide a quick failed start. The pre-launch t0
+            // remains only as a fallback for a spawn that somehow left
+            // no timestamp.
             long livedMs = SystemClock.elapsedRealtime()
-                    - (lastSpawnElapsedMs >= 0 ? lastSpawnElapsedMs : t0);
+                    - (spawnElapsedMs >= 0 ? spawnElapsedMs : t0);
             logApp("node exited: code=" + code + " after " + livedMs + "ms");
             boolean quickFailure = code != 0 && livedMs < QUICK_EXIT_MS;
             // Let the drain thread flush the node's final lines into
@@ -485,7 +546,22 @@ public class NodeService extends Service {
         }
     }
 
-    private Process launch(File bin, boolean viaLinker, int gen) throws IOException {
+    /** What a successful launch() hands back to the worker. */
+    private static final class LaunchOutcome {
+        final Process process;
+        /** elapsedRealtime the moment ProcessBuilder.start() returned (finding 7). */
+        final long spawnElapsedMs;
+        /** False when the pid record could not be written (finding 4). */
+        final boolean pidRecorded;
+
+        LaunchOutcome(Process process, long spawnElapsedMs, boolean pidRecorded) {
+            this.process = process;
+            this.spawnElapsedMs = spawnElapsedMs;
+            this.pidRecorded = pidRecorded;
+        }
+    }
+
+    private LaunchOutcome launch(File bin, boolean viaLinker, int gen) throws IOException {
         String nativeDir = getApplicationInfo().nativeLibraryDir;
         String basePath = new File(getFilesDir(), "node").getAbsolutePath();
 
@@ -560,17 +636,40 @@ public class NodeService extends Service {
         // awaitLeftoverNodeProcess(), which finds the leftover either
         // via the field or via the pid file. launch() runs on this
         // session's worker thread, so the wait never blocks the UI.
-        awaitLeftoverNodeProcess();
-        Process proc = pb.start();
-        // Finding 7: the lifetime clock starts HERE, at the actual
-        // spawn — not before launch(), whose wait above could
-        // otherwise eat the quick-exit window and mask a failed start.
-        lastSpawnElapsedMs = SystemClock.elapsedRealtime();
-        // Finding 4: record the child pid so a future service instance
-        // can find (and wait for) this process after this instance is
-        // gone. Cleared by the worker when this process exits, and
-        // only if the file still names this pid.
-        writePidFile(proc.pid());
+        //
+        // The whole sequence — wait, spawn, pid record — runs inside
+        // PID_LOCK (finding 4, re-audit): without that, a second
+        // launch could pass its leftover check in the window between
+        // this child's spawn and its pid landing on record, and two
+        // nodes would race for the same database.
+        final Process proc;
+        final long spawnElapsedMs;
+        final boolean pidRecorded;
+        synchronized (PID_LOCK) {
+            awaitLeftoverNodeProcess();
+            proc = pb.start();
+            // Finding 7: the lifetime clock starts HERE, at the actual
+            // spawn — not before launch(), whose wait above could
+            // otherwise eat the quick-exit window and mask a failed
+            // start. It travels back to the worker with the process,
+            // as a per-attempt value.
+            spawnElapsedMs = SystemClock.elapsedRealtime();
+            // Finding 4: record the child pid so a future service
+            // instance can find (and wait for) this process after this
+            // instance is gone. Cleared by the worker when this process
+            // exits, and only if the file still names this pid. A
+            // failed record does NOT fail the launch — this instance
+            // still tracks the process through its Process handle; only
+            // the cross-instance courtesy degrades — but the failure
+            // is recorded, here in the log and in the attempt evidence
+            // (via the returned outcome), never silently.
+            pidRecorded = writePidFile(proc.pid());
+            if (!pidRecorded) {
+                logApp("pid record FAILED for pid " + proc.pid()
+                        + "; a future service instance cannot wait for"
+                        + " this process (this instance still tracks it)");
+            }
+        }
         // F-9: remember what this process was launched with, so the UI
         // can say "settings changed — restart to apply" when they
         // diverge — but only now that the process actually exists.
@@ -590,7 +689,7 @@ public class NodeService extends Service {
                 st.launchedNodeName = nodeName;
             }
         }
-        return proc;
+        return new LaunchOutcome(proc, spawnElapsedMs, pidRecorded);
     }
 
     // ------------------------------------------------------------------
@@ -617,6 +716,11 @@ public class NodeService extends Service {
      * with an IOException whose message (and a log line) records why,
      * instead of spawning a second node that would lose the fight for
      * ParityDB's exclusive lock.
+     *
+     * Called with {@link #PID_LOCK} held (from launch()); the pid-file
+     * reads and clears inside ride on the same lock (monitors are
+     * reentrant), which is what makes this check indivisible from the
+     * spawn that follows it.
      */
     private void awaitLeftoverNodeProcess() throws IOException {
         final Process prev = nodeProcess;
@@ -692,8 +796,16 @@ public class NodeService extends Service {
         return new File(getFilesDir(), PID_FILE_NAME);
     }
 
-    /** Record a spawned child's pid, atomically (tmp + rename). */
-    private void writePidFile(long pid) {
+    /**
+     * Record a spawned child's pid, atomically (tmp + rename), and
+     * report whether the record is in place. Called with
+     * {@link #PID_LOCK} held, as part of the spawn sequence itself.
+     * A failed record does not fail the launch — the pid file is a
+     * cross-instance courtesy and the same-instance wait still covers
+     * this process through its Process handle — but the caller
+     * records the failure; it is never silent (finding 4, re-audit).
+     */
+    private boolean writePidFile(long pid) {
         File tmp = new File(getFilesDir(), PID_FILE_NAME + ".tmp");
         boolean done = false;
         try {
@@ -702,14 +814,13 @@ public class NodeService extends Service {
             }
             done = tmp.renameTo(pidFile());
         } catch (IOException ignored) {
-            // The pid file is a cross-instance courtesy, not a launch
-            // requirement: a failed write must not fail the launch
-            // (the same-instance wait still covers this instance).
+            // Reported by the caller via the return value.
         } finally {
             if (!done) {
                 tmp.delete();
             }
         }
+        return done;
     }
 
     /** The recorded pid, or -1 when there is no usable record. */
@@ -730,10 +841,18 @@ public class NodeService extends Service {
         }
     }
 
-    /** Remove the pid file, but only while it still names this pid. */
+    /**
+     * Remove the pid file, but only while it still names this pid.
+     * The read-check-delete is indivisible under {@link #PID_LOCK}
+     * (finding 4, re-audit): without the lock, a late cleanup could
+     * pass the check, watch a newer session overwrite the record, and
+     * then delete the NEWER process's pid.
+     */
     private void clearPidFileIfMatches(long pid) {
-        if (readPidFile() == pid) {
-            pidFile().delete();
+        synchronized (PID_LOCK) {
+            if (readPidFile() == pid) {
+                pidFile().delete();
+            }
         }
     }
 
@@ -797,7 +916,12 @@ public class NodeService extends Service {
      * settled this one), a delayed finish from the old worker must not
      * overwrite the new session's state with STOPPED, rewind its
      * uptime base, or stopSelf() the service out from under it (N-2).
-     * In that case this call does nothing at all.
+     * In that case this call does nothing at all. The service
+     * self-stop is part of the same locked unit (finding 3,
+     * re-audit): generation re-check, teardown writes and
+     * stopServiceNowLocked() happen without releasing the lock in
+     * between, so a START cannot be delivered into the gap and be
+     * stopped together with this session.
      */
     private void finishAsStopped(int gen, Integer exitCode) {
         synchronized (stateLock) {
@@ -819,8 +943,8 @@ public class NodeService extends Service {
             // values, so the dashboard can still show where the node
             // got to. lastExitCode was already recorded by the worker.
             started.set(false);
+            stopServiceNowLocked();
         }
-        stopServiceNow();
     }
 
     // ------------------------------------------------------------------
@@ -1284,23 +1408,38 @@ public class NodeService extends Service {
         // check drops stale sessions, and the STOPPED check covers a
         // stop that settled without a generation change of its own.
         // (The stop paths also cancel the notification outright when
-        // they actually end the service; see stopServiceNow().)
-        if (gen != sessionGen.get()) {
-            return;
-        }
-        NodeState st = NodeState.get();
-        if (st.status == NodeState.Status.STOPPED) {
-            return;
-        }
-        String label = NodeState.label(this, st.status);
-        String key = label + "|" + st.bestBlock + "|" + st.peers;
-        if (key.equals(lastNotifText)) {
-            return;
-        }
-        lastNotifText = key;
-        NotificationManager nm = getSystemService(NotificationManager.class);
-        if (nm != null) {
-            nm.notify(NOTIF_ID, buildNotification(label));
+        // they actually end the service; see stopServiceNowLocked().)
+        //
+        // Re-audit: versionCode 13 made these checks OUTSIDE any lock,
+        // so a stop could settle — and cancel the notification —
+        // between a passed check and the notify() below, and the post
+        // would land afterwards anyway. The whole check-and-post now
+        // runs under stateLock, the same lock the stop side holds
+        // while it tears down and cancels, so check and act are
+        // serialized against the cancel: either this post completes
+        // first and the stop's cancel removes it, or the stop settles
+        // first and the checks above refuse the post. The locked
+        // section is kept to the checks and the one notify() call;
+        // nothing here calls back into the service, so no new lock
+        // ordering is introduced.
+        synchronized (stateLock) {
+            if (gen != sessionGen.get()) {
+                return;
+            }
+            NodeState st = NodeState.get();
+            if (st.status == NodeState.Status.STOPPED) {
+                return;
+            }
+            String label = NodeState.label(this, st.status);
+            String key = label + "|" + st.bestBlock + "|" + st.peers;
+            if (key.equals(lastNotifText)) {
+                return;
+            }
+            lastNotifText = key;
+            NotificationManager nm = getSystemService(NotificationManager.class);
+            if (nm != null) {
+                nm.notify(NOTIF_ID, buildNotification(label));
+            }
         }
     }
 }

@@ -5,6 +5,39 @@ shared directly by the maintainer; there is no public release yet.
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 14 — 2026-11-04
+- **Re-audit follow-ups (2026-11-04 ChatGPT re-audit of versionCode
+  13; see SECURITY.md).** The re-audit confirmed the versionCode 13
+  fixes for findings 2, 6 and 7, but found residual races in the
+  fixes for findings 3, 4 and 5. No behavior change in normal use;
+  the node binary is the versionCode 10 build.
+  - *Service stop is serialized with a per-session startId.* The
+    stop startId is bound to its session under the lifecycle lock —
+    set at session creation, refreshed by duplicate STARTs and by
+    STOP — and a finish performs the generation re-check, the
+    startId read, `stopSelfResult()` and `stopForeground()` as one
+    locked unit. A session starting in between can no longer lend
+    its startId to a finishing one, and a duplicate START can no
+    longer leave a node-less foreground service lingering after a
+    natural exit.
+  - *Pid-file operations are indivisible.* One process-wide lock is
+    held across the leftover wait, the spawn and the pid record,
+    and the record's check-and-clear runs under the same lock, so a
+    late cleanup cannot erase a newer process's pid. A failed pid
+    record is now logged and shown in the launch attempt's evidence
+    instead of passing silently; the launch itself still proceeds
+    (the process stays tracked in-process).
+  - *Notification updates are serialized.* The poller's
+    generation/state check and its `notify()` call run under the
+    same lifecycle lock the stop paths hold while cancelling the
+    notification, closing the check-then-post gap.
+  - *Data-extraction rules cover all five domains.* Root and
+    external storage join files, databases and shared preferences
+    in the cloud-backup and device-transfer exclusions.
+  - *Spawn timestamp is per-attempt.* The quick-exit lifetime clock
+    is handed back by the launch itself instead of living in a
+    shared field.
+
 ## versionCode 13 — 2026-11-04
 - **External-audit follow-ups (findings 2–7 of the 2026-11-04 ChatGPT
   audit; see SECURITY.md).** No behavior change in normal use; the
