@@ -5,8 +5,10 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -32,7 +34,9 @@ import java.util.List;
 
 /**
  * Dashboard. Dark, minimal, quiet — the node's presence ("気配"), not a
- * control panel shouting for attention.
+ * control panel shouting for attention. The layout is a stack of dark
+ * rounded cards on pure black — iOS grouped-list discipline (hairline
+ * rows, generous margins, few colours) over the same quiet concept.
  *
  * Shows: status, best/highest block, peers; a start/stop button; the
  * on-device "航跡" (track) record; the "量子ウォッチ" (quantum watch)
@@ -43,18 +47,28 @@ import java.util.List;
  * {@link StringsTable} / {@link I18n}), and a share-log button: the
  * log file lives in the app-private directory, so sharing it out is
  * a deliberate tap, never automatic. After a failed start, the note
- * under the status shows each launch attempt's record (method, exit
- * code, lived time, and what that attempt's process printed).
+ * in the details card at the bottom shows each launch attempt's
+ * record (method, exit code, lived time, and what that attempt's
+ * process printed).
  *
  * All data comes from the node on this phone via local RPC (through
  * NodeService / NodeState). Nothing here talks to the outside.
  */
 public class MainActivity extends Activity {
 
-    private static final int BG = Color.rgb(11, 14, 19);
-    private static final int TEXT = Color.rgb(205, 213, 222);
-    private static final int DIM = Color.rgb(120, 130, 142);
-    private static final int FAINT = Color.rgb(84, 94, 106);
+    // ---- Visual style ------------------------------------------------
+    // iOS dark-mode grouped-list discipline over the existing "気配"
+    // (quiet presence) concept: pure-black background, one card tone,
+    // hairline separators, generous margins, very few colours.
+    private static final int BG = Color.rgb(0, 0, 0);
+    private static final int CARD_BG = Color.rgb(0x1C, 0x1C, 0x1E);
+    private static final int FIELD_BG = Color.rgb(0x2C, 0x2C, 0x2E);
+    private static final int TEXT = Color.rgb(0xFF, 0xFF, 0xFF);
+    private static final int SECONDARY = Color.rgb(0x98, 0x98, 0x9F);
+    private static final int TERTIARY = Color.rgb(0x63, 0x63, 0x66);
+    private static final int HAIRLINE = Color.rgb(0x38, 0x38, 0x3A);
+    private static final int ACCENT = Color.rgb(0x30, 0xD1, 0x58);
+    private static final int PILL_DARK = Color.rgb(0x2C, 0x2C, 0x2E);
     /** Muted amber, used only for the "restart to apply settings" note. */
     private static final int NOTE = Color.rgb(198, 160, 92);
     private static final int REQ_NOTIF = 42;
@@ -66,6 +80,8 @@ public class MainActivity extends Activity {
     private TextView peersView;
     private TextView noteView;
     private Button toggleButton;
+    private GradientDrawable startPill;
+    private GradientDrawable stopPill;
     private TextView trackUptimeView;
     private TextView trackBlocksView;
     private TextView trackPeersView;
@@ -124,73 +140,95 @@ public class MainActivity extends Activity {
 
     private void buildUi() {
         float d = getResources().getDisplayMetrics().density;
-        int pad = (int) (24 * d);
         int dir = I18n.isRtl(this)
                 ? View.LAYOUT_DIRECTION_RTL : View.LAYOUT_DIRECTION_LTR;
 
+        // Screen: pure black, 16 dp side margins; the content is a
+        // stack of rounded cards 12 dp apart (iOS grouped-list shape).
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(pad, pad, pad, pad);
+        root.setPadding((int) (16 * d), (int) (20 * d),
+                (int) (16 * d), (int) (24 * d));
         root.setBackgroundColor(BG);
         root.setLayoutDirection(dir);
 
-        TextView title = text("Quantus Node", 15, DIM);
-        title.setTypeface(Typeface.DEFAULT, Typeface.NORMAL);
-        title.setLetterSpacing(0.18f);
+        // Header — the app name and one quiet line, above the cards.
+        TextView title = text("Quantus Node", 22, TEXT);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
         root.addView(title);
+        TextView sub = text(I18n.get(this, StringsTable.APP_SUBTITLE), 12, TERTIARY);
+        root.addView(sub, matchLp(d, 2));
 
-        TextView sub = text(I18n.get(this, StringsTable.APP_SUBTITLE), 11, FAINT);
-        root.addView(sub);
-        root.addView(spacer(d, 10));
-
+        // Status card — the pulse and the state itself, nothing else.
+        // (The per-attempt start records that used to sit here live in
+        // the details card at the bottom; see below.)
+        LinearLayout statusCard = card(d);
+        addBlock(root, statusCard, d, 16);
         pulseView = new PulseView(this);
-        root.addView(pulseView, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, (int) (170 * d)));
-
+        statusCard.addView(pulseView, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, (int) (110 * d)));
         statusView = text(I18n.get(this, StringsTable.STATUS_STOPPED), 26, TEXT);
         statusView.setGravity(Gravity.CENTER);
-        root.addView(statusView);
-        // The note carries the per-attempt start records (raw node
-        // output included) when a start fails: it is evidence, so it
-        // is set larger than the old 11sp one-liner, start-aligned
-        // with breathing room between lines, and selectable so the
-        // user can copy the exact text out.
-        noteView = text("", 13, DIM);
-        noteView.setGravity(Gravity.START);
-        noteView.setLineSpacing(0, 1.3f);
-        noteView.setTextIsSelectable(true);
-        root.addView(noteView);
-        root.addView(spacer(d, 14));
+        statusCard.addView(statusView, matchLp(d, 4));
 
-        bestView = row(root, d, I18n.get(this, StringsTable.LABEL_BEST_BLOCK));
-        highestView = row(root, d, I18n.get(this, StringsTable.LABEL_HIGHEST_BLOCK));
-        peersView = row(root, d, I18n.get(this, StringsTable.LABEL_PEERS));
-        root.addView(spacer(d, 18));
+        // Stats card — the live numbers as label/value rows.
+        LinearLayout statsCard = card(d);
+        addBlock(root, statsCard, d, 12);
+        bestView = statRow(statsCard, d,
+                I18n.get(this, StringsTable.LABEL_BEST_BLOCK), true);
+        highestView = statRow(statsCard, d,
+                I18n.get(this, StringsTable.LABEL_HIGHEST_BLOCK), false);
+        peersView = statRow(statsCard, d,
+                I18n.get(this, StringsTable.LABEL_PEERS), false);
 
+        // The one primary action: a full-width pill between the
+        // cards. Green with black text to start, dark grey with
+        // white text to stop; refresh() swaps the two prebuilt
+        // backgrounds (and the label) with the service state.
+        startPill = pill(ACCENT, d);
+        stopPill = pill(PILL_DARK, d);
         toggleButton = new Button(this);
         toggleButton.setText(I18n.get(this, StringsTable.BUTTON_START_NODE));
+        toggleButton.setTextSize(17);
+        toggleButton.setTypeface(Typeface.DEFAULT_BOLD);
+        toggleButton.setAllCaps(false);
+        toggleButton.setPadding(0, 0, 0, 0);
+        toggleButton.setStateListAnimator(null);
+        toggleButton.setBackground(startPill);
+        toggleButton.setTextColor(Color.BLACK);
         toggleButton.setOnClickListener(v -> onToggleClicked());
-        root.addView(toggleButton, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-        root.addView(spacer(d, 26));
+        LinearLayout.LayoutParams toggleLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, (int) (50 * d));
+        toggleLp.topMargin = (int) (12 * d);
+        root.addView(toggleButton, toggleLp);
 
         // 航跡 — this phone's own record, kept only on this phone.
-        root.addView(section(I18n.get(this, StringsTable.SECTION_TRACK), d));
-        trackUptimeView = row(root, d, I18n.get(this, StringsTable.LABEL_UPTIME_TOTAL));
-        trackBlocksView = row(root, d, I18n.get(this, StringsTable.LABEL_BLOCKS_OBSERVED));
-        trackPeersView = row(root, d, I18n.get(this, StringsTable.LABEL_MAX_PEERS));
-        root.addView(spacer(d, 26));
+        root.addView(sectionHeader(
+                I18n.get(this, StringsTable.SECTION_TRACK), d, 20));
+        LinearLayout trackCard = card(d);
+        addBlock(root, trackCard, d, 6);
+        trackUptimeView = statRow(trackCard, d,
+                I18n.get(this, StringsTable.LABEL_UPTIME_TOTAL), true);
+        trackBlocksView = statRow(trackCard, d,
+                I18n.get(this, StringsTable.LABEL_BLOCKS_OBSERVED), false);
+        trackPeersView = statRow(trackCard, d,
+                I18n.get(this, StringsTable.LABEL_MAX_PEERS), false);
 
         // 量子ウォッチ — local/network health now; external threat intel
         // is deliberately not fetched yet (see the stub line in refresh()).
-        root.addView(section(I18n.get(this, StringsTable.SECTION_QUANTUM_WATCH), d));
-        watchStatusView = row(root, d, I18n.get(this, StringsTable.LABEL_WATCH_OWN_SYNC));
-        watchPeersView = row(root, d, I18n.get(this, StringsTable.LABEL_WATCH_NETWORK));
-        watchBlocksView = row(root, d, I18n.get(this, StringsTable.LABEL_WATCH_BLOCKS));
-        TextView stub = text(I18n.get(this, StringsTable.WATCH_THREAT_STUB), 12, DIM);
-        root.addView(stub);
-        root.addView(spacer(d, 26));
+        root.addView(sectionHeader(
+                I18n.get(this, StringsTable.SECTION_QUANTUM_WATCH), d, 20));
+        LinearLayout watchCard = card(d);
+        addBlock(root, watchCard, d, 6);
+        watchStatusView = statRow(watchCard, d,
+                I18n.get(this, StringsTable.LABEL_WATCH_OWN_SYNC), true);
+        watchPeersView = statRow(watchCard, d,
+                I18n.get(this, StringsTable.LABEL_WATCH_NETWORK), false);
+        watchBlocksView = statRow(watchCard, d,
+                I18n.get(this, StringsTable.LABEL_WATCH_BLOCKS), false);
+        watchCard.addView(divider(d, 10));
+        TextView stub = text(I18n.get(this, StringsTable.WATCH_THREAT_STUB), 12, TERTIARY);
+        watchCard.addView(stub, matchLp(d, 10));
 
         // 設定 — telemetry is an opt-in (default OFF) and the display
         // name defaults to the generic app name. Both apply at the next
@@ -198,12 +236,21 @@ public class MainActivity extends Activity {
         // was launched with, refresh() says so instead of restarting
         // anything silently. The language choice below, in contrast,
         // applies to this UI immediately (via recreate()).
-        root.addView(section(I18n.get(this, StringsTable.SECTION_SETTINGS), d));
+        root.addView(sectionHeader(
+                I18n.get(this, StringsTable.SECTION_SETTINGS), d, 20));
+        LinearLayout settingsCard = card(d);
+        addBlock(root, settingsCard, d, 6);
 
         telemetrySwitch = new Switch(this);
         telemetrySwitch.setText(I18n.get(this, StringsTable.SETTINGS_TELEMETRY));
-        telemetrySwitch.setTextSize(13);
+        telemetrySwitch.setTextSize(15);
         telemetrySwitch.setTextColor(TEXT);
+        telemetrySwitch.setTrackTintList(new ColorStateList(
+                new int[][]{{android.R.attr.state_checked}, {}},
+                new int[]{ACCENT, Color.rgb(0x39, 0x39, 0x3D)}));
+        telemetrySwitch.setThumbTintList(new ColorStateList(
+                new int[][]{{android.R.attr.state_checked}, {}},
+                new int[]{Color.WHITE, Color.WHITE}));
         // Set the position before attaching the listener, so building
         // the UI does not itself "change" the setting.
         telemetrySwitch.setChecked(NodeSettings.telemetryEnabled(this));
@@ -211,24 +258,30 @@ public class MainActivity extends Activity {
             NodeSettings.setTelemetryEnabled(this, isChecked);
             refresh();
         });
-        root.addView(telemetrySwitch);
+        settingsCard.addView(telemetrySwitch, matchLp());
 
         TextView privacyNote = text(
-                I18n.get(this, StringsTable.SETTINGS_TELEMETRY_NOTE), 11, DIM);
-        root.addView(privacyNote);
-        root.addView(spacer(d, 10));
+                I18n.get(this, StringsTable.SETTINGS_TELEMETRY_NOTE), 12, TERTIARY);
+        settingsCard.addView(privacyNote, matchLp(d, 4));
 
+        settingsCard.addView(divider(d, 12));
         TextView nameLabel = text(
-                I18n.get(this, StringsTable.SETTINGS_DISPLAY_NAME), 12, DIM);
-        root.addView(nameLabel);
+                I18n.get(this, StringsTable.SETTINGS_DISPLAY_NAME), 13, SECONDARY);
+        settingsCard.addView(nameLabel, matchLp(d, 10));
         nodeNameInput = new EditText(this);
         nodeNameInput.setSingleLine(true);
         nodeNameInput.setInputType(InputType.TYPE_CLASS_TEXT
                 | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         nodeNameInput.setHint(NodeSettings.DEFAULT_NODE_NAME);
-        nodeNameInput.setTextSize(13);
+        nodeNameInput.setTextSize(17);
         nodeNameInput.setTextColor(TEXT);
-        nodeNameInput.setHintTextColor(FAINT);
+        nodeNameInput.setHintTextColor(TERTIARY);
+        GradientDrawable fieldBg = new GradientDrawable();
+        fieldBg.setColor(FIELD_BG);
+        fieldBg.setCornerRadius(10 * d);
+        nodeNameInput.setBackground(fieldBg);
+        nodeNameInput.setPadding((int) (12 * d), (int) (10 * d),
+                (int) (12 * d), (int) (10 * d));
         nodeNameInput.setText(NodeSettings.nodeNameRaw(this));
         nodeNameInput.addTextChangedListener(new TextWatcher() {
             @Override
@@ -245,60 +298,72 @@ public class MainActivity extends Activity {
                 refresh();
             }
         });
-        root.addView(nodeNameInput);
+        settingsCard.addView(nodeNameInput, matchLp(d, 6));
 
-        restartNoteView = text("", 11, NOTE);
-        root.addView(restartNoteView);
-        root.addView(spacer(d, 14));
+        restartNoteView = text("", 12, NOTE);
+        settingsCard.addView(restartNoteView, matchLp(d, 6));
 
+        settingsCard.addView(divider(d, 12));
         // 言語 — stored on-device only; takes effect immediately via
         // recreate(), and the service notification follows the next
         // time it is rebuilt. Language names are shown in each
         // language's own script, as platforms conventionally do.
+        LinearLayout langRow = new LinearLayout(this);
+        langRow.setOrientation(LinearLayout.HORIZONTAL);
+        langRow.setGravity(Gravity.CENTER_VERTICAL);
+        langRow.setMinimumHeight((int) (44 * d));
         TextView langLabel = text(
-                I18n.get(this, StringsTable.SETTINGS_LANGUAGE), 12, DIM);
-        root.addView(langLabel);
-        languageButton = new Button(this);
-        languageButton.setText(currentLanguageLabel());
+                I18n.get(this, StringsTable.SETTINGS_LANGUAGE), 13, SECONDARY);
+        langRow.addView(langLabel, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        languageButton = textButton(currentLanguageLabel(), d);
+        languageButton.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         languageButton.setOnClickListener(v -> showLanguageDialog());
-        root.addView(languageButton, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
+        langRow.addView(languageButton, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
-        root.addView(spacer(d, 14));
+        settingsCard.addView(langRow, matchLp(d, 4));
 
+        settingsCard.addView(divider(d, 4));
         // 設定ロック — a mis-tap guard for the settings above, for a
         // phone that sits somewhere running the node: while locked,
         // the telemetry switch, the name field and the language picker
         // are disabled. It is deliberately not an authentication
         // feature (no PIN), and it never locks node start/stop.
-        settingsLockButton = new Button(this);
+        settingsLockButton = textButton("", d);
         settingsLockButton.setOnClickListener(v -> {
             NodeSettings.setSettingsLocked(this,
                     !NodeSettings.settingsLocked(this));
             applySettingsLock();
         });
-        root.addView(settingsLockButton, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-        settingsLockedNoteView = text("", 11, DIM);
-        root.addView(settingsLockedNoteView);
-        root.addView(spacer(d, 14));
+        settingsCard.addView(settingsLockButton, matchLp());
+        settingsLockedNoteView = text("", 12, TERTIARY);
+        settingsCard.addView(settingsLockedNoteView, matchLp(d, 2));
         applySettingsLock();
 
-        // ログ共有 — the node's whole log lives in the app-private
-        // directory and cannot be reached from outside; this button
-        // is the one way out, and it only ever fires on the user's
-        // own tap (nothing is sent automatically, ever).
-        Button shareLogButton = new Button(this);
-        shareLogButton.setText(I18n.get(this, StringsTable.BUTTON_SHARE_LOG));
+        // 詳細・ログ — the fine print lives at the bottom, out of the
+        // way: the per-attempt start records (evidence after a failed
+        // start — raw node output included, selectable so the user
+        // can copy the exact text out) and the share-log action. The
+        // node's whole log lives in the app-private directory and
+        // cannot be reached from outside; the button is the one way
+        // out, and it only ever fires on the user's own tap (nothing
+        // is sent automatically, ever).
+        LinearLayout detailsCard = card(d);
+        addBlock(root, detailsCard, d, 20);
+        noteView = text("", 12, SECONDARY);
+        noteView.setGravity(Gravity.START);
+        noteView.setLineSpacing(0, 1.35f);
+        noteView.setTextIsSelectable(true);
+        detailsCard.addView(noteView, matchLp());
+        detailsCard.addView(divider(d, 10));
+        Button shareLogButton = textButton(
+                I18n.get(this, StringsTable.BUTTON_SHARE_LOG), d);
         shareLogButton.setOnClickListener(v -> onShareLogClicked());
-        root.addView(shareLogButton, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-        root.addView(spacer(d, 26));
+        detailsCard.addView(shareLogButton, matchLp(d, 4));
 
-        TextView foot = text(I18n.get(this, StringsTable.FOOTER_INFO), 10, FAINT);
-        root.addView(foot);
+        TextView foot = text(I18n.get(this, StringsTable.FOOTER_INFO), 12, TERTIARY);
+        root.addView(foot, matchLp(d, 16));
 
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(BG);
@@ -376,40 +441,110 @@ public class MainActivity extends Activity {
         return t;
     }
 
-    private LinearLayout spacer(float d, int dpHeight) {
-        LinearLayout s = new LinearLayout(this);
-        s.setLayoutParams(new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, (int) (dpHeight * d)));
-        return s;
+    /** Full-width layout params, optionally with a top margin. */
+    private LinearLayout.LayoutParams matchLp() {
+        return new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
     }
 
-    private TextView section(String label, float d) {
-        TextView t = text(label, 12, DIM);
-        t.setLetterSpacing(0.12f);
+    private LinearLayout.LayoutParams matchLp(float d, int topDp) {
+        LinearLayout.LayoutParams lp = matchLp();
+        lp.topMargin = (int) (topDp * d);
+        return lp;
+    }
+
+    /** Add a full-width block (a card) to the root with a top margin. */
+    private void addBlock(LinearLayout root, View v, float d, int topDp) {
+        root.addView(v, matchLp(d, topDp));
+    }
+
+    /** A rounded dark card: the one surface everything lives on. */
+    private LinearLayout card(float d) {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        int p = (int) (16 * d);
+        c.setPadding(p, p, p, p);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(CARD_BG);
+        bg.setCornerRadius(16 * d);
+        c.setBackground(bg);
+        return c;
+    }
+
+    /** A pill background for the primary start/stop button. */
+    private GradientDrawable pill(int color, float d) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(color);
+        g.setCornerRadius(25 * d);
+        return g;
+    }
+
+    /** A 1 px hairline separator, inset by the card's own padding. */
+    private View divider(float d, int topDp) {
+        View v = new View(this);
+        v.setBackgroundColor(HAIRLINE);
+        LinearLayout.LayoutParams lp = matchLp(d, topDp);
+        lp.height = 1;
+        v.setLayoutParams(lp);
+        return v;
+    }
+
+    /** A section heading above its card, aligned with the card's text. */
+    private TextView sectionHeader(String label, float d, int topDp) {
+        TextView t = text(label, 13, SECONDARY);
+        t.setLetterSpacing(0.08f);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = (int) (6 * d);
+        lp.topMargin = (int) (topDp * d);
+        lp.setMarginStart((int) (16 * d));
         t.setLayoutParams(lp);
         return t;
     }
 
-    /** A "label .... value" row; returns the value view to update later. */
-    private TextView row(LinearLayout root, float d, String label) {
+    /**
+     * An iOS-style "label .... value" row inside a card, with a
+     * hairline above it unless it is the card's first row; returns
+     * the value view to update later.
+     */
+    private TextView statRow(LinearLayout card, float d, String label, boolean first) {
+        if (!first) {
+            card.addView(divider(d, 0));
+        }
         LinearLayout r = new LinearLayout(this);
         r.setOrientation(LinearLayout.HORIZONTAL);
-        TextView l = text(label, 13, DIM);
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        r.setMinimumHeight((int) (44 * d));
+        TextView l = text(label, 13, SECONDARY);
         r.addView(l, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        TextView v = text("—", 13, TEXT);
+        TextView v = text("—", 17, TEXT);
         v.setGravity(Gravity.END);
-        r.addView(v);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = (int) (4 * d);
-        root.addView(r, lp);
+        r.addView(v, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        card.addView(r, matchLp());
         return v;
+    }
+
+    /**
+     * A quiet text button for secondary actions: no background, no
+     * borders — just a label with a full-height touch target.
+     */
+    private Button textButton(String label, float d) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setTextSize(15);
+        b.setTextColor(SECONDARY);
+        b.setAllCaps(false);
+        b.setBackground(null);
+        b.setPadding(0, 0, 0, 0);
+        b.setMinimumWidth(0);
+        b.setMinimumHeight((int) (44 * d));
+        b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        b.setStateListAnimator(null);
+        return b;
     }
 
     // ------------------------------------------------------------------
@@ -578,9 +713,12 @@ public class MainActivity extends Activity {
         }
         firstRefresh = false;
 
-        toggleButton.setText(st.serviceRunning
+        boolean running = st.serviceRunning;
+        toggleButton.setText(running
                 ? I18n.get(this, StringsTable.BUTTON_STOP_NODE)
                 : I18n.get(this, StringsTable.BUTTON_START_NODE));
+        toggleButton.setBackground(running ? stopPill : startPill);
+        toggleButton.setTextColor(running ? TEXT : Color.BLACK);
 
         trackUptimeView.setText(formatDuration(TrackStore.uptimeMs(this)));
         trackBlocksView.setText(String.valueOf(TrackStore.blockUpdates(this)));

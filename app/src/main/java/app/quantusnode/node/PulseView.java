@@ -16,13 +16,20 @@ import java.util.List;
  *
  * A faint still ring and a small dim centre dot are always present.
  * When (and only when) a new best block is observed, one quiet ripple
- * expands from the centre and fades out over ~2.6 s. No looping
+ * expands from the centre and fades out over ~1.6 s. No looping
  * animation, no colours shouting: if the chain is quiet, so is this view.
+ *
+ * The colour is the app's accent green (#30D158) desaturated and kept
+ * at low alpha, so the pulse stays a presence, not an alert.
  */
 public class PulseView extends View {
 
-    private static final long RIPPLE_MS = 2600;
+    private static final long RIPPLE_MS = 1600;
     private static final int MAX_RIPPLES = 4;
+    // #30D158 with its saturation taken down: rgb(105, 199, 128).
+    private static final int PULSE_R = 105;
+    private static final int PULSE_G = 199;
+    private static final int PULSE_B = 128;
 
     private final List<Long> rippleStarts = new ArrayList<>();
     private final Paint ringPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -33,11 +40,11 @@ public class PulseView extends View {
         super(context);
         ringPaint.setStyle(Paint.Style.STROKE);
         ringPaint.setStrokeWidth(dp(1));
-        ringPaint.setColor(Color.argb(36, 150, 180, 170));
+        ringPaint.setColor(Color.argb(30, PULSE_R, PULSE_G, PULSE_B));
         dotPaint.setStyle(Paint.Style.FILL);
-        dotPaint.setColor(Color.argb(110, 150, 180, 170));
+        dotPaint.setColor(Color.argb(96, PULSE_R, PULSE_G, PULSE_B));
         ripplePaint.setStyle(Paint.Style.STROKE);
-        ripplePaint.setStrokeWidth(dp(1.2f));
+        ripplePaint.setStrokeWidth(dp(1.5f));
     }
 
     /** One new block was observed: emit exactly one ripple. */
@@ -85,8 +92,8 @@ public class PulseView extends View {
                 // Ease-out: quick to leave the centre, slow to disappear.
                 float eased = 1f - (1f - f) * (1f - f);
                 float r = maxR * (0.08f + 0.92f * eased);
-                int alpha = (int) (80 * (1f - f));
-                ripplePaint.setColor(Color.argb(alpha, 150, 180, 170));
+                int alpha = (int) (64 * (1f - f));
+                ripplePaint.setColor(Color.argb(alpha, PULSE_R, PULSE_G, PULSE_B));
                 canvas.drawCircle(cx, cy, r, ripplePaint);
             }
         }

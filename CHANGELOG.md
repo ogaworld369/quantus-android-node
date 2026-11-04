@@ -5,6 +5,16 @@ shared directly by the maintainer; there is no public release yet.
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 11 — 2026-11-04
+- **UI refresh (visual only).** The dashboard is reorganized in an
+  Apple-style dark grouped-list design: pure-black background,
+  rounded dark cards, iOS-settings-style label/value rows with
+  hairline separators, a large pill-shaped start/stop button, and a
+  quieter, thinner pulse ripple. Colors, spacing and typography are
+  centralized in one style block in MainActivity. No behavior,
+  wording, or displayed item changed; the node binary is the
+  versionCode 10 build.
+
 ## versionCode 10 — 2026-11-04
 - **Node binary rebuilt with security-updated dependencies.** A
   re-audit against the current RustSec database found 22 advisories
