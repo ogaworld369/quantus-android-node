@@ -67,8 +67,10 @@ Dark, minimal, quiet — the "気配" (presence) design:
   threat-intelligence half is an explicit stub — "未実装（設計メモ参照）"
   (not implemented; see the design memo, `../docs/DESIGN.md`). Nothing
   is fetched from outside.
-- **設定 (settings)**: two user settings, both stored only on the
-  device (`NodeSettings`, SharedPreferences) and read at node launch:
+- **設定 (settings)**: four user settings, all stored only on the
+  device (`NodeSettings`, SharedPreferences). The telemetry,
+  display name and language are read at node launch; the settings
+  lock is a UI-side guard:
   - **テレメトリに表示する (telemetry opt-in)** — default **off**.
     Off: the node is launched with `--no-telemetry`, exactly as before.
     On: `--no-telemetry` is omitted and the node announces itself to
@@ -97,6 +99,11 @@ Dark, minimal, quiet — the "気配" (presence) design:
     for completeness); the full table and contribution guide are in
     `../docs/I18N.md`. Numbers always render with ASCII digits in
     every language, and Arabic mirrors the layout (RTL).
+  - **設定ロック (settings lock)** — a mis-tap guard for the three
+    settings above: while it is on, their controls are disabled in
+    the UI. Default **off**. It holds no credential and locks
+    nothing else — starting and stopping the node always stays
+    available.
 
 ## Bundled native libraries (not in git)
 

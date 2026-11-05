@@ -2,6 +2,12 @@
 # Recreate / place them as described in README.md — never commit them.
 native/
 
+# Gradle builds stage the same binaries under src/main/jniLibs/
+# (build.gradle names that directory as the jniLibs source set) —
+# a staging copy of the inputs above, equally not source
+# (audit finding HYG-1, fixed versionCode 24).
+src/main/jniLibs/
+
 # Manual-pipeline build outputs
 build/
 *.apk
