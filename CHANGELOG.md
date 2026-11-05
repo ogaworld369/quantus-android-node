@@ -8,6 +8,111 @@ the first public release (published 2026-11-04).
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 24 / v0.1.4 — 2026-11-05
+- **Maintenance release: all five findings of the full-section
+  audit of v0.1.3 (three new lows — A-6, B23-B1, C23-1 — and two
+  carried over from the audit before it, HYG-1 and the DOC-5
+  remainder). Nothing is deferred this round.** No changes to
+  the node launch arguments, the database, the permissions, or
+  the bundled node binary (still the versionCode 10 build).
+  - **The orphan-recovery gate is wired to the generation
+    (low, A-6).** The versionCode 23 gate judged from values
+    captured or read earlier — above all the per-instance
+    "first session in this process" flag. A worker of a
+    DESTROYED instance, stalled before the leftover path while
+    a new instance established its own session and spawned its
+    node, could then read a pid file naming the NEW session's
+    living node, pass every captured check, and terminate a
+    process that had a living owner. launch() now hands its
+    generation to the leftover wait, and immediately before
+    any termination the gate revalidates that (a) the asking
+    worker's generation is still the current generation — a
+    torn-down session's never is — and (b) the pid record
+    still names the pid the wait began on. Either failure
+    stands the recovery down to the plain refusal that
+    predates it; every other gate condition (first session,
+    the bounded wait already served, the strict executable
+    identity, never this process itself) is unchanged, and
+    the genuine orphan of a dead app process is recovered
+    exactly as before. Stated plainly: every pid-file write
+    and clear serializes on PID_LOCK, which the leftover path
+    holds throughout, so (b) is an invariant re-assertion at
+    the kill moment — (a) is what closes the audited sequence.
+    Desk-traced through the audit's cross-instance order and
+    exercised as a predicate on the JVM (six cases).
+  - **RPC missing-field handling is now symmetric (low,
+    B23-B1).** "isSyncing" was read with a flat false default:
+    a health response that simply did not say could judge a
+    node SYNCED at head. It has a retained value now, stated
+    only by an actual JSON boolean and applied in the poll's
+    generation-checked batch — the "absent means not said"
+    principle F8 and B-1 applied to highestBlock and peers.
+    "peers" is likewise adopted only when the value actually
+    is a JSON number; a non-numeric value used to fall through
+    optInt's coercion and could overwrite the retained count
+    with a manufactured 0. Behaviour against a real node's
+    responses is unchanged. Verified at expression level over
+    a five-poll sequence (org.json cannot run on the JVM
+    here), including the poll where both fields are absent.
+  - **The string table in the docs is regenerated, and the
+    version check is mechanical (low, C23-1).** The
+    footer_info row of docs/I18N.md still showed v0.1.1 in
+    all nine languages while the app itself correctly showed
+    v0.1.3 — the table had not been regenerated since before
+    versionCode 22. The table is now regenerated from
+    StringsTable (all 441 language cells match the source),
+    and the release checklist in docs/RELEASE.md requires
+    exactly that — the current versionName present in
+    FOOTER_INFO in all nine languages, and a zero-diff
+    regeneration of the table — instead of grepping for the
+    previous version, which cannot in principle catch a
+    leftover that is two or more versions old. This bump was
+    itself run through the strengthened check.
+  - **The Gradle jniLibs staging directory is git-ignored
+    (carried over, HYG-1).** The staging copies of the node
+    binary under app/src/main/jniLibs/ (the jniLibs source
+    set build.gradle names) were covered by no ignore rule,
+    so a careless `git add -A` could have committed ~53 MB of
+    build input. `src/main/jniLibs/` is now in app/.gitignore
+    beside `native/` (verified with git check-ignore). Noted
+    as fixed here for the record: versionCode 23's entry
+    named its two deferrals, and this item was neither fixed
+    nor named there — the audit counted it as carried over.
+  - **The app README's settings section matches the code
+    (carried over, DOC-5 remainder).** It said "two user
+    settings"; NodeSettings has held four for some time.
+    The section now counts all four — telemetry opt-in,
+    display name, UI language, and the settings lock, which
+    the section did not mention at all and now describes
+    (a mis-tap guard that holds no credential and never
+    locks node start/stop).
+  - All nine FOOTER_INFO strings read v0.1.4.
+  - **Verification.** JVM, against the real compiled classes:
+    951 checks — the translation tables (49 keys × 9
+    languages, placeholder parity against the Japanese
+    source, every footer v0.1.4), the regenerated docs table
+    compared cell-by-cell (490 comparisons including keys,
+    0 mismatches; before the regeneration exactly the 9
+    footer cells differed), the sanitizing suite (the B-5
+    strips, the kept ZWNJ/ZWJ, the F11 regressions), the
+    B23-B1 poll expressions over five polls, and the A-6
+    gate predicate over six cases. API surface re-scanned
+    against the official API database (api-versions.xml,
+    superclass/interface walk): no reference resolves above
+    API 31; the only unresolved names are the two
+    invokedynamic bootstrap kinds present since versionCode
+    21, and a sensitivity control (a dummy class calling
+    InputStream.readAllBytes / Process.pid) is flagged by
+    the scan as expected. Byte-level comparison with the
+    v0.1.3 APK: same 33 entries; only classes.dex, the
+    version in AndroidManifest.xml, and the signature files
+    differ — the node binary, the CA bundle and all
+    resources are byte-identical. apksigner verifies (v3
+    scheme only, the same release certificate as v0.1.3);
+    the permissions are the usual four. Not verified on a
+    device or an emulator; a full Gradle build remains not
+    runnable in the maintainer's build VM.
+
 ## versionCode 23 / v0.1.3 — 2026-11-05
 - **Maintenance release: the findings of the full-section audit
   of v0.1.2 (thirteen sections; no critical or high findings,
