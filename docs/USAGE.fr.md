@@ -9,7 +9,7 @@ Cette application fait tourner un **nœud complet non validateur** du Quantus Ne
 ## Prérequis
 
 - Android 12 ou plus récent, appareil arm64
-- Espace libre : la base de données du nœud est élaguée (seuls les 256 derniers blocs sont conservés), donc conçue pour rester petite. La taille exacte sur l'appareil est encore en cours de mesure — à titre indicatif, gardez environ 10 Go libres pour la première synchronisation
+- Espace libre : la base de données du nœud est élaguée (seuls les 256 derniers blocs sont conservés), donc elle reste petite. Mesuré sur un Pixel 9a après une synchronisation complète (2026-11-05) : 1,30 Go au total (96 Mo d'application + 1,20 Go de données du nœud). À titre indicatif, gardez au moins environ 3 Go libres
 - Une connexion internet. Le Wi-Fi est fortement recommandé pour la première synchronisation (voir ci-dessous)
 
 Vérifié jusqu'ici : **Pixel 9a sous GrapheneOS**. Les autres appareils devraient fonctionner, mais ils ne sont pas vérifiés. Si vous l'essayez sur un autre modèle, signalez le résultat (que cela fonctionne ou non) dans une Issue GitHub — la liste des appareils vérifiés grandit grâce à ces rapports.

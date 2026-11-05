@@ -9,7 +9,7 @@ This app runs a **non-validator full node** for Quantus Network (QTC mainnet) on
 ## Requirements
 
 - Android 12 or later, arm64 device
-- Free storage: the node database is pruned (only the latest 256 blocks are kept), so it is designed to stay small. The exact on-device size is still being measured — as a guide, keep about 10 GB free for the first sync
+- Free storage: the node database is pruned (only the latest 256 blocks are kept), so it stays small. Measured on a Pixel 9a after a full sync (2026-11-05): 1.30 GB in total (96 MB app + 1.20 GB of node data). As a guide, keep at least about 3 GB free
 - An internet connection. Wi-Fi is strongly recommended for the first sync (see below)
 
 Verified so far: **Pixel 9a running GrapheneOS**. Other devices are expected to work but are unverified. If you try it on another model, please report the result (working or not) as a GitHub Issue — the verified list grows from those reports.
