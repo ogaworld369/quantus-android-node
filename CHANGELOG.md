@@ -8,6 +8,153 @@ the first public release (published 2026-11-04).
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 23 / v0.1.3 — 2026-11-05
+- **Maintenance release: the findings of the full-section audit
+  of v0.1.2 (thirteen sections; no critical or high findings,
+  three medium and seventeen low). The three mediums and the
+  consequential lows are fixed here; two lows are deferred and
+  named at the end.** No changes to the node launch arguments,
+  the database, the permissions, or the bundled node binary
+  (still the versionCode 10 build).
+  - **The cancelled-start fix of v0.1.2 is now complete
+    (medium, A-1).** The bounded wait for the destroyed child
+    returned an outcome the teardown never looked at: the pid
+    record was cleared unconditionally, so a child that outlived
+    the 5-second bound (or an interrupt cut the wait short) lost
+    its record after all — reopening, for exactly those cases,
+    the double-start the wait was meant to close. The wait now
+    reports whether the exit was confirmed, and the record is
+    cleared only then; otherwise it stays, and a later launch
+    waits on the process through the usual leftover path, whose
+    own refusal bounds the outcome. Verified on the JVM with
+    real processes, including a child that ignores SIGTERM and
+    an interrupted wait.
+  - **The in-app footer shows the real version again (medium,
+    DOC-1).** v0.1.2 shipped with "v0.1.1" in the footer of all
+    nine languages — the same staleness class versionCode 21
+    fixed, reintroduced because the version bump missed the
+    string table. All nine footers now read v0.1.3, and the
+    release checklist (docs/RELEASE.md) names the footer as a
+    bump item with a mechanical grep check.
+  - **The usage guides describe the present again (medium,
+    DOC-2).** All nine USAGE files still described the v0.1.0
+    state — how to obtain the APK ("from the maintainer for
+    now") and telemetry listing as unverified. They now state
+    the current release, point at GitHub Releases, and record
+    that listing is verified (the maintainer's node appears in
+    the official list). The guides' measured figures were
+    audited and are unchanged.
+  - **A new session starts from unknown values (low, A-2/B-2).**
+    Best/highest/peers were retained across sessions, so a new
+    session's first judgement could call it SYNCED on the old
+    session's numbers, and its STARTING screen and first
+    notification presented them as current. They are reset at
+    session establishment, with the other per-session state —
+    and the first foreground post now happens after
+    establishment, so it already describes the new session. The
+    stopped screen keeps the last session's values until the
+    next start, as before.
+  - **Missing RPC fields no longer overwrite known values
+    (low, B-1).** A health response without "peers" wrote a real
+    0 over the retained count, and a sync response without
+    "currentBlock" flipped a synced node back to SYNCING. Both
+    now follow the principle F8 set for highestBlock: an absent
+    field means "not said", and the judgement uses the retained
+    values. Verified at expression level over the audit's
+    scenarios (org.json cannot run on the JVM here).
+  - **Display-name sanitizing covers the bidi marks (low,
+    B-5).** U+200E, U+200F and U+061C (the directional marks)
+    joined the stripped set, along with the word joiner
+    (U+2060), the deprecated invisible operators (U+2061–2064)
+    and the soft hyphen (U+00AD). The zero-width non-joiner and
+    joiner remain kept, as before: they carry meaning in
+    Arabic-script and Indic names.
+  - **Sharing the log is bounded and coordinated (low, B-3).**
+    The share read used to load the whole file outside the log
+    writers' lock — a rotation mid-read could hand over a
+    partial log that looked complete, and the tail cut could
+    split a surrogate pair. It now reads at most ~3 bytes per
+    wanted char from the tail, under the writers' own class
+    lock, starts at a line boundary, and never splits a pair.
+    What is shared is unchanged: the last 100,000 chars, with
+    the omission marker when cut.
+  - **Log rotation is atomic (low, B-4).** The retained tail is
+    written to a temp file and renamed over the log, instead of
+    truncate-and-rewrite in place, which lost the whole
+    retained half if the process died mid-rotation. A failed
+    rename leaves the original untouched for the next check —
+    deliberately not a fallback to the in-place write. The
+    v0.1.2 counter seeding and line-boundary behaviour are
+    unchanged (JVM-re-verified).
+  - **Settings and track reads survive a damaged preferences
+    file (low, B-6).** The SharedPreferences getters threw
+    ClassCastException on a stored value of the wrong type; the
+    values are only written by the app itself, so that means
+    damage done outside it — the audit's stated precondition —
+    and the result was a crash in the UI or on the stop path.
+    Reads now fall back to defaults, and a failed synchronous
+    uptime commit is retried asynchronously instead of being
+    silently dropped.
+  - **Orphaned node processes can be recovered (low, A-4).**
+    If the app process died while its node child survived,
+    every later start refused for as long as the orphan lived —
+    and a node never exits on its own. Now, when the session
+    launching is the first one this process has ever
+    established (so the leftover can have no living owner), the
+    leftover was already waited on in vain, and the recorded
+    pid still strictly names this app's own node executable
+    (full-path cmdline match, never a substring, never this
+    app's own process), the orphan is terminated — a same-UID
+    kill — waited on again, and the start proceeds only once
+    it is verifiably gone. Every other leftover keeps the
+    wait-and-refuse behaviour, including leftovers of this
+    process's own sessions and service recreations inside a
+    live process: those have, or had, an owner. Implemented
+    exactly within those bounds; NOT reproduced on a device.
+  - **Build: the set-aside now covers every exit (low, A-3),
+    and the signature is verified (low, 9-1/9-2).** An invalid
+    QUANTUS_SIGNING value used to exit before the stale-APK
+    set-aside; it now sets aside both candidate outputs first.
+    build-manual.sh verifies the signed APK with apksigner
+    before it may take the final path — a failed verification
+    fails the build — and the signing comment now matches the
+    shipped artifact (v3 scheme only, verified with
+    `apksigner verify --verbose`).
+  - **Documentation record-keeping (low, DOC-3/4/5).**
+    SECURITY.md no longer speaks of public releases as future
+    (they began 2026-11-04), its audit record now covers the
+    versionCode 20 audit, the external audit of v0.1.1 and the
+    full-section audit of versionCode 22, and app/README.md's
+    present-tense values (versionName, 49 string keys) are
+    current.
+  - **Deferred, deliberately (named in the audit):** A-5 —
+    the linker64 retry also runs for a leftover-refusal
+    launch failure, adding a bounded wait and a misleading
+    "second attempt" record; B-8 — most of the dashboard's
+    per-second text updates are unconditional (the scroll
+    protection keeps this harmless in practice). Both are
+    cosmetic; neither is in this release.
+  - **Verification.** JVM, against the real compiled classes:
+    the sanitizing suite (the new strips, the kept joiners,
+    the F11 regressions), the bounded-exit wait against real
+    processes in five cases, the log sink (seeded rotation
+    614,400 B → 262,163 B with no temp file left behind,
+    under-cap no-op) and the share reader in ten cases
+    (ASCII/CJK tails, line-boundary starts, surrogate-safe
+    cut). Translations re-checked mechanically: 49 keys × 9
+    languages, all footers v0.1.3. API surface re-scanned
+    against the official API database: 619 references, none
+    outside API ≤ 31 (the only unresolved entries are the two
+    invokedynamic bootstrap artifacts every javac emits, as in
+    versionCode 21/22). Byte-level comparison with the v0.1.2
+    APK: only classes.dex, the version (two bytes in the
+    binary manifest, byte-checked), and the signature files
+    differ. Build negative tests: an invalid QUANTUS_SIGNING
+    and a missing release key both fail with the previous APK
+    already set aside. Not verified on a device or an
+    emulator; a full Gradle build remains not runnable in the
+    maintainer's build VM.
+
 ## versionCode 22 / v0.1.2 — 2026-11-05
 - **Maintenance release: the findings of the external (ChatGPT)
   audit of v0.1.1 — eleven in total, delivered in two rounds
