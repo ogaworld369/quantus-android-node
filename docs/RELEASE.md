@@ -23,6 +23,8 @@
 - [x] バージョン番号を確定する（初回公開は v0.1.0。2026-11-04、versionCode 19 / versionName 0.1.0 に確定）
 - [ ] 【版上げのたび】build-manual.sh（aapt2 の --version-code / --version-name）と build.gradle の versionCode / versionName に加えて、StringsTable の FOOTER_INFO（全9言語）の版数を新しい versionName に揃え、docs/I18N.md の「All strings」表も StringsTable から再生成して揃える。確認は機械的に: (1) 現在の versionName が FOOTER_INFO の全9言語に現れること、(2) 再生成した表と docs/I18N.md の全セル（49キー × 9言語 = 441セル）が一致すること（diff ゼロ）。旧 versionName の grep は補助に留める — 直前版でない版数（2版前など）の残留は「旧版数」の grep では原理的に捕捉できない（vc22 / v0.1.2 でフッターが v0.1.1 のまま出荷された DOC-1 と、vc23 / v0.1.3 で I18N.md のフッター行が v0.1.1 のまま残った C23-1 の再発防止 — 全セクション監査）
 
+- [ ] 【版上げのたび】旧 versionName と旧 versionCode を全追跡テキストファイルで検索し、ヒットを1件ずつ分類する。履歴記録（CHANGELOG、過去の公開記録、監査記録）は残してよいが、現在形の主張は新しい版を指していなければならない。対象の例: USAGE 全9ファイル冒頭のステータス行、SECURITY.md の「current release」、app/README.md 冒頭の仕様サマリ（versionName / versionCode）。フッター表記（FOOTER_INFO）と docs/I18N.md 生成表は上の項目で機械確認するため、ここでは重ねて扱わない（vc24 / v0.1.4 公開後の全体点検で、USAGE 全9ファイル・SECURITY.md・app/README.md に v0.1.3 を現行とする記述が残っていたことへの再発防止）
+
 ## Gate 3: 署名
 
 - [x] 配布専用のリリース鍵を生成する（debug 鍵は使わない）（2026-11-04 実施。詳細は後述「署名鍵の置き場所と正式署名ビルドの手順」）
@@ -51,7 +53,7 @@
 
 - [x] GitHub Release を作成する（タグ v0.1.0、APK とチェックサムを添付）（2026-11-04 22:50 に公開済み。https://github.com/ogaworld369/quantus-android-node/releases/tag/v0.1.0。本人の依頼で助手がブラウザ経由で代行作成）
 - [x] リリースノートを用意する: 概要、要件、既知の制限、フィードバック方法（Issue テンプレートへの導線）（v0.1.0 の完成文を用意し、公開時に本文へ掲載済み）
-- [ ] コミュニティ向け告知文の下書きを用意する（過剰な宣伝にせず、テスト版であることを正直に書く）
+- [ ] コミュニティ向け告知文の下書きを用意する（過剰な宣伝にせず、テスト版であることを正直に書く）（定常項目として版のたびに実施するもので、完了で消す項目ではない: v0.1.1〜v0.1.4 はいずれも下書きを用意し本人へ提示済み。投稿するかどうかは本人の判断）
 - [x] v0.1.2（versionCode 22）を公開する（2026-11-05 22:29 に公開済み・Latest。https://github.com/ogaworld369/quantus-android-node/releases/tag/v0.1.2。ChatGPT 外部監査の全11件への対応版で、リリースノートも用意し公開時に本文へ掲載済み。APK の SHA-256 は `7c196901d0160a6035bf931eb8bc69fbbf13e4ea17c9510e2891be7ac0548b7f`（55,700,181 bytes）で公開ページのアセット digest と一致を確認。実機では v0.1.1 への上書き→先端復帰と開始直後の停止→即開始を確認済み）
 - [x] v0.1.3（versionCode 23）を公開する（2026-11-05 23:29 に公開済み・Latest。https://github.com/ogaworld369/quantus-android-node/releases/tag/v0.1.3。vc22 全セクション監査の中3件＋実害系の低への対応版で、リリースノートも用意し公開時に本文へ掲載済み。APK の SHA-256 は `dff1df99e5fa75f253477dcae1e46c04a2cf2672c4411c88b8207cdf639680e0`（55,700,181 bytes）で公開ページのアセット digest と一致を確認。実機では v0.1.2 への上書き→先端復帰と停止→即開始、フッターの v0.1.3 表示を確認済み）
 - [x] v0.1.4（versionCode 24）を公開する（2026-11-05 23:59 に公開済み・Latest。https://github.com/ogaworld369/quantus-android-node/releases/tag/v0.1.4。タグ対象は main コミット 67e39b4c。vc23 全セクション監査の全5件（新規の低3件＋持ち越し2件）への対応版で見送りなし、リリースノートも用意し公開時に本文へ掲載済み。APK の SHA-256 は `f662112bc213b0ae5f9be724b5421badf39730652381ca0ae3dc22e8b1ec74b2`（55,700,181 bytes）で公開ページのアセット digest と一致を確認。実機では v0.1.3 への上書き→先端復帰と停止→即開始、フッターの v0.1.4 表示を確認済み）

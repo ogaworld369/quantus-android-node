@@ -84,7 +84,7 @@
 
 ### Phase 1 実装で確定したこと（2026-11-03）
 
-- **ノード起動引数の確定形**（CLI 仕様とノード側コードで裏取り済み）: `--chain mainnet --base-path <アプリ専用領域>/node --name quantus-android-node --state-pruning 256 --blocks-pruning 256 --rpc-port 9944 --rpc-methods safe --no-telemetry`
+- **ノード起動引数の確定形**（CLI 仕様とノード側コードで裏取り済み）: `--chain mainnet --base-path <アプリ専用領域>/node --name quantus-android-node --state-pruning 256 --blocks-pruning 256 --trie-cache-size 134217728 --max-blocks-per-request 128 --rpc-port 9944 --rpc-methods safe --no-telemetry`
   - `--chain mainnet` は必須（既定は heisenberg テストネット）。RPC は `--rpc-external` を付けないことで 127.0.0.1 のみに閉じる。プルーニングは両フラグを毎回必ず渡す（監査 P-2/P-3 の帰結）。ノード名の既定は端末を特定しない汎用名 `quantus-android-node` で、利用者が表示名を設定した場合はその値になる（後述のテレメトリ・オプトイン項参照）。
   - mainnet の chain spec には公式 telemetry エンドポイントが含まれるため、外部送信の最小化として既定では `--no-telemetry` を明示する（テレメトリ表示をオプトインした場合は外す。後述）。
   - ノードキー（Dilithium）は既定で base-path 配下（`chains/mainnet/network/secret_dilithium`）に自動生成・保存される。アプリ専用領域＋ allowBackup=false で設計 §6-2 を満たす。
