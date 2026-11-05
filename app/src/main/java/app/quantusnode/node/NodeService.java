@@ -97,6 +97,14 @@ public class NodeService extends Service {
      */
     private static final Object PID_LOCK = new Object();
 
+    /**
+     * How long the not-accepted teardown waits for the destroyed
+     * child to actually exit before clearing its pid record
+     * (versionCode 22, external audit finding 1). Matches the
+     * leftover-process wait's own bound.
+     */
+    private static final long DESTROY_EXIT_WAIT_MS = 5000;
+
     private final AtomicBoolean started = new AtomicBoolean(false);
     private final AtomicBoolean pollerOn = new AtomicBoolean(false);
 
@@ -275,6 +283,19 @@ public class NodeService extends Service {
             sessionStartElapsedMs = SystemClock.elapsedRealtime();
             lastUptimeSaveElapsedMs = sessionStartElapsedMs;
             prevBestBlock = -1;
+            // External audit round 2 (F9): the notification de-dup
+            // key must not survive into a new session. The
+            // startForeground() above posted this session's first
+            // notification directly, without going through
+            // updateNotificationMaybe, so it never updated the key;
+            // a leftover key from the previous session could then
+            // make the poller skip a post whose text never reached
+            // the shade for THIS session, leaving the notification
+            // stuck on the previous session's wording. Reset here,
+            // with the other per-session state (this block runs
+            // under stateLock, the same lock updateNotificationMaybe
+            // holds while it reads and writes the key).
+            lastNotifText = "";
         }
 
         workerThread = new Thread(() -> runNodeProcess(gen), "node-process");
@@ -560,11 +581,15 @@ public class NodeService extends Service {
             // overwrite a NEWER session's reference and then erase
             // it — orphaning a live node with the DB lock and the
             // RPC port held. A process that is not accepted never
-            // joins the session: it is destroyed here and its pid
-            // record removed (identity-checked, under PID_LOCK), so
-            // nothing of it is left for a later launch to trip over.
-            // The destroy and the pid clear run AFTER the lock is
-            // released: no stateLock -> PID_LOCK nesting is created.
+            // joins the session: it is destroyed here, its exit is
+            // awaited (bounded, outside every lock), and only then is
+            // its pid record removed (identity-checked, under
+            // PID_LOCK), so nothing of it is left for a later launch
+            // to trip over — while a launch that arrives during the
+            // wait can still find the record and wait on the process
+            // itself. The destroy, the wait and the pid clear all run
+            // AFTER the stateLock is released: no stateLock ->
+            // PID_LOCK nesting is created.
             boolean accepted;
             synchronized (stateLock) {
                 accepted = started.get() && gen == sessionGen.get();
@@ -575,6 +600,20 @@ public class NodeService extends Service {
             if (!accepted) {
                 logApp("session ended while the node was starting; destroying it");
                 proc.destroy();
+                // versionCode 22 (external audit finding 1): wait,
+                // bounded, for the destroyed child to actually exit
+                // BEFORE clearing its pid record. The record is the
+                // only handle a later launch has for the leftover
+                // wait; clearing it first let a quick stop -> start
+                // overlap the still-closing old node, and the new
+                // node then died on the old one's database lock. The
+                // wait runs outside every lock, so no new lock
+                // ordering is created: a session that starts
+                // meanwhile finds this record and waits on the
+                // process as designed — and if the bound expires
+                // first, the record simply outlives the wait and
+                // that session keeps waiting on it, also as designed.
+                waitForExitBounded(proc, DESTROY_EXIT_WAIT_MS);
                 // Clear the pid record by the pid launch() resolved
                 // for THIS attempt (versionCode 18) — never by
                 // re-probing pid(), which is exactly the call that
@@ -985,8 +1024,39 @@ public class NodeService extends Service {
     }
 
     /**
+     * Wait, at most {@code timeoutMs}, for a destroyed process to
+     * actually exit, polling {@link Process#exitValue()} — a method
+     * every Android runtime and the SDK's android.jar both have,
+     * unlike waitFor(long, TimeUnit), which this class avoids for
+     * the same bootclasspath reason as Process.pid() (see below).
+     * Returns when the process has exited or when the bound expires;
+     * an interrupt ends the wait early — the one caller is a
+     * teardown path either way.
+     */
+    private static void waitForExitBounded(Process proc, long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        for (;;) {
+            try {
+                proc.exitValue();
+                return;
+            } catch (IllegalThreadStateException stillAlive) {
+                if (System.currentTimeMillis() >= deadline) {
+                    return;
+                }
+                try {
+                    Thread.sleep(50);
+                } catch (InterruptedException e) {
+                    return;
+                }
+            }
+        }
+    }
+
+    /**
      * The pid of a spawned child, or -1 when the runtime will not
-     * say. Every Process.pid() call in this class goes through here.
+     * say. Every pid() probe in this class goes through here —
+     * reflectively, for the reason given at {@link #pidOf(Process,
+     * Throwable[])}.
      * Process.pid() is the one call in the spawn sequence whose
      * failure mode is not an IOException: on a runtime where it is
      * missing or unsupported it throws an Error (NoSuchMethodError,
@@ -1011,10 +1081,32 @@ public class NodeService extends Service {
      */
     private static long pidOf(Process p, Throwable[] errorOut) {
         try {
-            return p.pid();
+            // versionCode 22 (external audit finding 3): reflective
+            // on purpose. Process.pid() is the proven runtime hazard
+            // of this class — the target runtime throws
+            // NoSuchMethodError for it (versionCode 17 field run) —
+            // so the probe goes through getMethod: when the runtime
+            // does not offer the method at all, the lookup itself
+            // fails cleanly here, and when it does, the invocation
+            // result is used. The runtime behaviour is identical to
+            // the previous direct call in every case (the pid when
+            // available, -1 when not, the failure named via
+            // errorOut). The probe happens once per launch, so the
+            // Method is not cached.
+            Object v = Process.class.getMethod("pid").invoke(p);
+            return ((Number) v).longValue();
         } catch (Throwable t) {
+            // Unwrap the reflection wrapper, so a caller naming the
+            // failure sees the real cause (e.g. the
+            // UnsupportedOperationException a runtime raises inside
+            // pid()), exactly as it did when the call was direct.
+            Throwable report = t;
+            if (t instanceof java.lang.reflect.InvocationTargetException
+                    && t.getCause() != null) {
+                report = t.getCause();
+            }
             if (errorOut != null && errorOut.length > 0) {
-                errorOut[0] = t;
+                errorOut[0] = report;
             }
             return -1;
         }
@@ -1195,10 +1287,30 @@ public class NodeService extends Service {
         return nul >= 0 ? cmdline.substring(0, nul) : cmdline;
     }
 
+    /**
+     * Read a stream to its end with a plain chunk loop.
+     * InputStream.readAllBytes() is deliberately NOT used anywhere
+     * in this app (versionCode 22, external audit finding 2): the
+     * method only exists in the runtime from API 33, so on API
+     * 31–32 (Android 12/12L, inside this app's supported range)
+     * the call escapes as a NoSuchMethodError past every
+     * IOException catch — including on paths that run at every
+     * node start (the pid-file read).
+     */
+    private static byte[] readAllBytesCompat(InputStream in) throws IOException {
+        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        byte[] chunk = new byte[8192];
+        int n;
+        while ((n = in.read(chunk)) != -1) {
+            buf.write(chunk, 0, n);
+        }
+        return buf.toByteArray();
+    }
+
     private static byte[] readProcFile(long pid, String name) {
         try (FileInputStream in = new FileInputStream(
                 new File("/proc/" + pid, name))) {
-            return in.readAllBytes();
+            return readAllBytesCompat(in);
         } catch (IOException | RuntimeException e) {
             return null;
         }
@@ -1243,7 +1355,7 @@ public class NodeService extends Service {
             }
             byte[] data;
             try (FileInputStream in = new FileInputStream(f)) {
-                data = in.readAllBytes();
+                data = readAllBytesCompat(in);
             }
             return Long.parseLong(
                     new String(data, StandardCharsets.UTF_8).trim());
@@ -1431,11 +1543,30 @@ public class NodeService extends Service {
     private static final class AttemptCapture {
         private static final int MAX_KEPT_LINES = 30;
 
+        /**
+         * Per-line cap for the in-memory capture (versionCode 22,
+         * external audit finding 5). The file sink caps a line at
+         * 128 KB, but the capture used to keep whole lines, so one
+         * gigantic line from the node would be held in memory
+         * verbatim, times up to {@link #MAX_KEPT_LINES}. 8192 chars
+         * is far beyond any real log line and plenty for failure
+         * evidence on the dashboard.
+         */
+        private static final int MAX_LINE_CHARS = 8192;
+
         private final java.util.ArrayDeque<String> tail = new java.util.ArrayDeque<>();
         private int total = 0;
 
         synchronized void add(String line) {
             total++;
+            if (line.length() > MAX_LINE_CHARS) {
+                int keep = MAX_LINE_CHARS;
+                // Do not split a surrogate pair at the cut.
+                if (Character.isHighSurrogate(line.charAt(keep - 1))) {
+                    keep--;
+                }
+                line = line.substring(0, keep) + " …[truncated]";
+            }
             if (tail.size() >= MAX_KEPT_LINES) {
                 tail.pollFirst();
             }
@@ -1489,6 +1620,16 @@ public class NodeService extends Service {
         LogSink(File logDir) {
             logDir.mkdirs();
             this.file = new File(logDir, "node.log");
+            // versionCode 22 (external audit finding 4): seed the
+            // rotation counter with the length of the log that is
+            // already on disk. The counter used to restart at zero
+            // with every sink, so a log written by many short-lived
+            // services — each under the check interval — never got a
+            // rotation check at all and grew past the cap.
+            // rotateIfNeededLocked judges by the file's real length,
+            // so seeding the counter is all it takes for the check
+            // to run promptly on a fresh sink too.
+            this.bytesSinceCheck = file.isFile() ? file.length() : 0;
         }
 
         void write(String line) {
@@ -1535,7 +1676,7 @@ public class NodeService extends Service {
                 }
                 byte[] all;
                 try (FileInputStream in = new FileInputStream(file)) {
-                    all = in.readAllBytes();
+                    all = readAllBytesCompat(in);
                 }
                 int keep = (int) (LOG_MAX_BYTES / 2);
                 int from = Math.max(0, all.length - keep);
@@ -1574,8 +1715,19 @@ public class NodeService extends Service {
             long cycleStartMs = SystemClock.elapsedRealtime();
             try {
                 pollOnce(gen);
-            } catch (Exception ignored) {
+            } catch (Throwable ignored) {
                 // A failed poll is a state ("starting"), never a crash.
+                // Throwable, not just Exception (external audit round
+                // 2, F7, last-resort net): an Error escaping one poll
+                // — a StackOverflowError from a pathological RPC
+                // response is the known shape — must not kill this
+                // thread silently while the node keeps running.
+                // rpcCall already converts parse failures into a null
+                // result; this catch sits behind it. State stays
+                // consistent because pollOnce applies its writes in
+                // generation-checked locked batches: a poll that dies
+                // mid-way applies at most a partial batch, and the
+                // next poll re-reads everything.
             }
             saveUptimePeriodically(gen);
             long sleepMs = Math.max(0,
@@ -1653,11 +1805,29 @@ public class NodeService extends Service {
                 if (highest >= 0) {
                     st.highestBlock = highest;
                 }
-                boolean atHead = highest < 0 || current >= highest;
+                // External audit round 2 (F8): judge "at head"
+                // against st.highestBlock — the value just stored
+                // when this response carried one, and otherwise the
+                // retained last-known highest. The old expression
+                // treated a MISSING highest in this response
+                // (highest < 0) as "at head", so a syncState answer
+                // without a highestBlock flipped the status to
+                // SYNCED even mid-sync. Before the first successful
+                // read st.highestBlock is still -1, which keeps the
+                // original first-poll behaviour.
+                boolean atHead = st.highestBlock < 0
+                        || current >= st.highestBlock;
                 st.status = (isSyncing || !atHead)
                         ? NodeState.Status.SYNCING : NodeState.Status.SYNCED;
             } else {
-                st.status = isSyncing
+                // No sync state this poll: judge from the retained
+                // values with the same meaning of "at head" as above
+                // — last known best against last known highest (both
+                // -1 before the first successful read, which keeps
+                // the original behaviour there).
+                boolean atHead = st.highestBlock < 0
+                        || st.bestBlock >= st.highestBlock;
+                st.status = (isSyncing || !atHead)
                         ? NodeState.Status.SYNCING : NodeState.Status.SYNCED;
             }
         }
@@ -1697,7 +1867,19 @@ public class NodeService extends Service {
             try (java.io.InputStream in = conn.getInputStream()) {
                 resp = readBounded(in, RPC_MAX_RESPONSE_BYTES);
             }
-            JSONObject json = new JSONObject(new String(resp, StandardCharsets.UTF_8));
+            JSONObject json;
+            try {
+                json = new JSONObject(new String(resp, StandardCharsets.UTF_8));
+            } catch (Throwable t) {
+                // External audit round 2 (F7): org.json's parser is
+                // recursive, so a deeply nested response — the body
+                // may be up to 64 KiB of almost pure brackets — dies
+                // with StackOverflowError, an Error the outer
+                // catch (Exception) cannot see. A failed parse is a
+                // failed call: return null, like every other failure
+                // of this method. (The finally below still runs.)
+                return null;
+            }
             Object result = json.opt("result");
             return (result instanceof JSONObject) ? (JSONObject) result : null;
         } catch (Exception e) {
