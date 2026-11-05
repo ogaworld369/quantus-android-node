@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Network security configuration (versionCode 25, audit finding M1).
+
+  The app's only cleartext traffic is its JSON-RPC polling of the
+  node it launched, over loopback: http://127.0.0.1:9944/. Nothing
+  else in the app speaks HTTP at all — the node process itself owns
+  all peer traffic and does not go through this policy.
+
+  The platform default does NOT permit that polling: for
+  targetSdk 28+ the default network security policy denies cleartext
+  everywhere, and no loopback exception exists in the policy layer
+  before the implicit localhost configuration of Android 17
+  (API 37). The app has nevertheless been observed polling
+  successfully on the reference device class (GrapheneOS, API 36) in
+  every build since versionCode 1 — an execution-layer behaviour
+  the policy layer does not guarantee, and which cannot be relied
+  on across the supported range (API 31+). This configuration is
+  therefore explicit and minimal:
+
+    - the base configuration denies cleartext, like the default;
+    - exactly two loopback destinations are permitted: 127.0.0.1
+      (the address the app actually polls) and localhost (the same
+      destination by name, included so a future rename of the
+      endpoint does not silently re-break polling);
+    - no other destination is permitted cleartext, ever.
+
+  includeSubdomains is meaningless for an IP literal and false for
+  localhost (which has no subdomains); it is stated explicitly so
+  the intent does not depend on a reader knowing the default.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

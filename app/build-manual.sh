@@ -34,7 +34,6 @@ BT="$ANDROID_HOME/build-tools/35.0.0"
 ANDROID_JAR="$ANDROID_HOME/platforms/android-35/android.jar"
 export PATH="$JAVA_HOME/bin:$PATH"   # d8 / apksigner scripts call plain `java`
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
-WORK="$APP_DIR/build/manual"
 OUT_DIR="$APP_DIR/build/outputs/apk/debug"
 OUT_APK="$OUT_DIR/quantus-node-debug.apk"
 DEBUG_KS="$HOME/.android/debug.keystore"
@@ -65,6 +64,22 @@ elif [ "$SIGNING" != "debug" ]; then
   echo "ERROR: QUANTUS_SIGNING must be 'debug' or 'release' (got: $SIGNING)" >&2
   exit 1
 fi
+
+# versionCode 25 (audit finding M5): the work directory is private
+# to this run — named for the signing mode AND this process — where
+# versionCode 24 and earlier shared one build/manual for every run.
+# Two builds running at once in the same tree (a release build and a
+# debug build, say) used to delete each other's work directory at
+# startup and, worse, shared the intermediate signed.apk: a release
+# run could finish its verify, have the intermediate overwritten by
+# a parallel debug run, and then move a DEBUG-signed APK onto the
+# release path. With a private work directory, the file a run moves
+# to the final path is always the very file that same run signed
+# and verified (the final move itself is atomic — same filesystem).
+# The directory is removed on success; a failed build leaves its
+# own directory behind for diagnosis, never another run's. Defined
+# here, after SIGNING and OUT_APK are final.
+WORK="$APP_DIR/build/manual-$SIGNING-$$"
 
 # P-5: a failed build must never leave a stale APK at the final path
 # (it was reproduced being mistaken for the new build). Set the
@@ -119,15 +134,16 @@ sed 's|<manifest |<manifest package="app.quantusnode.node" |' \
   "$APP_DIR/src/main/AndroidManifest.xml" > "$WORK/AndroidManifest.xml"
 
 # 3) Resources + aapt2 link: base APK with binary manifest. The app's
-#    only resource is res/xml/data_extraction_rules.xml (referenced by
-#    the manifest); compile it and pass the compiled output to link.
+#    resources are the res/xml files referenced by the manifest
+#    (data_extraction_rules.xml, network_security_config.xml);
+#    compile the directory and pass the compiled output to link.
 "$BT/aapt2" compile --dir "$APP_DIR/src/main/res" -o "$WORK/res.zip"
 "$BT/aapt2" link -o "$WORK/base.apk" \
   -I "$ANDROID_JAR" \
   -A "$APP_DIR/assets" \
   --manifest "$WORK/AndroidManifest.xml" \
   --min-sdk-version 31 --target-sdk-version 35 \
-  --version-code 24 --version-name 0.1.4 \
+  --version-code 25 --version-name 0.1.5 \
   "$WORK/res.zip"
 
 # 4) Compile all app sources (plain Java + Android SDK APIs only).
@@ -187,3 +203,9 @@ fi
 
 echo "Built: $OUT_APK"
 ls -lh "$OUT_APK"
+
+# Success: this run's private work directory (finding M5) has served
+# its purpose — remove it, so per-run directories do not accumulate.
+# A failed build exits earlier under set -e and leaves its own
+# directory in place for diagnosis.
+rm -rf "$WORK"
