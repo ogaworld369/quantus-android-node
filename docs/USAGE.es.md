@@ -9,7 +9,7 @@ Esta aplicación ejecuta un **nodo completo no validador** de Quantus Network (r
 ## Requisitos
 
 - Android 12 o posterior, dispositivo arm64
-- Espacio libre: la base de datos del nodo está podada (solo se conservan los últimos 256 bloques), por lo que está diseñada para mantenerse pequeña. El tamaño exacto en el dispositivo aún se está midiendo; como guía, mantén unos 10 GB libres para la primera sincronización
+- Espacio libre: la base de datos del nodo está podada (solo se conservan los últimos 256 bloques), por lo que se mantiene pequeña. Medido en un Pixel 9a tras una sincronización completa (2026-11-05): 1,30 GB en total (96 MB de aplicación + 1,20 GB de datos del nodo). Como guía, mantén al menos unos 3 GB libres
 - Conexión a internet. Se recomienda encarecidamente Wi-Fi para la primera sincronización (ver más abajo)
 
 Verificado hasta ahora: **Pixel 9a con GrapheneOS**. Se espera que otros dispositivos funcionen, pero no están verificados. Si lo pruebas en otro modelo, informa del resultado (funcione o no) en un Issue de GitHub: la lista de dispositivos verificados crece con esos informes.

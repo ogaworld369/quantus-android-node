@@ -270,10 +270,12 @@ Still not verified:
 
 - **Other devices.** Only the Pixel 9a on GrapheneOS is confirmed;
   other makers' battery savers may stop the resident service.
-- **Steady-state numbers over many hours**: the pruned database
-  size plateau, and battery/thermal behaviour after the initial
-  sync (the sync itself took the battery from 71% to 27%, including
-  time on mobile data).
+- **Steady-state numbers over many hours**: storage has its first
+  measurement — 1.30 GB in total after the full sync (96 MB app +
+  1.20 GB of node data, Pixel 9a, 2026-11-05) — but the pruned
+  database size plateau over weeks, and battery/thermal behaviour
+  after the initial sync, are still open (the sync itself took the
+  battery from 71% to 27%, including time on mobile data).
 - **Repeated stop → start cycles on device**: the races found in
   the 2026-11-04 audit are fixed in versionCode 8/9, verified by
   code inspection, not yet by an on-device soak.
