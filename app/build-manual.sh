@@ -106,7 +106,7 @@ sed 's|<manifest |<manifest package="app.quantusnode.node" |' \
   -A "$APP_DIR/assets" \
   --manifest "$WORK/AndroidManifest.xml" \
   --min-sdk-version 31 --target-sdk-version 35 \
-  --version-code 21 --version-name 0.1.1 \
+  --version-code 22 --version-name 0.1.2 \
   "$WORK/res.zip"
 
 # 4) Compile all app sources (plain Java + Android SDK APIs only).

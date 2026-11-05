@@ -26,9 +26,11 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
@@ -629,6 +631,24 @@ public class MainActivity extends Activity {
     }
 
     /**
+     * Read a stream to its end with a plain chunk loop.
+     * InputStream.readAllBytes() is deliberately not used anywhere
+     * in this app (versionCode 22, external audit finding 2): it
+     * exists only in the runtime from API 33, so on API 31–32 it
+     * escapes as a NoSuchMethodError past every IOException catch.
+     * Same helper as in NodeService.
+     */
+    private static byte[] readAllBytesCompat(InputStream in) throws IOException {
+        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        byte[] chunk = new byte[8192];
+        int n;
+        while ((n = in.read(chunk)) != -1) {
+            buf.write(chunk, 0, n);
+        }
+        return buf.toByteArray();
+    }
+
+    /**
      * Share the node's log file (filesDir/logs/node.log, the same
      * size-capped file NodeService writes) as plain text through the
      * system share sheet. The text travels as EXTRA_TEXT — no
@@ -647,7 +667,7 @@ public class MainActivity extends Activity {
                 if (logFile.isFile() && logFile.length() > 0) {
                     byte[] all;
                     try (FileInputStream in = new FileInputStream(logFile)) {
-                        all = in.readAllBytes();
+                        all = readAllBytesCompat(in);
                     }
                     read = new String(all, StandardCharsets.UTF_8);
                 }

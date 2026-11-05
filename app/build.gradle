@@ -22,8 +22,8 @@ android {
         applicationId 'app.quantusnode.node'
         minSdk 31
         targetSdk 35
-        versionCode 21
-        versionName '0.1.1'
+        versionCode 22
+        versionName '0.1.2'
 
         ndk {
             // arm64-v8a only: quantus-node is built for aarch64-linux-android.
@@ -52,5 +52,26 @@ android {
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main {
+            // The CA bundle lives at the module root (app/assets),
+            // where the manual build's aapt2 -A flag expects it.
+            // Point Gradle at the same place: without this, a
+            // Gradle-built APK ships without cacert.pem and
+            // telemetry TLS cannot work (external audit finding 6,
+            // versionCode 22).
+            assets.srcDirs = ['assets']
+            // The native libraries do not live in the default
+            // location either: they are staged into
+            // src/main/jniLibs/arm64-v8a before a Gradle build (see
+            // the header comment). The flat native/ directory the
+            // manual build uses cannot be expressed as a jniLibs
+            // source set — a jniLibs root must contain ABI-named
+            // subdirectories — so the staging directory is named
+            // explicitly here and the staging step stays required.
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
     }
 }

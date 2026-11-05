@@ -8,6 +8,80 @@ the first public release (published 2026-11-04).
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 22 / v0.1.2 — 2026-11-05
+- **Maintenance release: the six findings of the external
+  (ChatGPT) audit of v0.1.1 — three medium, three low — each
+  verified against the code first, and all fixed here.** No
+  changes to the node launch arguments, the database, the
+  permissions, or the bundled node binary (still the versionCode
+  10 build).
+  - **A cancelled start no longer loses track of its child
+    (medium).** When a stop arrived while the node was still
+    starting, the unaccepted child was destroyed and its pid
+    record cleared immediately, without waiting for it to exit.
+    A quick stop → start could then overlap the still-closing
+    old node, and the new node died on the old one's database
+    lock. The teardown now waits for the destroyed child to
+    actually exit — bounded at 5 seconds, polling exitValue(),
+    outside every lock — before clearing the pid record, so a
+    following launch's leftover-process wait works exactly as
+    designed. The wait and the pid-file interplay (including the
+    case where the newer session records its own pid first) were
+    desk-checked against the existing lifecycle sequences and
+    exercised on the JVM with real processes.
+  - **No more InputStream.readAllBytes() (medium).** The method
+    only exists in the runtime from API 33, but this app supports
+    API 31 (Android 12) and up: on Android 12/12L the call
+    escapes as a NoSuchMethodError past every IOException catch
+    — including in readPidFile, which runs at every node start.
+    All four call sites (pid file, /proc reads, log rotation,
+    log share) now use a plain chunk-loop reader. Not verified on
+    a real API 31–32 device (none is available); the reference
+    device runs a newer runtime, where behaviour is unchanged.
+  - **Process.pid() is probed reflectively (medium, build
+    hygiene).** The audit reported the direct call as a Gradle
+    compile blocker because the method is missing from the
+    SDK's android.jar; re-measurement here found the stub does
+    contain it, so that mechanism could not be reproduced. What
+    is documented fact: pid() is absent from the official API
+    database (api-versions.xml) at every level, and the target
+    runtime throws NoSuchMethodError for it (versionCode 17
+    field run). The probe now goes through reflection, which
+    keeps the runtime behaviour identical in every case and
+    removes the last bytecode reference to a non-API method.
+    All 345 external references of the compiled classes were
+    checked against api-versions.xml (resolving through the
+    superclass chain): apart from the two invokedynamic
+    bootstrap methods every javac emits, nothing resolves
+    outside the API ≤ 31 surface; the same check run on
+    versionCode 21 flags exactly readAllBytes (since 33) and
+    pid() (not in the database). A full Gradle assemble is
+    still not runnable in the maintainer's build VM (the
+    Gradle daemon does not start there), so Gradle compilation
+    itself remains unverified.
+  - **Log rotation now sees the existing log (low).** The
+    rotation check counter restarted at zero for every service
+    instance, so a log written by many short sessions — each
+    under the 64 KiB check interval — never got a rotation
+    check and grew past the 512 KB cap. The counter is now
+    seeded with the existing file's length; verified on the
+    JVM (a pre-grown 614,400-byte log rotates on a fresh sink's
+    first write).
+  - **Attempt capture caps line length (low).** The in-memory
+    per-attempt capture kept whole lines (the file sink caps a
+    line at 128 KB); kept lines are now truncated at 8192
+    chars with a marker. Total line counts are unchanged.
+  - **Gradle builds include the CA bundle (low).**
+    build.gradle now points the assets source set at
+    app/assets (cacert.pem), where the manual build's aapt2 -A
+    expects it; a Gradle-built APK no longer ships without it.
+    The native libraries still need the documented staging
+    into src/main/jniLibs/arm64-v8a: the flat native/ layout
+    the manual build uses cannot be expressed as a jniLibs
+    source set (its roots must contain ABI-named
+    subdirectories), so the staging directory is now named
+    explicitly and the staging step stays required.
+
 ## versionCode 21 / v0.1.1 — 2026-11-05
 - **Maintenance release: the low-severity findings of the
   2026-11-05 full audit of the published v0.1.0, fixed.** A full
