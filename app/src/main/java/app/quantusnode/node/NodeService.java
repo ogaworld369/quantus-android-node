@@ -109,6 +109,35 @@ public class NodeService extends Service {
     private final AtomicBoolean pollerOn = new AtomicBoolean(false);
 
     /**
+     * Set once any session has been established in THIS process
+     * (versionCode 23, audit finding A-4). Static on purpose, like
+     * {@link #PID_LOCK}: a destroyed-and-recreated service is a new
+     * object, but the question this answers — "could a leftover
+     * node process still have a living owner in this process?" — is
+     * about the process, not the instance. A leftover named only by
+     * the pid file, found by the FIRST session a process ever
+     * establishes, can only belong to a previous, dead incarnation
+     * of the app: that is the one case the leftover path may
+     * terminate it (see {@link #awaitLeftoverNodeProcess}). Once a
+     * session has run here, leftovers are this process's own —
+     * owned, or already destroyed by their owner — and are only
+     * ever waited on.
+     */
+    private static volatile boolean sessionEstablishedInProcess = false;
+
+    /**
+     * Whether the live session is the first one this process has
+     * established, captured under stateLock at establishment time
+     * (before {@link #sessionEstablishedInProcess} is set for it)
+     * and read by that session's worker in the leftover path — the
+     * orphan-recovery gate of audit finding A-4. A stale worker can
+     * only ever read a value captured for its own establishment or a
+     * later session's "not first", both of which err toward not
+     * killing.
+     */
+    private volatile boolean sessionIsFirstInProcess = false;
+
+    /**
      * Session generation: established when a session STARTS (before any
      * of its threads run) and handed to both the process worker and the
      * RPC poller. Every teardown (stop / finish / destroy / FGS timeout)
@@ -252,9 +281,6 @@ public class NodeService extends Service {
             }
         }
 
-        // Foreground first, promptly, before any heavy work.
-        startForegroundWith(buildNotification(
-                NodeState.label(this, NodeState.Status.STARTING)));
         // Establish the session — generation first, before either
         // thread starts — under the lifecycle lock, and hand the
         // generation to BOTH the worker and the poller. Previously the
@@ -262,14 +288,43 @@ public class NodeService extends Service {
         // after it had started, so a worker that died instantly (or
         // finished late, after a stop + fresh start) wrote state and
         // uptime for a session it did not belong to (N-2, N-3).
+        //
+        // The establishment runs BEFORE the first foreground post
+        // (versionCode 23, audit findings A-2/B-2): the block is
+        // light — no I/O beyond a preferences read — and the first
+        // notification is built from NodeState, so establishing
+        // first is what keeps the previous session's block/peers out
+        // of it. Foreground still goes up before any thread starts
+        // or any process spawns, which is all the promptness the
+        // platform asks for.
         final int gen;
         synchronized (stateLock) {
             gen = sessionGen.incrementAndGet();
             // This START created the session: its startId is the one a
             // later end-of-session uses for stopSelfResult() (finding 3).
             sessionStopId = startId;
+            // Capture BEFORE setting: the orphan-recovery gate
+            // (A-4) asks whether any session ran in this process
+            // before THIS one, and this session must not count
+            // itself.
+            sessionIsFirstInProcess = !sessionEstablishedInProcess;
+            sessionEstablishedInProcess = true;
             NodeState st = NodeState.get();
             st.status = NodeState.Status.STARTING;
+            // versionCode 23 (audit findings A-2/B-2): the retained
+            // chain values belong to the previous session. They are
+            // reset here, with the other per-session state, so the
+            // new session's first status judgement, its STARTING
+            // dashboard and its first notification never present the
+            // old session's best/highest/peers as current. (With
+            // F8's retained-value judgement, a stale highest could
+            // even mark an unsynced new session SYNCED on its first
+            // poll.) The stopped screen keeps showing the last
+            // session's values until a new start — that is this
+            // reset's placement doing exactly that, on purpose.
+            st.bestBlock = -1;
+            st.highestBlock = -1;
+            st.peers = -1;
             st.lastExitCode = null;
             st.lastNote = null;
             st.lastAttempts = java.util.Collections.emptyList();
@@ -297,6 +352,13 @@ public class NodeService extends Service {
             // holds while it reads and writes the key).
             lastNotifText = "";
         }
+
+        // Foreground now — promptly, before the threads and the
+        // process spawn, and (since versionCode 23) after the
+        // session state above has been established, so this first
+        // notification already describes THIS session.
+        startForegroundWith(buildNotification(
+                NodeState.label(this, NodeState.Status.STARTING)));
 
         workerThread = new Thread(() -> runNodeProcess(gen), "node-process");
         workerThread.start();
@@ -610,16 +672,36 @@ public class NodeService extends Service {
                 // wait runs outside every lock, so no new lock
                 // ordering is created: a session that starts
                 // meanwhile finds this record and waits on the
-                // process as designed — and if the bound expires
-                // first, the record simply outlives the wait and
-                // that session keeps waiting on it, also as designed.
-                waitForExitBounded(proc, DESTROY_EXIT_WAIT_MS);
-                // Clear the pid record by the pid launch() resolved
-                // for THIS attempt (versionCode 18) — never by
-                // re-probing pid(), which is exactly the call that
-                // does not work on the affected runtimes.
-                if (resolvedPid > 0) {
-                    clearPidFileIfMatches(resolvedPid);
+                // process as designed.
+                //
+                // versionCode 23 (audit finding A-1): the record is
+                // cleared ONLY when that exit was actually
+                // confirmed. versionCode 22 ignored the wait's
+                // outcome and cleared unconditionally, so a child
+                // that outlived the bound (or an interrupt cut the
+                // wait short) lost its record anyway — reopening,
+                // for exactly those cases, the double-start the
+                // wait was meant to close. When the exit is not
+                // confirmed the record now stays, as the comment
+                // above always claimed it did: a later launch finds
+                // it and keeps waiting on the process, and the
+                // leftover path's own refusal bounds the outcome —
+                // never a second node on the same database.
+                boolean exited = waitForExitBounded(proc, DESTROY_EXIT_WAIT_MS);
+                if (exited) {
+                    // Clear the pid record by the pid launch()
+                    // resolved for THIS attempt (versionCode 18) —
+                    // never by re-probing pid(), which is exactly
+                    // the call that does not work on the affected
+                    // runtimes.
+                    if (resolvedPid > 0) {
+                        clearPidFileIfMatches(resolvedPid);
+                    }
+                } else if (resolvedPid > 0) {
+                    logApp("destroyed child (pid " + resolvedPid + ") still"
+                            + " running after " + DESTROY_EXIT_WAIT_MS
+                            + "ms; leaving its pid record in place so a"
+                            + " later launch still waits for it");
                 }
                 return;
             }
@@ -928,11 +1010,28 @@ public class NodeService extends Service {
      *       is not an option. A pid that fails the check is stale: the
      *       record is dropped and startup proceeds at once.
      *
-     * The leftover is NEVER killed — this method only waits. If it is
-     * still alive after {@link #LEFTOVER_WAIT_MS}, the launch fails
-     * with an IOException whose message (and a log line) records why,
-     * instead of spawning a second node that would lose the fight for
+     * The leftover is waited on, not disturbed: if it is still alive
+     * after {@link #LEFTOVER_WAIT_MS}, the launch fails with an
+     * IOException whose message (and a log line) records why, instead
+     * of spawning a second node that would lose the fight for
      * ParityDB's exclusive lock.
+     *
+     * One exception, added in versionCode 23 (audit finding A-4):
+     * when the session now launching is the first one this process
+     * has ever established ({@link #sessionIsFirstInProcess}), a
+     * leftover known only through the pid file cannot have a living
+     * owner —
+     * its owning app process is dead (killed by the system, crashed,
+     * or force-stopped in a way that spared the child), and a node
+     * process does not exit on its own, so waiting would refuse
+     * every future start forever. If — and only if — the recorded
+     * pid still strictly names THIS app's own node executable (see
+     * {@link #isOwnNodeProcessStrict}), the orphan is terminated
+     * (a same-UID kill; a stranger's process is never signalled),
+     * waited on with the same bound, and only then does the launch
+     * proceed. A leftover owned by this process — tracked by object,
+     * or left by one of this process's own sessions — is never
+     * killed: it has an owner, or its owner already destroyed it.
      *
      * Called with {@link #PID_LOCK} held (from launch()); the pid-file
      * reads and clears inside ride on the same lock (monitors are
@@ -961,6 +1060,53 @@ public class NodeService extends Service {
         }
         logApp("previous node process (pid " + leftoverPid
                 + ") still exiting; waiting up to 5s");
+        if (awaitLeftoverExit(prev, leftoverPid, trackByObject)) {
+            clearPidFileIfMatches(leftoverPid);
+            return;
+        }
+        if (!trackByObject && sessionIsFirstInProcess
+                && isOwnNodeProcessStrict(leftoverPid)) {
+            // Orphan of a dead incarnation (see the method doc): it
+            // will never exit by itself, and refusing here would
+            // refuse every future start with it. Terminate it, wait
+            // with the same bound, and proceed only once it is
+            // verifiably gone — the strict identity is re-checked by
+            // the wait itself, so a pid recycled in the meantime is
+            // never mistaken for the orphan.
+            logApp("node process (pid " + leftoverPid + ") was left behind"
+                    + " by a previous incarnation of this app and has no"
+                    + " living owner; terminating it to recover");
+            try {
+                android.os.Process.killProcess((int) leftoverPid);
+            } catch (RuntimeException e) {
+                logApp("orphan termination failed for pid " + leftoverPid
+                        + ": " + e);
+            }
+            if (awaitLeftoverExit(null, leftoverPid, false)) {
+                clearPidFileIfMatches(leftoverPid);
+                logApp("orphaned node process (pid " + leftoverPid
+                        + ") terminated; proceeding with the start");
+                return;
+            }
+        }
+        logApp("previous node process (pid " + leftoverPid
+                + ") still running after 5s; not starting a second node");
+        throw new IOException("previous node process (pid " + leftoverPid
+                + ") has not exited yet; refusing to start a second node"
+                + " on the same database");
+    }
+
+    /**
+     * The bounded leftover wait itself: poll until the process is
+     * gone (tracked by its Process object when this instance holds
+     * one, by the /proc identity check otherwise) or
+     * {@link #LEFTOVER_WAIT_MS} expires. An interrupt aborts the
+     * launch exactly as it did before this was factored out.
+     *
+     * @return true when the process is verifiably gone.
+     */
+    private boolean awaitLeftoverExit(Process prev, long leftoverPid,
+                                      boolean trackByObject) throws IOException {
         long deadline = SystemClock.elapsedRealtime() + LEFTOVER_WAIT_MS;
         while (SystemClock.elapsedRealtime() < deadline) {
             try {
@@ -973,15 +1119,54 @@ public class NodeService extends Service {
             boolean alive = trackByObject
                     ? prev.isAlive() : isQuantusProcess(leftoverPid);
             if (!alive) {
-                clearPidFileIfMatches(leftoverPid);
-                return;
+                return true;
             }
         }
-        logApp("previous node process (pid " + leftoverPid
-                + ") still running after 5s; not starting a second node");
-        throw new IOException("previous node process (pid " + leftoverPid
-                + ") has not exited yet; refusing to start a second node"
-                + " on the same database");
+        return false;
+    }
+
+    /**
+     * The strict identity check behind the orphan recovery in
+     * {@link #awaitLeftoverNodeProcess} (versionCode 23, audit
+     * finding A-4): true only when /proc/&lt;pid&gt;/cmdline shows
+     * the process was started from THIS app's own node executable —
+     * argv[0] is the executable's absolute path in this app's
+     * nativeLibraryDir, or argv[0] is the system linker and argv[1]
+     * is that path (the fallback launch form). Anything else — a
+     * recycled pid, another app's process, this app's own main
+     * process — is not ours to signal. Unlike
+     * {@link #isQuantusProcess} (a substring test, used for waiting),
+     * this compares full paths, because its result authorizes a
+     * kill. Read failures read as "not ours", as there.
+     */
+    private boolean isOwnNodeProcessStrict(long pid) {
+        if (pid <= 0 || pid == android.os.Process.myPid()) {
+            return false;
+        }
+        String expected = new File(getApplicationInfo().nativeLibraryDir,
+                NODE_LIB).getAbsolutePath();
+        try (FileInputStream in = new FileInputStream(
+                new File("/proc/" + pid, "cmdline"));
+             ByteArrayOutputStream buf = new ByteArrayOutputStream()) {
+            byte[] chunk = new byte[512];
+            int n;
+            while ((n = in.read(chunk)) != -1) {
+                buf.write(chunk, 0, n);
+            }
+            String[] argv = new String(buf.toByteArray(),
+                    StandardCharsets.UTF_8).split("\0", 3);
+            if (argv.length < 1) {
+                return false;
+            }
+            if (expected.equals(argv[0])) {
+                return true;
+            }
+            return argv.length > 1
+                    && "/system/bin/linker64".equals(argv[0])
+                    && expected.equals(argv[1]);
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
     }
 
     /**
@@ -1029,24 +1214,30 @@ public class NodeService extends Service {
      * every Android runtime and the SDK's android.jar both have,
      * unlike waitFor(long, TimeUnit), which this class avoids for
      * the same bootclasspath reason as Process.pid() (see below).
-     * Returns when the process has exited or when the bound expires;
-     * an interrupt ends the wait early — the one caller is a
-     * teardown path either way.
+     *
+     * @return true only when the exit was actually confirmed. When
+     *         the bound expires — or an interrupt ends the wait
+     *         early (the interrupt status is restored) — the
+     *         process may still be alive and the caller must treat
+     *         it that way (versionCode 23, audit finding A-1: the
+     *         one caller used to ignore this distinction and
+     *         cleared the child's pid record unconditionally).
      */
-    private static void waitForExitBounded(Process proc, long timeoutMs) {
+    private static boolean waitForExitBounded(Process proc, long timeoutMs) {
         long deadline = System.currentTimeMillis() + timeoutMs;
         for (;;) {
             try {
                 proc.exitValue();
-                return;
+                return true;
             } catch (IllegalThreadStateException stillAlive) {
                 if (System.currentTimeMillis() >= deadline) {
-                    return;
+                    return false;
                 }
                 try {
                     Thread.sleep(50);
                 } catch (InterruptedException e) {
-                    return;
+                    Thread.currentThread().interrupt();
+                    return false;
                 }
             }
         }
@@ -1687,15 +1878,142 @@ public class NodeService extends Service {
                 if (from < all.length) {
                     from++;
                 }
-                try (FileOutputStream out = new FileOutputStream(file, false)) {
-                    out.write("... [app] log rotated, older half dropped ...\n"
-                            .getBytes(StandardCharsets.UTF_8));
-                    out.write(all, from, all.length - from);
+                // versionCode 23 (audit finding B-4): the rewrite is
+                // atomic — the retained tail is written to a sibling
+                // temp file and renamed over the log, never written
+                // in place. The old in-place truncate-then-write
+                // lost the whole retained half if the process was
+                // killed mid-rotation. A failed rename leaves the
+                // original untouched (still over the cap; the next
+                // check retries) — deliberately NOT a fallback to
+                // the in-place write. A temp file stranded by a kill
+                // is harmless: readers only read the log itself, and
+                // the next rotation truncates the temp on open.
+                File tmp = new File(file.getParentFile(),
+                        file.getName() + ".tmp");
+                boolean moved = false;
+                try {
+                    try (FileOutputStream out = new FileOutputStream(tmp, false)) {
+                        out.write("... [app] log rotated, older half dropped ...\n"
+                                .getBytes(StandardCharsets.UTF_8));
+                        out.write(all, from, all.length - from);
+                    }
+                    moved = tmp.renameTo(file);
+                } finally {
+                    if (!moved) {
+                        tmp.delete();
+                    }
                 }
             } catch (IOException ignored) {
                 // Same rule: never crash for the log's sake.
             }
         }
+
+        /**
+         * Read the log's tail for the share sheet (versionCode 23,
+         * audit finding B-3). Bounded — at most about 3 bytes per
+         * wanted char are read, however large the file is — and
+         * taken under the same class lock as every write and
+         * rotation, so a rotation cannot tear the read into a
+         * partial log that looks complete. The result holds at most
+         * {@code maxChars} chars; {@code truncatedOut} (when given)
+         * reports whether anything was left out. Returns null when
+         * there is no log to share.
+         */
+        static String readTailForShare(File logDir, int maxChars,
+                                       boolean[] truncatedOut) {
+            File f = new File(logDir, "node.log");
+            synchronized (LOCK) {
+                if (truncatedOut != null && truncatedOut.length > 0) {
+                    truncatedOut[0] = false;
+                }
+                if (!f.isFile()) {
+                    return null;
+                }
+                long len = f.length();
+                if (len <= 0) {
+                    return null;
+                }
+                // A UTF-16 char costs at most 3 UTF-8 bytes (BMP);
+                // a supplementary char costs 4 bytes for 2 chars.
+                // Reading 3 bytes per wanted char therefore covers
+                // the last maxChars chars whenever the file holds
+                // that many.
+                long want = Math.min(len, (long) maxChars * 3L + 64L);
+                byte[] buf = new byte[(int) want];
+                try (java.io.RandomAccessFile raf =
+                        new java.io.RandomAccessFile(f, "r")) {
+                    raf.seek(len - want);
+                    raf.readFully(buf);
+                } catch (IOException e) {
+                    return null;
+                }
+                int off = 0;
+                if (want < len) {
+                    markTruncated(truncatedOut);
+                    // Starting mid-file: drop the partial first line.
+                    // 0x0A can only ever be a newline in UTF-8 —
+                    // never part of a multi-byte sequence — so this
+                    // also drops any partial character at the head.
+                    int nl = -1;
+                    for (int i = 0; i < buf.length; i++) {
+                        if (buf[i] == (byte) '\n') {
+                            nl = i;
+                            break;
+                        }
+                    }
+                    if (nl >= 0) {
+                        off = nl + 1;
+                    } else {
+                        // No newline in the window (a single line
+                        // longer than the window): skip any partial
+                        // UTF-8 sequence at the head instead.
+                        while (off < buf.length
+                                && (buf[off] & 0xC0) == 0x80) {
+                            off++;
+                        }
+                    }
+                }
+                String s = new String(buf, off, buf.length - off,
+                        StandardCharsets.UTF_8);
+                if (s.length() > maxChars) {
+                    markTruncated(truncatedOut);
+                    int cut = s.length() - maxChars;
+                    // Do not split a surrogate pair at the cut.
+                    if (Character.isLowSurrogate(s.charAt(cut))) {
+                        cut++;
+                    }
+                    s = s.substring(cut);
+                    // Start at a line boundary where one exists in
+                    // what was kept: a shared log that begins
+                    // mid-line reads as torn. (A single line longer
+                    // than the cap has no boundary to align to and
+                    // is shared as cut.)
+                    int nl = s.indexOf('\n');
+                    if (nl >= 0 && nl + 1 < s.length()) {
+                        s = s.substring(nl + 1);
+                    }
+                }
+                return s;
+            }
+        }
+
+        private static void markTruncated(boolean[] truncatedOut) {
+            if (truncatedOut != null && truncatedOut.length > 0) {
+                truncatedOut[0] = true;
+            }
+        }
+    }
+
+    /**
+     * The share-sheet read of the node log, coordinated with the
+     * writers (versionCode 23, audit finding B-3): see
+     * {@link LogSink#readTailForShare}. Package-visible for
+     * {@link MainActivity}.
+     */
+    static String readLogTailForShare(File logDir, int maxChars,
+                                      boolean[] truncatedOut) {
+        return LogSink.readTailForShare(logDir, maxChars, truncatedOut);
     }
 
     // ------------------------------------------------------------------
@@ -1771,7 +2089,14 @@ public class NodeService extends Service {
             updateNotificationMaybe(gen);
             return;
         }
-        int peers = health.optInt("peers", 0);
+        // versionCode 23 (audit finding B-1): a field ABSENT from a
+        // response is not a value. optInt's default would have
+        // turned a missing "peers" into a real 0 and overwritten the
+        // retained count below; -1 now means "this response did not
+        // say", and the batch keeps the retained value — the same
+        // principle F8 applied to highestBlock.
+        boolean peersKnown = health.has("peers") && !health.isNull("peers");
+        int peers = peersKnown ? health.optInt("peers", 0) : -1;
         boolean isSyncing = health.optBoolean("isSyncing", false);
 
         JSONObject sync = rpcCall("system_syncState");
@@ -1787,8 +2112,10 @@ public class NodeService extends Service {
                 return; // stopped / finished while the calls were in flight
             }
             NodeState st = NodeState.get();
-            st.peers = peers;
-            TrackStore.observePeers(this, peers);
+            if (peers >= 0) {
+                st.peers = peers;
+                TrackStore.observePeers(this, peers);
+            }
             if (sync != null) {
                 if (current >= 0) {
                     if (prevBestBlock >= 0 && current > prevBestBlock) {
@@ -1815,8 +2142,25 @@ public class NodeService extends Service {
                 // SYNCED even mid-sync. Before the first successful
                 // read st.highestBlock is still -1, which keeps the
                 // original first-poll behaviour.
-                boolean atHead = st.highestBlock < 0
-                        || current >= st.highestBlock;
+                //
+                // versionCode 23 (audit finding B-1): the same
+                // principle in the other direction — when THIS
+                // response carried no currentBlock (current < 0),
+                // comparing it against the highest read "not at
+                // head" by construction and flipped a synced node
+                // back to SYNCING. Judge from the retained values
+                // instead, exactly as the no-response branch below
+                // does; the fresh comparison is used only when this
+                // response actually carried a current block (which
+                // the block above has just stored as st.bestBlock).
+                boolean atHead;
+                if (current >= 0) {
+                    atHead = st.highestBlock < 0
+                            || current >= st.highestBlock;
+                } else {
+                    atHead = st.highestBlock < 0
+                            || st.bestBlock >= st.highestBlock;
+                }
                 st.status = (isSyncing || !atHead)
                         ? NodeState.Status.SYNCING : NodeState.Status.SYNCED;
             } else {
