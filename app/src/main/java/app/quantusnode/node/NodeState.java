@@ -66,11 +66,17 @@ public final class NodeState {
 
     /**
      * One node-process launch attempt within a session. Immutable;
-     * {@link #lines} holds the tail (at most 30) of the lines this
-     * attempt's process itself printed — never the app's own log
-     * lines — and {@link #totalLines} counts all of them, so an
-     * empty {@code lines} genuinely means "the process printed
-     * nothing" and the UI can say so.
+     * {@link #lines} holds the tail (at most 30) of the lines
+     * captured for this attempt: the process's own output, plus at
+     * most two notes the app itself deliberately adds as evidence,
+     * both prefixed "[app]" so they cannot be mistaken for node
+     * output — the pid-record-failure note (versionCode 17,
+     * finding 4) and the start-error note (versionCode 17 safety
+     * net, for a launch() failure that is not an IOException).
+     * {@link #totalLines} counts every captured line, notes
+     * included; an empty {@code lines} therefore genuinely means
+     * nothing was captured at all — the process printed nothing and
+     * neither note applied — and the UI can say so.
      */
     public static final class Attempt {
         /** True when launched through /system/bin/linker64. */
@@ -79,9 +85,9 @@ public final class NodeState {
         public final long livedMs;
         /** Exit code, or null when the process never started. */
         public final Integer exitCode;
-        /** Last lines printed by this attempt's process (at most 30). */
+        /** Last lines captured for this attempt (at most 30); see the class doc. */
         public final List<String> lines;
-        /** Total lines this attempt's process printed. */
+        /** Total lines captured for this attempt, "[app]" notes included. */
         public final int totalLines;
 
         public Attempt(boolean viaLinker, long livedMs, Integer exitCode,

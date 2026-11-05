@@ -45,6 +45,15 @@ public final class NodeSettings {
     /** Display names are capped so they stay sane in lists and logs. */
     private static final int MAX_NAME_CHARS = 64;
 
+    /**
+     * Cap for the raw name as stored (versionCode 21, audit
+     * finding 10): the effective name is capped at 64 code points by
+     * {@link #sanitize} anyway, so nothing legitimate needs a longer
+     * stored value; the cap only keeps a huge pasted text out of the
+     * preferences file.
+     */
+    private static final int MAX_STORED_NAME_CHARS = 256;
+
     private NodeSettings() {
     }
 
@@ -66,7 +75,13 @@ public final class NodeSettings {
     }
 
     public static void setNodeNameRaw(Context ctx, String raw) {
-        prefs(ctx).edit().putString(KEY_NODE_NAME, raw == null ? "" : raw).apply();
+        String v = raw == null ? "" : raw;
+        if (v.codePointCount(0, v.length()) > MAX_STORED_NAME_CHARS) {
+            // Truncate on a code-point boundary, like sanitize(), so
+            // the stored value never ends in a lone surrogate.
+            v = v.substring(0, v.offsetByCodePoints(0, MAX_STORED_NAME_CHARS));
+        }
+        prefs(ctx).edit().putString(KEY_NODE_NAME, v).apply();
     }
 
     /**
@@ -92,9 +107,10 @@ public final class NodeSettings {
 
     /**
      * The name to actually pass as --name: the user's display name,
-     * sanitized (control characters stripped, trimmed, length-capped),
-     * or the generic default when nothing usable was entered. It is
-     * handed to the node as a single argv element — never via a shell.
+     * sanitized (control and invisible format characters stripped,
+     * trimmed, capped at {@link #MAX_NAME_CHARS} code points), or the
+     * generic default when nothing usable was entered. It is handed
+     * to the node as a single argv element — never via a shell.
      */
     public static String effectiveNodeName(Context ctx) {
         return sanitize(nodeNameRaw(ctx));
@@ -107,13 +123,16 @@ public final class NodeSettings {
         StringBuilder sb = new StringBuilder(raw.length());
         for (int i = 0; i < raw.length(); i++) {
             char c = raw.charAt(i);
-            if (!Character.isISOControl(c)) {
+            if (!Character.isISOControl(c) && !isInvisibleFormatChar(c)) {
                 sb.append(c);
             }
         }
         String s = sb.toString().trim();
-        if (s.length() > MAX_NAME_CHARS) {
-            s = s.substring(0, MAX_NAME_CHARS).trim();
+        if (s.codePointCount(0, s.length()) > MAX_NAME_CHARS) {
+            // Cap by code points, not UTF-16 units (versionCode 21,
+            // audit finding 3): a unit-wise cut could split a
+            // surrogate pair and leave a lone surrogate in the name.
+            s = s.substring(0, s.offsetByCodePoints(0, MAX_NAME_CHARS)).trim();
         }
         // F-6: strip leading '-' characters. The name is passed as a
         // single argv element (no shell), so there is no injection
@@ -129,5 +148,27 @@ public final class NodeSettings {
             s = s.substring(lead).trim();
         }
         return s.isEmpty() ? DEFAULT_NODE_NAME : s;
+    }
+
+    /**
+     * Invisible characters that can make a name LOOK like a different
+     * name in a list (versionCode 21, audit finding 3): the
+     * bidirectional embedding/override and isolate controls
+     * (U+202A–U+202E, U+2066–U+2069), the byte-order mark / zero-width
+     * no-break space (U+FEFF) and the zero-width space (U+200B). The
+     * display name becomes public whenever telemetry is on, so these
+     * are stripped.
+     *
+     * Deliberately NOT stripped: the zero-width non-joiner (U+200C)
+     * and zero-width joiner (U+200D). They carry meaning in
+     * Arabic-script and Indic names (and in emoji sequences), and
+     * they cannot reorder surrounding text the way the bidi controls
+     * can.
+     */
+    private static boolean isInvisibleFormatChar(char c) {
+        return (c >= 0x202A && c <= 0x202E)
+                || (c >= 0x2066 && c <= 0x2069)
+                || c == 0xFEFF
+                || c == 0x200B;
     }
 }
