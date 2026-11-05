@@ -4,7 +4,7 @@
 
 Esta aplicación ejecuta un **nodo completo no validador** de Quantus Network (red principal de QTC) en un teléfono Android. Sincroniza la cadena, verifica cada bloque por sí mismo y retransmite datos a sus pares. **No** mina y **no** tiene billetera: nunca toca frases semilla ni claves de recompensa.
 
-> Estado: v0.1.0 publicada (2026-11-04). El APK firmado está disponible en [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) con suma de verificación SHA-256. Las compilaciones de prueba anteriores las compartía directamente el mantenedor.
+> Estado: v0.1.3 publicada (2026-11-05), la versión actual. El APK firmado está disponible en [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) con suma de verificación SHA-256. Las compilaciones de prueba anteriores las compartía directamente el mantenedor.
 
 ## Requisitos
 
@@ -16,7 +16,7 @@ Verificado hasta ahora: **Pixel 9a con GrapheneOS**. Se espera que otros disposi
 
 ## Instalación
 
-1. Obtén el archivo APK (del mantenedor por ahora; de GitHub Releases cuando comiencen las publicaciones; verifica la suma SHA-256 publicada con la versión antes de instalar).
+1. Obtén el archivo APK en [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) (verifica la suma SHA-256 publicada con la versión antes de instalar).
 2. Abre el APK con tu aplicación de Archivos y permite la instalación desde esa fuente cuando Android lo pida.
 3. Instala y abre **Quantus Node**.
 
@@ -58,7 +58,7 @@ Los ajustes nunca reinician el nodo por sí solos. Si cambias algo con el nodo e
 
 - **El nodo se cierra enseguida** — toca **Compartir registro** en Ajustes y envía el registro con un Issue de GitHub (plantilla de informe de error). El registro muestra cada intento de inicio y por qué terminó.
 - **Los pares se quedan en 0** — revisa la conexión y luego Detener → Iniciar una vez.
-- **Tu nodo no aparece en la telemetría** — asegúrate de que la opción de telemetría está activada y de que reiniciaste el nodo después de activarla. (El comportamiento del listado aún se está verificando).
+- **Tu nodo no aparece en la telemetría** — asegúrate de que la opción de telemetría está activada y de que reiniciaste el nodo después de activarla. (El listado está verificado: el nodo del propio mantenedor aparece en la lista oficial).
 - **Dudas de almacenamiento** — la base de datos está podada a los últimos 256 bloques por diseño. Desinstalar la aplicación borra la base de datos y la clave de identidad del nodo; una reinstalación empieza una sincronización nueva con una identidad nueva.
 
 Preguntas, informes de dispositivos e ideas son bienvenidos como Issues de GitHub. Los problemas de seguridad siguen [SECURITY.md](../SECURITY.md) en lugar de un Issue público.

@@ -4,7 +4,7 @@
 
 This app runs a **non-validator full node** for Quantus Network (QTC mainnet) on an Android phone. It syncs the chain, verifies every block itself, and relays data to peers. It does **not** mine, and it has **no wallet** — it never touches seed phrases or reward keys.
 
-> Status: v0.1.0 released (2026-11-04). The signed APK is published on [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) with a SHA-256 checksum. Earlier test builds were shared directly by the maintainer.
+> Status: v0.1.3 released (2026-11-05), the current release. The signed APK is published on [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) with a SHA-256 checksum. Earlier test builds were shared directly by the maintainer.
 
 ## Requirements
 
@@ -16,7 +16,7 @@ Verified so far: **Pixel 9a running GrapheneOS**. Other devices are expected to 
 
 ## Install
 
-1. Get the APK file (from the maintainer for now; from GitHub Releases once public releases start — verify the SHA-256 checksum published with the release before installing).
+1. Get the APK file from [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) — verify the SHA-256 checksum published with the release before installing.
 2. Open the APK with your Files app and allow installation from that source when Android asks.
 3. Install, then open **Quantus Node**.
 
@@ -58,7 +58,7 @@ Settings never restart the node by themselves. If you change something while the
 
 - **The node exits right away** — tap **Share log** in Settings and send the log with a GitHub Issue (bug report template). The log shows each start attempt and why it ended.
 - **Peers stay at 0** — check the connection, then Stop → Start once.
-- **Your node does not appear in telemetry** — make sure the telemetry option is on and the node was restarted after turning it on. (Listing behavior is still being verified.)
+- **Your node does not appear in telemetry** — make sure the telemetry option is on and the node was restarted after turning it on. (Listing is verified working: the maintainer's own node appears in the official list.)
 - **Storage questions** — the database is pruned to the latest 256 blocks by design. Uninstalling the app deletes the database and the node's identity key; a reinstall starts a fresh sync with a new identity.
 
 Questions, device reports, and ideas are welcome as GitHub Issues. Security issues follow [SECURITY.md](../SECURITY.md) instead of a public issue.
