@@ -49,6 +49,19 @@ if [ "$SIGNING" = "release" ]; then
   OUT_DIR="$APP_DIR/build/outputs/apk/release"
   OUT_APK="$OUT_DIR/quantus-node-release.apk"
 elif [ "$SIGNING" != "debug" ]; then
+  # versionCode 23 (audit finding A-3): even this rejection honours
+  # P-5 — a failed build must never leave a stale APK at a final
+  # path. The invalid mode does not say WHICH output the user
+  # meant, so both candidate outputs are set aside before exiting.
+  for cand in "$APP_DIR/build/outputs/apk/debug/quantus-node-debug.apk" \
+              "$APP_DIR/build/outputs/apk/release/quantus-node-release.apk"; do
+    if [ -f "$cand" ]; then
+      mv -f "$cand" "$cand.prev"
+    fi
+    if [ -f "$cand.idsig" ]; then
+      mv -f "$cand.idsig" "$cand.idsig.prev"
+    fi
+  done
   echo "ERROR: QUANTUS_SIGNING must be 'debug' or 'release' (got: $SIGNING)" >&2
   exit 1
 fi
@@ -114,7 +127,7 @@ sed 's|<manifest |<manifest package="app.quantusnode.node" |' \
   -A "$APP_DIR/assets" \
   --manifest "$WORK/AndroidManifest.xml" \
   --min-sdk-version 31 --target-sdk-version 35 \
-  --version-code 22 --version-name 0.1.2 \
+  --version-code 23 --version-name 0.1.3 \
   "$WORK/res.zip"
 
 # 4) Compile all app sources (plain Java + Android SDK APIs only).
@@ -137,7 +150,10 @@ cp "$APP_DIR/native/libquantus_node.so" \
 ( cd "$WORK/stage" && zip -q "$WORK/app.apk" classes.dex )
 ( cd "$WORK/stage" && zip -q -0 "$WORK/app.apk" lib/arm64-v8a/libquantus_node.so lib/arm64-v8a/libc++_shared.so )
 
-# 7) Align (page-align .so) and sign (v1+v2+v3 via apksigner defaults).
+# 7) Align (page-align .so) and sign (apksigner defaults; the
+#    shipped APK carries a v3 signature only — verified with
+#    `apksigner verify --verbose` on the v0.1.2 release APK,
+#    versionCode 23 / audit finding 9-2).
 "$BT/zipalign" -f -p 4 "$WORK/app.apk" "$WORK/aligned.apk"
 if [ "$SIGNING" = "release" ]; then
   QUANTUS_KS_PASS="$(cat "$REL_PASS_FILE")"
@@ -153,6 +169,13 @@ else
     --ks-key-alias androiddebugkey --key-pass pass:android \
     --out "$WORK/signed.apk" "$WORK/aligned.apk"
 fi
+
+# 8) Verify what was just signed, BEFORE it may take the final
+#    path (versionCode 23, audit finding 9-1): a signing step that
+#    produced an unverifiable APK fails the build here (set -e),
+#    instead of shipping silently.
+"$BT/apksigner" verify "$WORK/signed.apk"
+echo "Signature verified: $WORK/signed.apk"
 
 # Success-only placement (P-5): only now does the new APK take the
 # final path. On any earlier failure the path stays empty and the

@@ -28,21 +28,53 @@ public final class TrackStore {
         return ctx.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
+    // versionCode 23 (audit finding B-6): the reads tolerate a
+    // stored value of the wrong type. SharedPreferences getters
+    // throw ClassCastException in that case; the values here are
+    // only ever written by this class, so a mismatch means the
+    // preferences file was damaged outside the app (the audit's
+    // stated precondition) — the right answer is the default, not
+    // a crash on the service's stop path or in the poller.
+
     public static long uptimeMs(Context ctx) {
-        return prefs(ctx).getLong(KEY_UPTIME_MS, 0L);
+        try {
+            return prefs(ctx).getLong(KEY_UPTIME_MS, 0L);
+        } catch (ClassCastException e) {
+            return 0L;
+        }
     }
 
     public static long blockUpdates(Context ctx) {
-        return prefs(ctx).getLong(KEY_BLOCK_UPDATES, 0L);
+        try {
+            return prefs(ctx).getLong(KEY_BLOCK_UPDATES, 0L);
+        } catch (ClassCastException e) {
+            return 0L;
+        }
     }
 
     public static int maxPeers(Context ctx) {
-        return prefs(ctx).getInt(KEY_MAX_PEERS, 0);
+        try {
+            return prefs(ctx).getInt(KEY_MAX_PEERS, 0);
+        } catch (ClassCastException e) {
+            return 0;
+        }
     }
 
     /** Persist a new cumulative uptime value. commit() so a kill loses little. */
     public static void saveUptimeMs(Context ctx, long value) {
-        prefs(ctx).edit().putLong(KEY_UPTIME_MS, value).commit();
+        SharedPreferences.Editor editor =
+                prefs(ctx).edit().putLong(KEY_UPTIME_MS, value);
+        if (!editor.commit()) {
+            // versionCode 23 (audit finding B-6): a failed
+            // synchronous write used to be silently dropped. The
+            // value is already updated in memory for this process;
+            // make one asynchronous attempt at the disk write
+            // instead of none. If the storage itself is broken both
+            // attempts fail, and the record simply stays at its
+            // last persisted value — visible in the numbers, not
+            // hidden by a swallowed error.
+            editor.apply();
+        }
     }
 
     /**
@@ -56,7 +88,7 @@ public final class TrackStore {
             return;
         }
         SharedPreferences p = prefs(ctx);
-        long current = p.getLong(KEY_BLOCK_UPDATES, 0L);
+        long current = blockUpdates(ctx);
         // Saturating add (TRK-07): with a stored value near
         // Long.MAX_VALUE a plain add would wrap negative and the
         // track record would collapse. Unreachable with real chain
@@ -67,9 +99,8 @@ public final class TrackStore {
     }
 
     public static void observePeers(Context ctx, int peers) {
-        SharedPreferences p = prefs(ctx);
-        if (peers > p.getInt(KEY_MAX_PEERS, 0)) {
-            p.edit().putInt(KEY_MAX_PEERS, peers).apply();
+        if (peers > maxPeers(ctx)) {
+            prefs(ctx).edit().putInt(KEY_MAX_PEERS, peers).apply();
         }
     }
 }

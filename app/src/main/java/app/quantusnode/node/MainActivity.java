@@ -26,12 +26,7 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
@@ -631,24 +626,6 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Read a stream to its end with a plain chunk loop.
-     * InputStream.readAllBytes() is deliberately not used anywhere
-     * in this app (versionCode 22, external audit finding 2): it
-     * exists only in the runtime from API 33, so on API 31–32 it
-     * escapes as a NoSuchMethodError past every IOException catch.
-     * Same helper as in NodeService.
-     */
-    private static byte[] readAllBytesCompat(InputStream in) throws IOException {
-        ByteArrayOutputStream buf = new ByteArrayOutputStream();
-        byte[] chunk = new byte[8192];
-        int n;
-        while ((n = in.read(chunk)) != -1) {
-            buf.write(chunk, 0, n);
-        }
-        return buf.toByteArray();
-    }
-
-    /**
      * Share the node's log file (filesDir/logs/node.log, the same
      * size-capped file NodeService writes) as plain text through the
      * system share sheet. The text travels as EXTRA_TEXT — no
@@ -656,31 +633,32 @@ public class MainActivity extends Activity {
      * log yet (or it is empty), say so instead of opening the sheet.
      */
     private void onShareLogClicked() {
-        final File logFile = new File(new File(getFilesDir(), "logs"), "node.log");
+        final File logDir = new File(getFilesDir(), "logs");
         // F-10: the log can be up to 512 KB. Reading it here, on the
         // UI thread, made the tap visibly stutter, so the read moves
         // to a throwaway background thread; the result is handed back
         // to the UI thread, which alone shows the toast / share sheet.
+        //
+        // versionCode 23 (audit finding B-3): the read itself goes
+        // through NodeService's coordinated reader — bounded, taken
+        // under the log writers' own lock so a rotation cannot tear
+        // it, and already cut to the share tail. This method used to
+        // read the whole file uncoordinated and cut it here, which
+        // could hand over a partial log that looked complete (and
+        // could split a surrogate pair at the cut).
+        final int shareMaxChars = 100_000;
         new Thread(() -> {
-            String read = null;
-            try {
-                if (logFile.isFile() && logFile.length() > 0) {
-                    byte[] all;
-                    try (FileInputStream in = new FileInputStream(logFile)) {
-                        all = readAllBytesCompat(in);
-                    }
-                    read = new String(all, StandardCharsets.UTF_8);
-                }
-            } catch (IOException ignored) {
-                // Fall through to the "no log" message, as before.
-            }
+            boolean[] truncated = new boolean[1];
+            String read = NodeService.readLogTailForShare(
+                    logDir, shareMaxChars, truncated);
             final String logText = read;
-            runOnUiThread(() -> shareLog(logText));
+            final boolean wasTruncated = truncated[0];
+            runOnUiThread(() -> shareLog(logText, wasTruncated));
         }, "share-log-read").start();
     }
 
     /** UI-thread half of share-log: the "no log" toast, or the sheet. */
-    private void shareLog(String logText) {
+    private void shareLog(String logText, boolean wasTruncated) {
         if (logText == null || logText.trim().isEmpty()) {
             Toast.makeText(this, I18n.get(this, StringsTable.LOG_MISSING_NOTE),
                     Toast.LENGTH_LONG).show();
@@ -693,11 +671,10 @@ public class MainActivity extends Activity {
         // crash the chooser. Share the tail — where a failed start's
         // evidence lives — when the log is large. The marker is plain
         // text like the log itself, which is unlocalized by design.
-        final int shareMaxChars = 100_000;
-        if (logText.length() > shareMaxChars) {
+        if (wasTruncated) {
             logText = "[... earlier log omitted for sharing; "
                     + "showing the last part ...]\n"
-                    + logText.substring(logText.length() - shareMaxChars);
+                    + logText;
         }
         Intent send = new Intent(Intent.ACTION_SEND);
         send.setType("text/plain");

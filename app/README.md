@@ -7,7 +7,7 @@ it has synced.
 
 - applicationId: `app.quantusnode.node`
 - minSdk 31 / targetSdk 35 / arm64-v8a only
-- versionName `0.1-mvp`
+- versionName `0.1.3` (versionCode 23; public releases began at v0.1.0)
 - Permissions (only these): `INTERNET`, `FOREGROUND_SERVICE`,
   `FOREGROUND_SERVICE_SPECIAL_USE`, `POST_NOTIFICATIONS`
 - `android:allowBackup="false"`
@@ -93,7 +93,7 @@ Dark, minimal, quiet — the "気配" (presence) design:
     Français, or "follow device settings" (the default). Applies to
     the dashboard immediately (activity recreate) and to the service
     notification the next time it is rebuilt. All strings live in
-    `StringsTable.java` (50 keys × 9 languages, mechanically checked
+    `StringsTable.java` (49 keys × 9 languages, mechanically checked
     for completeness); the full table and contribution guide are in
     `../docs/I18N.md`. Numbers always render with ASCII digits in
     every language, and Arabic mirrors the layout (RTL).
@@ -149,8 +149,11 @@ generation-unification build onward (that build is versionCode 2;
 `build-manual.sh` and `build.gradle` are kept in step). Android only
 installs an update over an existing install when the versionCode is
 strictly higher, so a fixed versionCode would silently strand testers
-on old builds. `versionName` stays `0.1-mvp` until the release gates
-in `../docs/RELEASE.md` say otherwise. versionCode 3 is the
+on old builds. `versionName` stayed `0.1-mvp` through the
+pre-release builds; the first public release (versionCode 20)
+shipped as `0.1.0`, and the versionName in `build-manual.sh` and
+`build.gradle` moves with each release since (currently `0.1.3`).
+versionCode 3 is the
 evidence build: per-attempt start records on the dashboard and a
 share-log button, for diagnosing the on-device instant-exit failure
 (node arguments and lifecycle logic unchanged). versionCode 4 is the

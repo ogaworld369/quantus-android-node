@@ -8,7 +8,7 @@ We will acknowledge reports as soon as we reasonably can and will credit reporte
 
 ## Scope notes
 - This app holds no wallet secrets by design; its only secret is the node P2P identity key.
-- There is no public release yet. When public releases begin, signed release APKs and their SHA-256 checksums will be published on the Releases page. Builds from other sources should not be trusted.
+- Public releases began on 2026-11-04 (v0.1.0); the current release is v0.1.3. Signed release APKs and their SHA-256 checksums are published on the Releases page. Builds from other sources should not be trusted.
 
 ## Security notes
 
@@ -39,7 +39,7 @@ Four items from earlier reviews are **not applicable** to the current lockfile, 
 - The only exported Android component is the launcher activity; the node service is not exported.
 - Telemetry is opt-in and off by default: the node starts with `--no-telemetry` unless the user explicitly turns telemetry on. Turning it on makes the node name and status publicly visible.
 - The node identity key is generated on first start and stays in app-private storage; cloud backup is disabled (`allowBackup=false`) and data-extraction rules exclude all five data domains (root, files, databases, shared preferences and external storage) from both cloud backup and device-to-device transfer, so a phone migration cannot clone the identity. No user input is involved. It is unrelated to any wallet.
-- Distribution, once public releases begin: signed APKs with SHA-256 checksums published alongside (see Scope notes).
+- Distribution: signed APKs with SHA-256 checksums published alongside on the Releases page (see Scope notes). Public releases began 2026-11-04.
 
 ### Accepted, known items
 - **Two small patches on upstream code** make a phone-sized node possible: one makes explicit pruning values take effect, the other adds a DNS fallback so the node can run as a plain process (both in `patches/`). They are a standing maintenance commitment: on every upstream version bump they are re-applied and re-verified before a build ships.
@@ -66,3 +66,6 @@ One finding was reviewed and deliberately **not** acted on: the suggestion to ad
 - 2026-11-04: an external audit (ChatGPT) of the versionCode 12 source tree. Of its seven findings, six were confirmed and fixed in versionCode 13; one (cleartext configuration for the loopback RPC) was reviewed and deliberately not acted on. See "External audit — 2026-11-04 (ChatGPT)" above.
 - 2026-11-04: a re-audit (ChatGPT) of the versionCode 13 source tree. It confirmed the fixes for findings 2, 6 and 7 and withdrew the cleartext finding's priority for the verified device class; it found residual races in the versionCode 13 fixes for findings 3, 4 and 5, addressed in versionCode 14. On-device race-reproduction tests have not been performed.
 - 2026-11-04: a third external audit (ChatGPT) of the versionCode 15 source tree. It confirmed the versionCode 14 fixes for findings 3 and 5 and the versionCode 15 sequence-B fix; it found one residual race in the ownership of the node process reference, addressed in versionCode 16. On-device race-reproduction tests have not been performed.
+- 2026-11-05: a full-source audit of the versionCode 20 tree (the shipped v0.1.0). No finding above low severity; of the ten low findings, eight were fixed in versionCode 21 (v0.1.1) and two were left as documented design (per-second UI text updates; the synchronous track-record save).
+- 2026-11-05: an external audit (ChatGPT) of the v0.1.1 tree, delivered in two rounds — eleven findings in total (four medium, seven low), each re-verified against the code before fixing; all eleven were fixed in versionCode 22 (v0.1.2). Two details of the audit were corrected during verification: `InputStream.readAllBytes()` was added in API 33 (not 34), so its reach was Android 12/12L only; and the reported Gradle compile block on `Process.pid()` did not reproduce (the SDK stub declares it) — the call was still made reflective, because `pid()` appears in no level of the official API database and the target runtime throws `NoSuchMethodError` for it.
+- 2026-11-05: a full-section audit of the versionCode 22 tree (thirteen sections, including build, documentation and repository hygiene). No critical or high findings; three medium (a residual hole in the versionCode 22 cancelled-start fix, and two version-staleness items in the shipped UI text and the usage guides) and seventeen low. The mediums and the consequential lows were fixed in versionCode 23 (v0.1.3); two lows were deferred and are named in the changelog. On-device reproduction tests have not been performed for the race items in this entry either.

@@ -61,8 +61,20 @@ public final class NodeSettings {
         return ctx.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
+    // versionCode 23 (audit finding B-6): every read below tolerates
+    // a stored value of the wrong type. SharedPreferences getters
+    // throw ClassCastException in that case; the values here are
+    // only ever written by this class, so a mismatch means the
+    // preferences file was damaged outside the app (the audit's
+    // stated precondition) — the right answer is the default, not
+    // a crash in the UI or in the service's launch path.
+
     public static boolean telemetryEnabled(Context ctx) {
-        return prefs(ctx).getBoolean(KEY_TELEMETRY, false);
+        try {
+            return prefs(ctx).getBoolean(KEY_TELEMETRY, false);
+        } catch (ClassCastException e) {
+            return false;
+        }
     }
 
     public static void setTelemetryEnabled(Context ctx, boolean enabled) {
@@ -71,7 +83,11 @@ public final class NodeSettings {
 
     /** The display name exactly as the user typed it ("" when unset). */
     public static String nodeNameRaw(Context ctx) {
-        return prefs(ctx).getString(KEY_NODE_NAME, "");
+        try {
+            return prefs(ctx).getString(KEY_NODE_NAME, "");
+        } catch (ClassCastException e) {
+            return "";
+        }
     }
 
     public static void setNodeNameRaw(Context ctx, String raw) {
@@ -89,7 +105,11 @@ public final class NodeSettings {
      * settings" (the default), or a tag from {@link StringsTable#TAGS}.
      */
     public static String languageRaw(Context ctx) {
-        return prefs(ctx).getString(KEY_LANGUAGE, "");
+        try {
+            return prefs(ctx).getString(KEY_LANGUAGE, "");
+        } catch (ClassCastException e) {
+            return "";
+        }
     }
 
     public static void setLanguageRaw(Context ctx, String tag) {
@@ -98,7 +118,11 @@ public final class NodeSettings {
 
     /** Whether the settings UI is locked against accidental changes. */
     public static boolean settingsLocked(Context ctx) {
-        return prefs(ctx).getBoolean(KEY_SETTINGS_LOCKED, false);
+        try {
+            return prefs(ctx).getBoolean(KEY_SETTINGS_LOCKED, false);
+        } catch (ClassCastException e) {
+            return false;
+        }
     }
 
     public static void setSettingsLocked(Context ctx, boolean locked) {
@@ -180,6 +204,15 @@ public final class NodeSettings {
      * display name becomes public whenever telemetry is on, so these
      * are stripped.
      *
+     * versionCode 23 (audit finding B-5): the bidi MARKS join the
+     * list — U+200E (LRM), U+200F (RLM) and U+061C (ALM). Weaker than
+     * the overrides (they attach direction instead of reordering),
+     * but the same spoofing family. With them, the invisible format
+     * characters that carry no legitimate name content: the word
+     * joiner (U+2060), the deprecated invisible operators
+     * (U+2061–U+2064), and the soft hyphen (U+00AD — invisible
+     * unless it lands at a line break).
+     *
      * Deliberately NOT stripped: the zero-width non-joiner (U+200C)
      * and zero-width joiner (U+200D). They carry meaning in
      * Arabic-script and Indic names (and in emoji sequences), and
@@ -189,7 +222,12 @@ public final class NodeSettings {
     private static boolean isInvisibleFormatChar(char c) {
         return (c >= 0x202A && c <= 0x202E)
                 || (c >= 0x2066 && c <= 0x2069)
+                || (c >= 0x2060 && c <= 0x2064)
                 || c == 0xFEFF
-                || c == 0x200B;
+                || c == 0x200B
+                || c == 0x200E
+                || c == 0x200F
+                || c == 0x061C
+                || c == 0x00AD;
     }
 }
