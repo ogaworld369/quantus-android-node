@@ -4,7 +4,7 @@
 
 Cette application fait tourner un **nœud complet non validateur** du Quantus Network (réseau principal QTC) sur un téléphone Android. Il synchronise la chaîne, vérifie lui-même chaque bloc et relaie les données aux pairs. Il **ne** mine pas, et il n'a **pas de portefeuille** — il ne touche jamais aux phrases de récupération ni aux clés de récompense.
 
-> État : v0.1.0 publiée (2026-11-04). L'APK signé est disponible sur [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) avec sa somme de contrôle SHA-256. Les versions de test précédentes étaient partagées directement par le mainteneur.
+> État : v0.1.3 publiée (2026-11-05), la version actuelle. L'APK signé est disponible sur [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) avec sa somme de contrôle SHA-256. Les versions de test précédentes étaient partagées directement par le mainteneur.
 
 ## Prérequis
 
@@ -16,7 +16,7 @@ Vérifié jusqu'ici : **Pixel 9a sous GrapheneOS**. Les autres appareils devraie
 
 ## Installation
 
-1. Récupérez le fichier APK (auprès du mainteneur pour l'instant ; sur GitHub Releases quand les publications commenceront — vérifiez la somme SHA-256 publiée avec la version avant d'installer).
+1. Récupérez le fichier APK sur [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) (vérifiez la somme SHA-256 publiée avec la version avant d'installer).
 2. Ouvrez l'APK avec votre application Fichiers et autorisez l'installation depuis cette source quand Android le demande.
 3. Installez, puis ouvrez **Quantus Node**.
 
@@ -58,7 +58,7 @@ Les réglages ne redémarrent jamais le nœud d'eux-mêmes. Si vous changez quel
 
 - **Le nœud se ferme tout de suite** — touchez **Partager le journal** dans les Réglages et envoyez le journal avec une Issue GitHub (modèle de rapport de bug). Le journal montre chaque tentative de démarrage et la raison de sa fin.
 - **Les pairs restent à 0** — vérifiez la connexion, puis Arrêter → Démarrer une fois.
-- **Votre nœud n'apparaît pas dans la télémétrie** — vérifiez que l'option de télémétrie est activée et que le nœud a été redémarré après l'activation. (Le comportement de la liste est encore en cours de vérification.)
+- **Votre nœud n'apparaît pas dans la télémétrie** — vérifiez que l'option de télémétrie est activée et que le nœud a été redémarré après l'activation. (L'apparition dans la liste est vérifiée : le nœud du mainteneur lui-même figure dans la liste officielle.)
 - **Questions de stockage** — la base de données est élaguée aux 256 derniers blocs par conception. Désinstaller l'application supprime la base de données et la clé d'identité du nœud ; une réinstallation repart pour une nouvelle synchronisation avec une nouvelle identité.
 
 Questions, rapports d'appareils et idées sont bienvenus en Issues GitHub. Pour les problèmes de sécurité, suivez [SECURITY.md](../SECURITY.md) plutôt qu'une Issue publique.
