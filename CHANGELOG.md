@@ -8,6 +8,62 @@ the first public release (published 2026-11-04).
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 21 / v0.1.1 — 2026-11-05
+- **Maintenance release: the low-severity findings of the
+  2026-11-05 full audit of the published v0.1.0, fixed.** A full
+  re-read of the app sources plus a rebuild comparison found no
+  high- or medium-severity defects (every entry of the rebuilt APK
+  was byte-identical to the published one); the ten low-severity
+  findings were triaged, and eight are fixed here. Two were
+  deliberately left alone: the dashboard refresh's unconditional
+  `setText` calls (the area versionCode 20 just fixed for scroll
+  stability — the churn is not worth the regression risk) and
+  TrackStore's synchronous `commit()` (a deliberate durability
+  choice, documented in its code). No changes to the node launch
+  arguments, the database, the permissions, or the bundled node
+  binary (still the versionCode 10 build).
+  - **Leftover-process check is strict now.** The pid-file check
+    accepted any process whose cmdline contained "quantus" — which
+    includes this app's own main process, so a recycled pid could
+    have been mistaken for a leftover node and blocked every
+    start. It now uses the same `libquantus_node.so` criterion as
+    the /proc child scan. A missed leftover now surfaces as a
+    refused start on the node's own database lock instead.
+  - **An interrupted worker no longer abandons its session.** The
+    `waitFor()` interrupt path destroyed the process and returned
+    without running the finish path, which would have left a
+    "started" service with no node behind it. Nothing interrupts
+    that thread today; if it ever happens, the worker now destroys
+    the process, keeps waiting for its real exit, and settles the
+    session through the ordinary generation-checked finish (the
+    linker64 quick-failure retry is skipped for an interrupted
+    attempt). Verified by desk-checking the lifecycle sequences
+    only — like the earlier race fixes, the interrupt and race
+    sequences have NOT been reproduced on a real device.
+  - **Display-name sanitizing hardened.** Bidirectional text
+    controls (U+202A–U+202E, U+2066–U+2069), U+FEFF and U+200B are
+    stripped (the name is public when telemetry is on, and these
+    can make it look like a different name); the zero-width
+    non-joiner and joiner (U+200C/U+200D) are kept, as they carry
+    meaning in Arabic-script and Indic names. The 64-character cap
+    now counts code points, so it can no longer split a surrogate
+    pair. The raw name is also capped at 256 code points when
+    stored.
+  - **CA bundle freshness is a byte comparison.** The bundled
+    Mozilla roots were re-copied only when their size changed; a
+    same-size replacement would have gone stale. The file on disk
+    is now compared byte-for-byte (the atomic write itself is
+    unchanged). The per-attempt evidence join was also raised from
+    1 s to 3 s, so a large unflushed backlog is less likely to
+    truncate a failed attempt's final lines.
+  - **Housekeeping.** Two unused string keys
+    (`settings_unlock`, `settings_locked_note`) removed — the
+    table is now 49 keys × 9 languages, machine-verified — the
+    dashboard footer now reads v0.1.1 instead of the stale
+    "v0.1-mvp", and the `NodeState.Attempt` javadoc now matches
+    the implementation (the two deliberate "[app]" evidence notes
+    are the documented exception to "the process's own lines").
+
 ## versionCode 20 / v0.1.0 — 2026-11-04
 - **Pre-release fix: the dashboard no longer loses the scroll
   position.** On the device, swiping up to read the lower cards
