@@ -1,4 +1,4 @@
-# Bundled native binaries (~124 MB together) are build inputs, not source.
+# Bundled native binaries (~55 MB together) are build inputs, not source.
 # Recreate / place them as described in README.md — never commit them.
 native/
 
