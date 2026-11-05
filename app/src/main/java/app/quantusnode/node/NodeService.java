@@ -13,18 +13,17 @@ import android.os.SystemClock;
 
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -63,6 +62,16 @@ public class NodeService extends Service {
     private static final String RPC_URL = "http://127.0.0.1:9944/";
     /** Hard cap on one RPC response (finding 6); real replies are ~100 B. */
     private static final int RPC_MAX_RESPONSE_BYTES = 64 * 1024;
+    /**
+     * Overall deadline for one RPC call, start to fully-read response
+     * (versionCode 25, audit finding L3). The connect/read timeouts
+     * bound each individual wait, not the call: a response trickling
+     * in one byte at a time stays under the per-read timeout forever
+     * while the byte cap takes ~18 hours to reach, parking the single
+     * poller (and the uptime saves riding it) for the duration. This
+     * monotonic deadline caps the whole call instead.
+     */
+    private static final long RPC_OVERALL_TIMEOUT_MS = 5000;
     private static final long POLL_MS = 3000;
     private static final long UPTIME_SAVE_EVERY_MS = 10000;
 
@@ -79,6 +88,19 @@ public class NodeService extends Service {
      * to finish exiting before refusing to spawn, and the poll step.
      */
     private static final String PID_FILE_NAME = "node-process.pid";
+    /**
+     * Spawn-intent marker (versionCode 25, audit finding M3): written
+     * inside {@link #PID_LOCK} immediately BEFORE ProcessBuilder.start()
+     * and removed again once the child's pid is on record. A marker
+     * that survives its writer therefore means "an incarnation of this
+     * app died — or its pid record failed — between deciding to spawn
+     * and recording the child": exactly the window in which a spawned
+     * child used to become invisible to every later detection path.
+     * The marker holds the spawning process's incarnation id (see
+     * {@link #PROCESS_INCARNATION_ID}), so a later process can tell a
+     * dead incarnation's interrupted spawn from its own in-flight one.
+     */
+    private static final String SPAWN_MARKER_FILE_NAME = "node-spawn.intent";
     private static final long LEFTOVER_WAIT_MS = 5000;
     private static final long LEFTOVER_POLL_MS = 100;
 
@@ -109,43 +131,60 @@ public class NodeService extends Service {
     private final AtomicBoolean pollerOn = new AtomicBoolean(false);
 
     /**
-     * Set once any session has been established in THIS process
-     * (versionCode 23, audit finding A-4). Static on purpose, like
-     * {@link #PID_LOCK}: a destroyed-and-recreated service is a new
-     * object, but the question this answers — "could a leftover
-     * node process still have a living owner in this process?" — is
-     * about the process, not the instance. A leftover named only by
-     * the pid file, found by the FIRST session a process ever
-     * establishes, can only belong to a previous, dead incarnation
-     * of the app: that is the one case the leftover path may
-     * terminate it (see {@link #awaitLeftoverNodeProcess}). Once a
-     * session has run here, leftovers are this process's own —
-     * owned, or already destroyed by their owner — and are only
-     * ever waited on.
+     * This app process's incarnation id: generated once, when the
+     * class is loaded — which is to say once per app-process lifetime
+     * — and stamped into every pid record and spawn-intent marker
+     * this process writes. It is the provenance evidence the
+     * orphan-recovery gate of {@link #awaitLeftoverNodeProcess}
+     * judges by (versionCode 25, audit finding M2): a leftover whose
+     * record carries a DIFFERENT incarnation id (or none — records
+     * written before versionCode 25 hold a bare pid) was spawned by
+     * a previous, dead incarnation of this app and has no living
+     * owner; a leftover carrying THIS id was spawned by this process
+     * and is never orphan-killed — it has an owner, or its owner
+     * already destroyed it, so it is only ever waited on.
+     *
+     * Until versionCode 24 the gate instead asked whether the
+     * asking session was the first one this process had established
+     * (audit finding A-4), a flag consumed at establishment time and
+     * never restored: when the first session's recovery stood down
+     * (a STOP landing inside the leftover wait bumps the generation,
+     * and the A-6 revalidation then correctly refuses the kill),
+     * every later session of the same process was refused the
+     * recovery forever, and the orphan outlived them all (external
+     * audit of v0.1.4, finding M2 — reproduced on a JVM harness by
+     * the auditor). Provenance does not wear out that way: standing
+     * down changes nothing about who spawned the leftover, so the
+     * next session judges the same record and can complete the
+     * recovery. The A-6 last-moment revalidation (generation still
+     * current, record unchanged since the wait began) is kept
+     * unchanged on top of the provenance check.
      */
-    private static volatile boolean sessionEstablishedInProcess = false;
+    private static final String PROCESS_INCARNATION_ID = newIncarnationId();
 
     /**
-     * Whether the live session is the first one this process has
-     * established, captured under stateLock at establishment time
-     * (before {@link #sessionEstablishedInProcess} is set for it)
-     * and read by that session's worker in the leftover path — one
-     * condition of the orphan-recovery gate of audit finding A-4.
-     *
-     * The field is per-INSTANCE, and that is not by itself enough
-     * (versionCode 24, audit finding A-6): a worker of a DESTROYED
-     * instance keeps the "first" it captured for its own session,
-     * and if it is stalled before the leftover path while a new
-     * instance establishes a session and spawns its node, the pid
-     * file it then reads names the NEW session's living node — its
-     * captured "first" would read as a licence to kill a process
-     * that has a living owner. The gate therefore treats this flag
-     * as a first screen only and revalidates, immediately before
-     * any kill, that the worker's generation is still current and
-     * that the pid record is unchanged since its wait began (see
-     * {@link #awaitLeftoverNodeProcess(int)}).
+     * Set when an orphan recovery has COMPLETED in this process
+     * (the orphan was terminated and its exit confirmed). From then
+     * on, no further orphan kill is licensed in this process: the
+     * record such a kill would act on has been cleared and rewritten
+     * by this process's own spawn, so any later pid-file leftover is
+     * this process's own by construction. Read and written only
+     * inside {@link #awaitLeftoverNodeProcess}, which runs under
+     * {@link #PID_LOCK}; volatile for the same belt-and-braces
+     * visibility as the other cross-instance state.
      */
-    private volatile boolean sessionIsFirstInProcess = false;
+    private static volatile boolean orphanRecoveryCompletedInProcess = false;
+
+    private static String newIncarnationId() {
+        byte[] bytes = new byte[8];
+        new SecureRandom().nextBytes(bytes);
+        StringBuilder sb = new StringBuilder(16);
+        for (byte b : bytes) {
+            sb.append(Character.forDigit((b >> 4) & 0xF, 16));
+            sb.append(Character.forDigit(b & 0xF, 16));
+        }
+        return sb.toString();
+    }
 
     /**
      * Session generation: established when a session STARTS (before any
@@ -231,6 +270,37 @@ public class NodeService extends Service {
      * the same default the old optBoolean fallback produced there.
      */
     private volatile boolean lastKnownSyncing = false;
+    /**
+     * Whether this session has EVIDENCE about synchronization: at
+     * least one system_syncState response in this session carried a
+     * valid block height (currentBlock or highestBlock >= 0)
+     * (versionCode 25, audit findings L1 / F-02). Until versionCode
+     * 24 a session could be judged SYNCED with no evidence at all:
+     * with the retained values still at their initial -1, a poll
+     * whose health call succeeded and whose syncState call failed
+     * derived "at head" from highestBlock < 0 and reported "sync
+     * complete" — and under a persistent partial failure (health
+     * answering, syncState failing) it re-derived that on every poll
+     * indefinitely. SYNCED now requires this flag: before the first
+     * evidenced read the status stays SYNCING however the retained
+     * values compare. Read and written only inside pollOnce's
+     * generation-checked locked batch and at session establishment,
+     * both under {@link #stateLock}.
+     */
+    private volatile boolean syncEvidenceSeen = false;
+    /**
+     * The RPC connection currently in flight, if any, so a teardown
+     * can abort it (versionCode 25, audit finding L3): a poll blocked
+     * in a slow response otherwise outlives its session's stop until
+     * the overall deadline expires. Written by the poller thread at
+     * the start of {@link #rpcCall}, cleared by identity in its
+     * finally; read by the teardown paths, which run under
+     * {@link #stateLock} — the same lock session establishment takes
+     * — so a disconnect issued by a teardown can only ever hit the
+     * connection of the session being torn down, never a newer
+     * session's.
+     */
+    private volatile HttpURLConnection inFlightRpc;
     private volatile String lastNotifText = "";
 
     private LogSink logSink;
@@ -324,12 +394,6 @@ public class NodeService extends Service {
             // This START created the session: its startId is the one a
             // later end-of-session uses for stopSelfResult() (finding 3).
             sessionStopId = startId;
-            // Capture BEFORE setting: the orphan-recovery gate
-            // (A-4) asks whether any session ran in this process
-            // before THIS one, and this session must not count
-            // itself.
-            sessionIsFirstInProcess = !sessionEstablishedInProcess;
-            sessionEstablishedInProcess = true;
             NodeState st = NodeState.get();
             st.status = NodeState.Status.STARTING;
             // versionCode 23 (audit findings A-2/B-2): the retained
@@ -356,10 +420,21 @@ public class NodeService extends Service {
             st.launchedTelemetry = null;
             st.launchedNodeName = null;
             baseUptimeMs = TrackStore.uptimeMs(this);
-            sessionStartElapsedMs = SystemClock.elapsedRealtime();
-            lastUptimeSaveElapsedMs = sessionStartElapsedMs;
+            // versionCode 25 (audit finding F-05): the uptime anchor
+            // is NOT set here. Uptime accrues from the moment a node
+            // process is actually spawned and accepted — the worker
+            // sets sessionStartElapsedMs to the spawn timestamp at
+            // registration — so the leftover wait inside launch()
+            // (up to 5 s) and everything before the spawn no longer
+            // inflates the total, and a session whose launch is
+            // refused or fails before any spawn accrues nothing at
+            // all. -1 is the "not accruing" value every uptime path
+            // already checks for.
+            sessionStartElapsedMs = -1;
+            lastUptimeSaveElapsedMs = -1;
             prevBestBlock = -1;
             lastKnownSyncing = false;
+            syncEvidenceSeen = false;
             // External audit round 2 (F9): the notification de-dup
             // key must not survive into a new session. The
             // startForeground() above posted this session's first
@@ -402,13 +477,16 @@ public class NodeService extends Service {
         // system) just stopped, with nobody left to kill it (B-2).
         // With the generation bumped under the same lock, the worker's
         // own finish path is generation-stale and writes nothing (N-2).
+        Process destroyedProcess = null;
         synchronized (stateLock) {
             started.set(false);
             sessionGen.incrementAndGet();
             pollerOn.set(false);
+            disconnectInFlightRpc();
             Process p = nodeProcess;
             if (p != null) {
                 p.destroy();
+                destroyedProcess = p;
             }
             saveUptimeLocked();
             sessionStartElapsedMs = -1; // no live session any more
@@ -416,6 +494,17 @@ public class NodeService extends Service {
             st.status = NodeState.Status.STOPPED;
             st.serviceRunning = false;
         }
+        // versionCode 25 (audit finding F-03): the destroy above is
+        // delivered immediately, as before — onDestroy runs during
+        // teardown on the main thread, where a bounded wait does not
+        // belong — but the escalation behind it (bounded wait, then
+        // destroyForcibly for a child that ignores destroy()) now
+        // runs on a daemon thread, so a surviving child of THIS
+        // destroy is still force-killed whenever the app process
+        // itself lives on. If the whole process is dying, the child
+        // becomes an orphan the next incarnation recovers through
+        // the pid record instead.
+        escalateAfterDestroyAsync(destroyedProcess);
         super.onDestroy();
     }
 
@@ -452,17 +541,24 @@ public class NodeService extends Service {
         // onto the NEW session. Under the lock the generation cannot
         // move between the read and finishAsStopped's own check (that
         // method re-takes the lock; monitors are reentrant).
+        Process destroyedProcess = null;
         synchronized (stateLock) {
             final int gen = sessionGen.get();
             started.set(false);
             logApp("foreground service timed out by the system; stopping node");
             NodeState.get().lastNote = I18n.get(this, StringsTable.NOTE_FGS_TIMEOUT);
+            disconnectInFlightRpc();
             Process p = nodeProcess;
             if (p != null) {
                 p.destroy();
+                destroyedProcess = p;
             }
             finishAsStopped(gen, null);
         }
+        // As in onDestroy (versionCode 25, finding F-03): the prompt
+        // self-stop above is untouched; only the post-destroy
+        // escalation is handed to the daemon thread.
+        escalateAfterDestroyAsync(destroyedProcess);
     }
 
     @Override
@@ -477,6 +573,7 @@ public class NodeService extends Service {
         // and retry it (B-2); bump the generation so neither an
         // in-flight poll (P-1) nor the worker's delayed finish (N-2)
         // can write state after this stop is settled.
+        Process stoppedProcess = null;
         synchronized (stateLock) {
             // This STOP is the newest command the service has seen, so
             // its startId takes over as the session's stop authority
@@ -486,10 +583,8 @@ public class NodeService extends Service {
             started.set(false);
             sessionGen.incrementAndGet();
             pollerOn.set(false);
-            Process p = nodeProcess;
-            if (p != null) {
-                p.destroy();
-            }
+            disconnectInFlightRpc();
+            stoppedProcess = nodeProcess;
             saveUptimeLocked();
             sessionStartElapsedMs = -1; // no live session any more
             NodeState.get().status = NodeState.Status.STOPPED;
@@ -498,6 +593,87 @@ public class NodeService extends Service {
             // between the teardown above and stopSelfResult() and be
             // torn down together with this session.
             stopServiceNowLocked();
+        }
+        // versionCode 25 (audit finding F-03): the destroy itself is
+        // delivered on this thread, immediately after the teardown
+        // above has settled `started` and the generation — the B-2
+        // ordering is unchanged — but it is no longer the ONLY step.
+        // Until versionCode 24 every stop path sent destroy() once
+        // and never even waited: a child that ignored it kept the
+        // worker parked in waitFor(), kept the process reference and
+        // the pid record pointing at itself, and every later start
+        // in this process was refused in the leftover wait for as
+        // long as the app lived. The wait-and-escalate half now runs
+        // on a daemon thread (a bounded wait does not belong on the
+        // main thread): if the child is still alive after the bound,
+        // it is destroyed forcibly — this session's OWN child, whose
+        // ownership is certain through its Process object — and the
+        // worker's ordinary exit path then clears the reference and
+        // the record, un-wedging the next start.
+        if (stoppedProcess != null) {
+            stoppedProcess.destroy();
+            escalateAfterDestroyAsync(stoppedProcess);
+        }
+    }
+
+    /**
+     * The post-destroy escalation of finding F-03 (versionCode 25):
+     * wait — bounded — for a destroyed child to actually exit, and
+     * if it does not, destroy it forcibly and wait once more with
+     * the same bound. Runs on a short-lived daemon thread; the
+     * caller has ALREADY delivered destroy() and settled the session
+     * teardown, so nothing here can resurrect or re-own anything —
+     * the thread only watches the exit and logs the outcome. The
+     * child's own worker performs the reference/record cleanup when
+     * its waitFor() returns, exactly as for a cooperative exit. A
+     * child still alive after the forcible bound keeps its pid
+     * record (the versionCode 23 A-1 rule): the leftover path of a
+     * later start then waits on it and refuses, never double-starts.
+     */
+    private void escalateAfterDestroyAsync(final Process p) {
+        if (p == null) {
+            return;
+        }
+        Thread t = new Thread(() -> {
+            if (waitForExitBounded(p, DESTROY_EXIT_WAIT_MS)) {
+                return;
+            }
+            logApp("node process did not exit within " + DESTROY_EXIT_WAIT_MS
+                    + "ms of destroy(); escalating to destroyForcibly()");
+            try {
+                p.destroyForcibly();
+            } catch (RuntimeException e) {
+                logApp("destroyForcibly() failed: " + e);
+                return;
+            }
+            if (!waitForExitBounded(p, DESTROY_EXIT_WAIT_MS)) {
+                logApp("node process still running after destroyForcibly();"
+                        + " leaving it to the leftover-process path");
+            }
+        }, "node-stop-escalation");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /**
+     * Abort the RPC call currently in flight, if any (versionCode
+     * 25, audit finding L3). Called from the teardown paths with
+     * {@link #stateLock} held — the same lock session establishment
+     * takes — so the connection this can hit always belongs to the
+     * session being torn down. disconnect() is the documented way to
+     * abort a blocked HttpURLConnection from another thread: the
+     * poll's read fails, rpcCall returns null, and the poller's
+     * generation-checked batch discards the result as usual.
+     */
+    private void disconnectInFlightRpc() {
+        HttpURLConnection conn = inFlightRpc;
+        if (conn != null) {
+            try {
+                conn.disconnect();
+            } catch (RuntimeException ignored) {
+                // Aborting is best-effort; the overall deadline in
+                // rpcCall is the backstop.
+            }
         }
     }
 
@@ -679,6 +855,24 @@ public class NodeService extends Service {
                 accepted = started.get() && gen == sessionGen.get();
                 if (accepted) {
                     nodeProcess = proc;
+                    // versionCode 25 (audit finding F-05): the
+                    // session's uptime anchor is set HERE — to the
+                    // moment ProcessBuilder.start() returned for the
+                    // FIRST accepted spawn of this session — not at
+                    // session establishment. Everything before the
+                    // spawn (the leftover wait above all, up to 5 s)
+                    // no longer counts as node uptime, and a session
+                    // refused before any spawn keeps the -1 anchor
+                    // and accrues nothing. A linker64 retry does not
+                    // re-anchor: its spawn follows the first attempt's
+                    // quick exit immediately, and the anchor stays at
+                    // the first spawn.
+                    if (sessionStartElapsedMs < 0) {
+                        sessionStartElapsedMs = spawnElapsedMs >= 0
+                                ? spawnElapsedMs
+                                : SystemClock.elapsedRealtime();
+                        lastUptimeSaveElapsedMs = sessionStartElapsedMs;
+                    }
                 }
             }
             if (!accepted) {
@@ -710,6 +904,25 @@ public class NodeService extends Service {
                 // leftover path's own refusal bounds the outcome —
                 // never a second node on the same database.
                 boolean exited = waitForExitBounded(proc, DESTROY_EXIT_WAIT_MS);
+                if (!exited) {
+                    // versionCode 25 (audit finding F-03): the same
+                    // escalation the stop paths use. This child is
+                    // this session's own — ownership through its
+                    // Process object is certain — and it has already
+                    // been destroyed once; if it is merely slow, the
+                    // forcible destroy changes nothing about the
+                    // outcome, and if it is ignoring destroy() the
+                    // record below no longer has to outlive it.
+                    logApp("unaccepted child did not exit within "
+                            + DESTROY_EXIT_WAIT_MS
+                            + "ms of destroy(); escalating to destroyForcibly()");
+                    try {
+                        proc.destroyForcibly();
+                    } catch (RuntimeException e) {
+                        logApp("destroyForcibly() failed: " + e);
+                    }
+                    exited = waitForExitBounded(proc, DESTROY_EXIT_WAIT_MS);
+                }
                 if (exited) {
                     // Clear the pid record by the pid launch()
                     // resolved for THIS attempt (versionCode 18) —
@@ -721,8 +934,8 @@ public class NodeService extends Service {
                     }
                 } else if (resolvedPid > 0) {
                     logApp("destroyed child (pid " + resolvedPid + ") still"
-                            + " running after " + DESTROY_EXIT_WAIT_MS
-                            + "ms; leaving its pid record in place so a"
+                            + " running after destroy() and destroyForcibly();"
+                            + " leaving its pid record in place so a"
                             + " later launch still waits for it");
                 }
                 return;
@@ -791,6 +1004,18 @@ public class NodeService extends Service {
                 // attempt (versionCode 18), not a fresh pid() probe.
                 if (resolvedPid > 0) {
                     clearPidFileIfMatches(resolvedPid);
+                }
+            }
+            // versionCode 25 (audit finding F-05): close this
+            // session's uptime accrual at the moment the exit was
+            // observed, so the bookkeeping below (the drain join
+            // alone can take up to 3 s) does not inflate the total
+            // either. Generation-checked like every end-of-session
+            // write: a session a stop already settled was folded by
+            // that stop, and its anchor is already -1.
+            synchronized (stateLock) {
+                if (gen == sessionGen.get()) {
+                    closeUptimeAtExitLocked();
                 }
             }
             // Finding 7: lifetime is measured from the actual spawn
@@ -962,7 +1187,47 @@ public class NodeService extends Service {
         final long resolvedPid;
         synchronized (PID_LOCK) {
             awaitLeftoverNodeProcess(gen);
-            proc = pb.start();
+            // versionCode 25 (external audit of v0.1.4, finding M4):
+            // the leftover wait above can take up to 5 s, and a STOP
+            // delivered during it was only noticed AFTER the spawn —
+            // the session then started a node with the settings
+            // captured before the wait, only for the acceptance
+            // check to destroy it immediately. Re-check, here at the
+            // last moment before the spawn: a session that is no
+            // longer started, or no longer current, spawns nothing.
+            // The refusal is an ordinary failed launch for the
+            // worker; its generation checks keep the linker64 retry
+            // and every state write from firing for a stale session.
+            if (!started.get() || gen != sessionGen.get()) {
+                throw new IOException("start cancelled while waiting"
+                        + " for the previous node process to exit");
+            }
+            // versionCode 25 (audit finding M3): stamp the
+            // spawn-intent marker BEFORE the spawn, so a death of
+            // this app process anywhere between here and the pid
+            // record below leaves evidence the next incarnation can
+            // act on (see SPAWN_MARKER_FILE_NAME). A failed marker
+            // degrades that detection path only; it never fails the
+            // launch, like a failed pid record.
+            boolean markerWritten = writeSpawnMarker();
+            if (!markerWritten) {
+                logApp("spawn-intent marker could not be written;"
+                        + " interrupted-spawn detection is degraded"
+                        + " for this launch");
+            }
+            try {
+                proc = pb.start();
+            } catch (IOException | RuntimeException e) {
+                // No spawn happened: the marker must not outlive the
+                // intent, or a later incarnation would scan for a
+                // child that never existed (it would find none and
+                // clear the marker then — this is just the tidier,
+                // immediate version of that cleanup).
+                if (markerWritten) {
+                    clearSpawnMarkerIfMatches(PROCESS_INCARNATION_ID);
+                }
+                throw e;
+            }
             // Finding 7: the lifetime clock starts HERE, at the actual
             // spawn — not before launch(), whose wait above could
             // otherwise eat the quick-exit window and mask a failed
@@ -985,6 +1250,16 @@ public class NodeService extends Service {
             long newPid = resolveChildPid(proc);
             resolvedPid = newPid;
             pidRecorded = newPid > 0 && writePidFile(newPid);
+            if (pidRecorded) {
+                // The pid record supersedes the spawn-intent marker:
+                // from here the child is findable by record, and the
+                // marker's job is done. If the record FAILED, the
+                // marker deliberately STAYS — it is then the only
+                // trace of this child, and the next incarnation's
+                // marker scan is the only path that can find it
+                // (finding M3).
+                clearSpawnMarkerIfMatches(PROCESS_INCARNATION_ID);
+            }
             if (!pidRecorded) {
                 logApp("pid record FAILED for pid " + newPid
                         + "; a future service instance cannot wait for"
@@ -1020,17 +1295,31 @@ public class NodeService extends Service {
     /**
      * Wait — bounded — for the previous session's node process to
      * finish exiting before a new one is spawned on the same database.
-     * Two ways the leftover can be known:
+     * Three ways the leftover can be known:
      *
      *   (a) same service instance: {@link #nodeProcess} still holds
      *       the Process object, so identity is certain and isAlive()
      *       is the exit test (this is the old F-2 wait, unified here);
-     *   (b) recreated instance: only the pid file survives. A recorded
-     *       pid is trusted ONLY after /proc/&lt;pid&gt;/cmdline shows
-     *       it still belongs to a quantus process — pids are reused,
+     *   (b) recreated instance: the pid file survives. A recorded pid
+     *       is trusted ONLY after /proc/&lt;pid&gt;/cmdline shows it
+     *       still belongs to a quantus process — pids are reused,
      *       and waiting on (let alone disturbing) a stranger's process
      *       is not an option. A pid that fails the check is stale: the
-     *       record is dropped and startup proceeds at once.
+     *       record is dropped and startup proceeds at once;
+     *   (c) interrupted spawn (versionCode 25, audit finding M3): the
+     *       spawn-intent marker survives but no usable pid record
+     *       does — an incarnation died between the spawn and the
+     *       record, or the record write itself failed. The child is
+     *       then found by scanning /proc for processes running THIS
+     *       app's node executable (not limited to this process's
+     *       children: an orphan's parent is long gone), each
+     *       candidate strictly verified as in
+     *       {@link #isOwnNodeProcessStrict}. A marker left by THIS
+     *       process names its own in-flight spawn, which the paths
+     *       above own; only a FOREIGN marker triggers the scan, and a
+     *       foreign marker whose scan finds nothing is stale — the
+     *       marked spawn never produced a living node — and is
+     *       cleared.
      *
      * The leftover is waited on, not disturbed: if it is still alive
      * after {@link #LEFTOVER_WAIT_MS}, the launch fails with an
@@ -1038,72 +1327,131 @@ public class NodeService extends Service {
      * of spawning a second node that would lose the fight for
      * ParityDB's exclusive lock.
      *
-     * One exception, added in versionCode 23 (audit finding A-4):
-     * when the session now launching is the first one this process
-     * has ever established ({@link #sessionIsFirstInProcess}), a
-     * leftover known only through the pid file cannot have a living
-     * owner —
-     * its owning app process is dead (killed by the system, crashed,
-     * or force-stopped in a way that spared the child), and a node
-     * process does not exit on its own, so waiting would refuse
-     * every future start forever. If — and only if — the recorded
-     * pid still strictly names THIS app's own node executable (see
-     * {@link #isOwnNodeProcessStrict}), the orphan is terminated
-     * (a same-UID kill; a stranger's process is never signalled),
-     * waited on with the same bound, and only then does the launch
-     * proceed. A leftover owned by this process — tracked by object,
-     * or left by one of this process's own sessions — is never
-     * killed: it has an owner, or its owner already destroyed it.
+     * One exception, added in versionCode 23 (audit finding A-4) and
+     * re-based in versionCode 25 (audit finding M2): a leftover known
+     * only through the pid file or the spawn marker, whose evidence
+     * was stamped by a PREVIOUS incarnation of this app (a different
+     * incarnation id, or no stamp — pre-versionCode-25 records),
+     * cannot have a living owner: its owning app process is dead
+     * (killed by the system, crashed, or force-stopped in a way that
+     * spared the child), and a node process does not exit on its
+     * own, so waiting would refuse every future start forever. If —
+     * and only if — the leftover still strictly names THIS app's own
+     * node executable (see {@link #isOwnNodeProcessStrict}), the
+     * orphan is terminated (a same-UID kill; a stranger's process is
+     * never signalled), waited on with the same bound, and only then
+     * does the launch proceed. A leftover owned by this process —
+     * tracked by object, or stamped with this process's incarnation
+     * id — is never killed: it has an owner, or its owner already
+     * destroyed it (and finding F-03's escalation stands behind that
+     * destroy). At most one recovery completes per app process: see
+     * {@link #orphanRecoveryCompletedInProcess}.
      *
-     * The kill is revalidated at the last moment (versionCode 24,
-     * audit finding A-6): the gate conditions above are evaluated
-     * from values this worker captured or read earlier — above all
-     * {@link #sessionIsFirstInProcess}, which lives on the service
-     * INSTANCE. A worker of a destroyed instance can be stalled
-     * before this method while a new instance establishes its own
-     * session and spawns its node; the pid file such a worker then
-     * reads names the new session's living node, and its captured
-     * "first" is still true. So immediately before terminating
-     * anything, this method confirms (a) that the caller's
-     * generation is still the current generation — a stale worker's
-     * is not, every teardown bumps it — and (b) that the pid file
-     * still names the pid this call has been waiting on, unchanged
-     * since the wait began. If either check fails, nothing is
-     * killed and the launch refuses, exactly as it did before the
-     * orphan recovery existed.
+     * Until versionCode 24 the exception was licensed by "the asking
+     * session is the first this process established" — a flag the
+     * first session consumed even when its recovery stood down, so
+     * the orphan outlived every later session of the process
+     * (finding M2). Provenance does not wear out that way: standing
+     * down changes nothing about who spawned the leftover, and the
+     * next session judges the same evidence again.
      *
-     * Called with {@link #PID_LOCK} held (from launch()); the pid-file
-     * reads and clears inside ride on the same lock (monitors are
-     * reentrant), which is what makes this check indivisible from the
-     * spawn that follows it.
+     * The kill is still revalidated at the last moment (versionCode
+     * 24, audit finding A-6): the gate conditions above are evaluated
+     * from values this worker captured or read earlier, and a worker
+     * of a destroyed instance can be stalled before this method
+     * while a new instance establishes its own session and spawns
+     * its node, changing the evidence under it. So immediately
+     * before terminating anything, this method confirms (a) that the
+     * caller's generation is still the current generation — a stale
+     * worker's is not, every teardown bumps it — and (b) that the
+     * evidence (pid record, or spawn marker) still names what this
+     * call has been waiting on, unchanged since the wait began. A
+     * record written by a newer session of THIS process fails the
+     * provenance check as well (its stamp is this process's id). If
+     * any check fails, nothing is killed and the launch refuses,
+     * exactly as it did before the orphan recovery existed.
+     *
+     * Called with {@link #PID_LOCK} held (from launch()); the
+     * pid-file and marker reads and clears inside ride on the same
+     * lock (monitors are reentrant), which is what makes this check
+     * indivisible from the spawn that follows it.
      */
     private void awaitLeftoverNodeProcess(int gen) throws IOException {
         final Process prev = nodeProcess;
         final long leftoverPid;
         final boolean trackByObject;
+        // Provenance of a leftover known by evidence (paths b/c):
+        // the incarnation id stamped by whoever wrote the record or
+        // the marker, or null for an unstamped (pre-versionCode-25)
+        // record. For the tracked-by-object path it is set to this
+        // process's own id — that path is never killed anyway.
+        final String evidenceIncarnation;
+        final boolean viaMarker;
         if (prev != null && prev.isAlive()) {
             leftoverPid = pidOf(prev);
             trackByObject = true;
+            evidenceIncarnation = PROCESS_INCARNATION_ID;
+            viaMarker = false;
         } else {
             long filePid = readPidFile();
             if (filePid > 0 && isQuantusProcess(filePid)) {
                 leftoverPid = filePid;
                 trackByObject = false;
+                evidenceIncarnation = readPidRecordIncarnation();
+                viaMarker = false;
             } else {
                 if (filePid > 0) {
                     // Stale record: process gone, or pid reused.
                     clearPidFileIfMatches(filePid);
                 }
-                return;
+                // Path (c): an interrupted spawn's marker (finding
+                // M3). Only a FOREIGN marker — written by an
+                // incarnation that no longer exists — is evidence;
+                // this process's own marker names a spawn the paths
+                // above are responsible for, and a completed
+                // recovery leaves nothing further to find.
+                String marker = readSpawnMarker();
+                if (marker == null
+                        || marker.equals(PROCESS_INCARNATION_ID)
+                        || orphanRecoveryCompletedInProcess) {
+                    return;
+                }
+                List<Long> orphans = scanForOrphanNodeProcesses();
+                if (orphans.isEmpty()) {
+                    // The marked spawn never produced a living node
+                    // (the child died with its parent, or the spawn
+                    // itself failed as the parent died): the marker
+                    // has done its job by being checked.
+                    clearSpawnMarkerIfMatches(marker);
+                    return;
+                }
+                // More than one strict-verified orphan can exist
+                // only if the interrupted-spawn window was hit more
+                // than once across incarnations; they are recovered
+                // one per start, oldest (lowest pid) first, never
+                // guessed at in bulk.
+                leftoverPid = orphans.get(0);
+                trackByObject = false;
+                evidenceIncarnation = marker;
+                viaMarker = true;
+                logApp("spawn-intent marker from a previous incarnation"
+                        + " has no pid record; /proc scan found node"
+                        + " process (pid " + leftoverPid + ")");
             }
         }
         logApp("previous node process (pid " + leftoverPid
                 + ") still exiting; waiting up to 5s");
         if (awaitLeftoverExit(prev, leftoverPid, trackByObject)) {
             clearPidFileIfMatches(leftoverPid);
+            if (viaMarker) {
+                clearSpawnMarkerIfMatches(evidenceIncarnation);
+            }
             return;
         }
-        if (!trackByObject && sessionIsFirstInProcess
+        if (!trackByObject
+                && !orphanRecoveryCompletedInProcess
+                && (evidenceIncarnation == null
+                    || !evidenceIncarnation.equals(PROCESS_INCARNATION_ID))
                 && isOwnNodeProcessStrict(leftoverPid)) {
             // Orphan of a dead incarnation (see the method doc): it
             // will never exit by itself, and refusing here would
@@ -1116,17 +1464,21 @@ public class NodeService extends Service {
             // First, though, the last-moment revalidation
             // (versionCode 24, audit finding A-6; see the method
             // doc): this worker's generation must still be the
-            // current generation, and the pid record must still
-            // name the pid this call has been waiting on, unchanged
-            // since the wait began. A stale worker of a destroyed
-            // instance fails the generation check by construction —
-            // its session's teardown bumped the generation — and a
-            // record written by a newer session fails the second.
-            // Either failure stands the recovery down: nothing is
-            // killed, and the refusal below is the outcome, exactly
-            // as before the recovery existed.
-            if (gen == sessionGen.get()
-                    && readPidFile() == leftoverPid) {
+            // current generation, and the evidence this call has
+            // been waiting on — the pid record, or the spawn marker —
+            // must be unchanged since the wait began. A stale worker
+            // of a destroyed instance fails the generation check by
+            // construction — its session's teardown bumped the
+            // generation — and evidence written by a newer session
+            // fails the second (and, being stamped with this
+            // process's own incarnation id, the provenance check
+            // above as well). Any failure stands the recovery down:
+            // nothing is killed, and the refusal below is the
+            // outcome, exactly as before the recovery existed.
+            boolean evidenceUnchanged = viaMarker
+                    ? evidenceIncarnation.equals(readSpawnMarker())
+                    : readPidFile() == leftoverPid;
+            if (gen == sessionGen.get() && evidenceUnchanged) {
                 logApp("node process (pid " + leftoverPid + ") was left behind"
                         + " by a previous incarnation of this app and has no"
                         + " living owner; terminating it to recover");
@@ -1137,7 +1489,15 @@ public class NodeService extends Service {
                             + ": " + e);
                 }
                 if (awaitLeftoverExit(null, leftoverPid, false)) {
+                    // The recovery is complete: it is recorded
+                    // BEFORE proceeding, so no later session of this
+                    // process can license a second kill on evidence
+                    // this process has since rewritten as its own.
+                    orphanRecoveryCompletedInProcess = true;
                     clearPidFileIfMatches(leftoverPid);
+                    if (viaMarker) {
+                        clearSpawnMarkerIfMatches(evidenceIncarnation);
+                    }
                     logApp("orphaned node process (pid " + leftoverPid
                             + ") terminated; proceeding with the start");
                     return;
@@ -1145,7 +1505,7 @@ public class NodeService extends Service {
             } else {
                 logApp("orphan recovery stood down for pid " + leftoverPid
                         + ": the asking session is no longer current, or"
-                        + " the pid record changed during the wait;"
+                        + " the evidence changed during the wait;"
                         + " refusing instead of terminating a process"
                         + " that may have a living owner");
             }
@@ -1155,6 +1515,51 @@ public class NodeService extends Service {
         throw new IOException("previous node process (pid " + leftoverPid
                 + ") has not exited yet; refusing to start a second node"
                 + " on the same database");
+    }
+
+    /**
+     * The interrupted-spawn scan of finding M3 (versionCode 25):
+     * every process on the device whose cmdline names the node
+     * binary, strictly verified as THIS app's own node executable —
+     * not limited to this process's children, because an orphan's
+     * parent is gone by definition (the child-only scan in
+     * {@link #scanForNodeChildPid} can never see it). The loose name
+     * filter runs first so the strict verification only opens the
+     * cmdlines of plausible candidates; read failures simply remove
+     * an entry from consideration. Sorted ascending, so the caller
+     * recovers the oldest orphan first. This process's own live node
+     * cannot appear here: the caller reaches the scan only when the
+     * pid record names no live quantus process, and a node this
+     * process spawned is either tracked by object, named by that
+     * record, or covered by this process's own spawn marker — all
+     * checked before the scan.
+     */
+    private List<Long> scanForOrphanNodeProcesses() {
+        List<Long> out = new ArrayList<>();
+        String[] entries = new File("/proc").list();
+        if (entries == null) {
+            return out;
+        }
+        for (String name : entries) {
+            if (name.isEmpty() || !Character.isDigit(name.charAt(0))) {
+                continue;
+            }
+            final long pid;
+            try {
+                pid = Long.parseLong(name);
+            } catch (NumberFormatException e) {
+                continue;
+            }
+            String cmdline = readCmdline(pid);
+            if (cmdline == null || !cmdline.contains(NODE_LIB)) {
+                continue;
+            }
+            if (isOwnNodeProcessStrict(pid)) {
+                out.add(pid);
+            }
+        }
+        java.util.Collections.sort(out);
+        return out;
     }
 
     /**
@@ -1285,13 +1690,18 @@ public class NodeService extends Service {
      *         cleared the child's pid record unconditionally).
      */
     private static boolean waitForExitBounded(Process proc, long timeoutMs) {
-        long deadline = System.currentTimeMillis() + timeoutMs;
+        // versionCode 25 (audit finding L4): the monotonic clock, like
+        // every other wait in this class. This was the one remaining
+        // wall-clock deadline — a device clock set BACK while a child
+        // was being waited on stretched a "bounded" 5 s wait by the
+        // full amount of the setback.
+        long deadline = SystemClock.elapsedRealtime() + timeoutMs;
         for (;;) {
             try {
                 proc.exitValue();
                 return true;
             } catch (IllegalThreadStateException stillAlive) {
-                if (System.currentTimeMillis() >= deadline) {
+                if (SystemClock.elapsedRealtime() >= deadline) {
                     return false;
                 }
                 try {
@@ -1582,7 +1992,8 @@ public class NodeService extends Service {
         boolean done = false;
         try {
             try (FileOutputStream fos = new FileOutputStream(tmp)) {
-                fos.write(Long.toString(pid).getBytes(StandardCharsets.UTF_8));
+                fos.write(encodePidRecord(pid, PROCESS_INCARNATION_ID)
+                        .getBytes(StandardCharsets.UTF_8));
             }
             done = tmp.renameTo(pidFile());
         } catch (IOException | RuntimeException ignored) {
@@ -1598,21 +2009,144 @@ public class NodeService extends Service {
         return done;
     }
 
-    /** The recorded pid, or -1 when there is no usable record. */
-    private long readPidFile() {
+    /**
+     * The on-disk pid record format (versionCode 25, audit finding
+     * M2): "&lt;pid&gt; &lt;incarnation-id&gt;" — the pid of the
+     * spawned child and the id of the app process that spawned it
+     * (see {@link #PROCESS_INCARNATION_ID}). Records written before
+     * versionCode 25 hold a bare pid; they parse with a null
+     * incarnation, which the recovery gate reads as "a previous
+     * incarnation" — the process that wrote them is necessarily
+     * dead, since the binary writing this format only runs in a
+     * process that started after the upgrade. Pure functions, so
+     * the format can be exercised on a JVM.
+     */
+    static String encodePidRecord(long pid, String incarnationId) {
+        return pid + " " + incarnationId;
+    }
+
+    /** The pid in a record's raw text, or -1 when unparseable. */
+    static long parsePidRecordPid(String raw) {
+        if (raw == null) {
+            return -1;
+        }
+        String trimmed = raw.trim();
+        int space = trimmed.indexOf(' ');
+        String head = space >= 0 ? trimmed.substring(0, space) : trimmed;
+        try {
+            return Long.parseLong(head);
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    /** The incarnation stamp in a record's raw text, or null when absent. */
+    static String parsePidRecordIncarnation(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String trimmed = raw.trim();
+        int space = trimmed.indexOf(' ');
+        if (space < 0 || space + 1 >= trimmed.length()) {
+            return null;
+        }
+        String tail = trimmed.substring(space + 1).trim();
+        return tail.isEmpty() ? null : tail;
+    }
+
+    /** The pid record's raw text, or null when there is none. */
+    private String readPidRecordRaw() {
         try {
             File f = pidFile();
             if (!f.isFile()) {
-                return -1;
+                return null;
             }
             byte[] data;
             try (FileInputStream in = new FileInputStream(f)) {
                 data = readAllBytesCompat(in);
             }
-            return Long.parseLong(
-                    new String(data, StandardCharsets.UTF_8).trim());
+            return new String(data, StandardCharsets.UTF_8);
         } catch (Exception e) {
-            return -1;
+            return null;
+        }
+    }
+
+    /** The recorded pid, or -1 when there is no usable record. */
+    private long readPidFile() {
+        return parsePidRecordPid(readPidRecordRaw());
+    }
+
+    /**
+     * The incarnation stamp on the recorded pid (versionCode 25,
+     * finding M2), or null when the record is unstamped (written
+     * before versionCode 25) or absent. The recovery gate's
+     * provenance evidence; see {@link #awaitLeftoverNodeProcess}.
+     */
+    private String readPidRecordIncarnation() {
+        return parsePidRecordIncarnation(readPidRecordRaw());
+    }
+
+    private File spawnMarkerFile() {
+        return new File(getFilesDir(), SPAWN_MARKER_FILE_NAME);
+    }
+
+    /**
+     * Stamp the spawn-intent marker with this process's incarnation
+     * id, atomically (tmp + rename), and report whether it is in
+     * place. Called from launch() with {@link #PID_LOCK} held,
+     * immediately before the spawn it marks (versionCode 25,
+     * finding M3). Same rules as the pid record: a failed marker
+     * degrades a detection path; it must never fail — or crash —
+     * the launch itself.
+     */
+    private boolean writeSpawnMarker() {
+        File tmp = new File(getFilesDir(), SPAWN_MARKER_FILE_NAME + ".tmp");
+        boolean done = false;
+        try {
+            try (FileOutputStream fos = new FileOutputStream(tmp)) {
+                fos.write(PROCESS_INCARNATION_ID.getBytes(StandardCharsets.UTF_8));
+            }
+            done = tmp.renameTo(spawnMarkerFile());
+        } catch (IOException | RuntimeException ignored) {
+            // Reported by the caller via the return value.
+        } finally {
+            if (!done) {
+                tmp.delete();
+            }
+        }
+        return done;
+    }
+
+    /** The incarnation stamp on the spawn-intent marker, or null when absent. */
+    private String readSpawnMarker() {
+        try {
+            File f = spawnMarkerFile();
+            if (!f.isFile()) {
+                return null;
+            }
+            byte[] data;
+            try (FileInputStream in = new FileInputStream(f)) {
+                data = readAllBytesCompat(in);
+            }
+            String s = new String(data, StandardCharsets.UTF_8).trim();
+            return s.isEmpty() ? null : s;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Remove the spawn-intent marker, but only while it still holds
+     * the given incarnation stamp — the same check-and-clear rule as
+     * {@link #clearPidFileIfMatches}, under the same lock: a late
+     * cleanup must never erase a NEWER spawn's marker.
+     */
+    private void clearSpawnMarkerIfMatches(String incarnationId) {
+        synchronized (PID_LOCK) {
+            if (incarnationId != null
+                    && incarnationId.equals(readSpawnMarker())) {
+                spawnMarkerFile().delete();
+            }
         }
     }
 
@@ -1728,6 +2262,7 @@ public class NodeService extends Service {
             // writing state once this stop is settled (bug P-1).
             sessionGen.incrementAndGet();
             pollerOn.set(false);
+            disconnectInFlightRpc();
             saveUptimeLocked();
             sessionStartElapsedMs = -1; // no live session any more
             NodeState st = NodeState.get();
@@ -1755,19 +2290,35 @@ public class NodeService extends Service {
         }
     }
 
+    /**
+     * Per-line byte cap for the drain's read side (versionCode 25,
+     * audit finding L2 / F-01): one byte short of the log sink's own
+     * per-line byte cap, so a line at the cap still passes the sink
+     * (with its newline) un-truncated. The point of the cap is the
+     * READ side: however long a "line" the node emits — a megabyte
+     * without a newline, say — the drain's live memory stays within
+     * this plus one chunk, and the excess is consumed and discarded
+     * up to the newline rather than materialized.
+     */
+    private static final int DRAIN_LINE_MAX_BYTES = (int) (LOG_MAX_BYTES / 4) - 1;
+
+    /** Receives drained lines from {@link #drainLines}. */
+    private interface LineConsumer {
+        void onLine(String line);
+    }
+
     private void drainOutput(Process proc, AttemptCapture capture) {
-        try (BufferedReader r = new BufferedReader(
-                new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
-            String line;
-            while ((line = r.readLine()) != null) {
+        InputStream in = proc.getInputStream();
+        try {
+            drainLines(in, DRAIN_LINE_MAX_BYTES, line -> {
                 // F-3: the per-line work (log encode/write, attempt
                 // capture) must never kill this thread. If it died,
                 // logging and per-attempt evidence would stop — and
                 // once the pipe fills, the node's own writes block and
                 // the node stalls. Note the failure and keep draining.
                 // (The note itself goes through the same sink, so it
-                // is best-effort.) Stream-level IOException from
-                // readLine() still ends the thread, in the catch below.
+                // is best-effort.) Stream-level IOException from the
+                // read still ends the thread, in the catch below.
                 try {
                     if (logSink != null) {
                         logSink.write(line);
@@ -1779,10 +2330,103 @@ public class NodeService extends Service {
                     } catch (Exception ignored) {
                     }
                 }
-            }
+            });
         } catch (IOException ignored) {
             // Stream closed because the process ended; that is expected.
+        } finally {
+            try {
+                in.close();
+            } catch (IOException ignored) {
+            }
         }
+    }
+
+    /**
+     * Read {@code in} as UTF-8 lines and hand each one to
+     * {@code consumer}, bounding the memory a single line can occupy
+     * (versionCode 25, audit findings L2 / F-01). The reader this
+     * replaces — BufferedReader.readLine() — materializes a whole
+     * line before any cap can apply: the 8192-char capture cap and
+     * the sink's 128 KB cap both trimmed a line only AFTER it had
+     * been read, so a never-ending line grew the drain's heap
+     * without limit (the auditor's harness drove the real
+     * drainOutput out of memory with 64 MiB of newline-free input
+     * under -Xmx24m). Here a line is accumulated only up to
+     * {@code maxLineBytes}; past the cap, its remaining bytes are
+     * scanned and discarded up to the newline, and the capped prefix
+     * is what the consumer receives — the sinks' own caps still
+     * apply downstream, unchanged.
+     *
+     * Line semantics match readLine(): lines end at '\n' (a trailing
+     * '\r' is stripped), and a final unterminated line at EOF is
+     * delivered. Splitting at the byte level is safe for UTF-8 —
+     * 0x0A never appears inside a multi-byte sequence. A line cut
+     * at the cap may end mid-sequence; the decoder's replacement
+     * character marks the cut in the log, which is the honest
+     * rendering of a truncated line. Static and stream-based, so
+     * the real method can be exercised on a JVM.
+     */
+    static void drainLines(InputStream in, int maxLineBytes,
+                           LineConsumer consumer) throws IOException {
+        byte[] chunk = new byte[8192];
+        ByteArrayOutputStream lineBuf = new ByteArrayOutputStream();
+        // True once the current line has crossed the cap: its prefix
+        // is in lineBuf and the rest is being discarded up to the
+        // newline.
+        boolean discarding = false;
+        int n;
+        while ((n = in.read(chunk)) != -1) {
+            int segmentStart = 0;
+            for (int i = 0; i < n; i++) {
+                if (chunk[i] == (byte) '\n') {
+                    if (!discarding) {
+                        // The cap applies to newline-terminated
+                        // segments too, not just to the tail of a
+                        // chunk: a whole line can arrive inside one
+                        // read, and appending it uncapped would
+                        // defeat the bound entirely.
+                        int room = maxLineBytes - lineBuf.size();
+                        int take = Math.min(i - segmentStart,
+                                Math.max(room, 0));
+                        if (take > 0) {
+                            lineBuf.write(chunk, segmentStart, take);
+                        }
+                    }
+                    emitDrainedLine(lineBuf, consumer);
+                    lineBuf.reset();
+                    discarding = false;
+                    segmentStart = i + 1;
+                }
+            }
+            if (segmentStart < n && !discarding) {
+                int room = maxLineBytes - lineBuf.size();
+                int take = Math.min(n - segmentStart, Math.max(room, 0));
+                if (take > 0) {
+                    lineBuf.write(chunk, segmentStart, take);
+                }
+                if (take < n - segmentStart) {
+                    discarding = true;
+                }
+            }
+        }
+        // EOF: deliver a final unterminated line, as readLine did —
+        // including an over-cap one, whose capped prefix is the line
+        // as far as the consumer is concerned. An input that ended
+        // exactly at a newline (or was empty) leaves nothing behind.
+        if (lineBuf.size() > 0 || discarding) {
+            emitDrainedLine(lineBuf, consumer);
+        }
+    }
+
+    /** Decode one accumulated line (stripping a trailing '\r') and deliver it. */
+    private static void emitDrainedLine(ByteArrayOutputStream buf,
+                                        LineConsumer consumer) {
+        byte[] bytes = buf.toByteArray();
+        int len = bytes.length;
+        if (len > 0 && bytes[len - 1] == (byte) '\r') {
+            len--;
+        }
+        consumer.onLine(new String(bytes, 0, len, StandardCharsets.UTF_8));
     }
 
     /**
@@ -2198,6 +2842,16 @@ public class NodeService extends Service {
                 lastKnownSyncing = freshSyncing;
             }
             boolean isSyncing = lastKnownSyncing;
+            // versionCode 25 (audit findings L1 / F-02): record the
+            // evidence BEFORE judging, so a response that carries a
+            // valid height evidences its own judgement. A syncState
+            // response whose heights are BOTH missing is a successful
+            // call with nothing in it — it does not count (that shape
+            // reached SYNCED through the sync != null branch below
+            // just as surely as the failed call did).
+            if (sync != null && (current >= 0 || highest >= 0)) {
+                syncEvidenceSeen = true;
+            }
             if (sync != null) {
                 if (current >= 0) {
                     if (prevBestBlock >= 0 && current > prevBestBlock) {
@@ -2222,8 +2876,11 @@ public class NodeService extends Service {
                 // (highest < 0) as "at head", so a syncState answer
                 // without a highestBlock flipped the status to
                 // SYNCED even mid-sync. Before the first successful
-                // read st.highestBlock is still -1, which keeps the
-                // original first-poll behaviour.
+                // read st.highestBlock is still -1; versionCode 25
+                // (findings L1 / F-02) gates the SYNCED outcome of
+                // exactly that state on syncEvidenceSeen below, so
+                // "at head" alone no longer promotes an unevidenced
+                // session to SYNCED.
                 //
                 // versionCode 23 (audit finding B-1): the same
                 // principle in the other direction — when THIS
@@ -2243,17 +2900,25 @@ public class NodeService extends Service {
                     atHead = st.highestBlock < 0
                             || st.bestBlock >= st.highestBlock;
                 }
-                st.status = (isSyncing || !atHead)
+                st.status = (isSyncing || !atHead || !syncEvidenceSeen)
                         ? NodeState.Status.SYNCING : NodeState.Status.SYNCED;
             } else {
                 // No sync state this poll: judge from the retained
                 // values with the same meaning of "at head" as above
-                // — last known best against last known highest (both
-                // -1 before the first successful read, which keeps
-                // the original behaviour there).
+                // — last known best against last known highest.
+                // versionCode 25 (findings L1 / F-02): before the
+                // first evidenced read both are -1, which the old
+                // expression read as "at head" and — with a retained
+                // isSyncing of false — as SYNCED, on the very first
+                // poll and, under a persistent syncState failure, on
+                // every poll after it. The evidence gate is what
+                // changed: unevidenced is SYNCING now, however the
+                // retained values compare; once evidence exists, a
+                // failed call keeps judging from the retained values
+                // exactly as before.
                 boolean atHead = st.highestBlock < 0
                         || st.bestBlock >= st.highestBlock;
-                st.status = (isSyncing || !atHead)
+                st.status = (isSyncing || !atHead || !syncEvidenceSeen)
                         ? NodeState.Status.SYNCING : NodeState.Status.SYNCED;
             }
         }
@@ -2263,6 +2928,17 @@ public class NodeService extends Service {
     /** One JSON-RPC call to the loopback endpoint; null on any failure. */
     private JSONObject rpcCall(String method) {
         HttpURLConnection conn = null;
+        // versionCode 25 (audit finding L3): the whole call — connect,
+        // request, response — lives under one monotonic deadline.
+        // The 1500/2000 ms timeouts below bound each individual wait
+        // only; a response arriving one byte at a time never trips
+        // the read timeout and takes ~18 hours to reach the byte
+        // cap, parking the poller (and the uptime saves riding its
+        // loop) for the duration. The deadline is re-checked between
+        // read chunks in readBounded, which is where a trickle is
+        // actually cut off.
+        final long deadlineMs = SystemClock.elapsedRealtime()
+                + RPC_OVERALL_TIMEOUT_MS;
         try {
             JSONObject req = new JSONObject();
             req.put("jsonrpc", "2.0");
@@ -2272,6 +2948,12 @@ public class NodeService extends Service {
             byte[] body = req.toString().getBytes(StandardCharsets.UTF_8);
 
             conn = (HttpURLConnection) new URL(RPC_URL).openConnection();
+            // Registered before any blocking call, so a teardown
+            // landing anywhere in this call can abort it via
+            // disconnectInFlightRpc() (finding L3). Cleared by
+            // identity in the finally below — a newer session's
+            // connection is never cleared by this call's exit.
+            inFlightRpc = conn;
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setConnectTimeout(1500);
@@ -2289,9 +2971,12 @@ public class NodeService extends Service {
             if (conn.getResponseCode() != 200) {
                 return null;
             }
+            if (SystemClock.elapsedRealtime() > deadlineMs) {
+                return null;
+            }
             byte[] resp;
             try (java.io.InputStream in = conn.getInputStream()) {
-                resp = readBounded(in, RPC_MAX_RESPONSE_BYTES);
+                resp = readBounded(in, RPC_MAX_RESPONSE_BYTES, deadlineMs);
             }
             JSONObject json;
             try {
@@ -2312,6 +2997,9 @@ public class NodeService extends Service {
             return null; // connection refused while booting is normal
         } finally {
             if (conn != null) {
+                if (inFlightRpc == conn) {
+                    inFlightRpc = null;
+                }
                 conn.disconnect();
             }
         }
@@ -2320,11 +3008,16 @@ public class NodeService extends Service {
     /**
      * Read a stream to its end, refusing to buffer more than
      * {@code maxBytes}: crossing the cap is an IOException, which the
-     * RPC caller treats like any other failed call. (The log-file
-     * reader is deliberately NOT routed through here — that file is
-     * the app's own, hard-capped by rotation.)
+     * RPC caller treats like any other failed call. The read also
+     * refuses to outlive {@code deadlineMs} (monotonic clock;
+     * versionCode 25, audit finding L3): the deadline is checked
+     * between chunks, which is what stops a response that trickles
+     * in slowly enough to never trip the per-read socket timeout.
+     * (The log-file reader is deliberately NOT routed through here —
+     * that file is the app's own, hard-capped by rotation.)
      */
-    private static byte[] readBounded(InputStream in, int maxBytes) throws IOException {
+    static byte[] readBounded(InputStream in, int maxBytes,
+                              long deadlineMs) throws IOException {
         ByteArrayOutputStream buf = new ByteArrayOutputStream();
         byte[] chunk = new byte[8192];
         int n;
@@ -2333,6 +3026,10 @@ public class NodeService extends Service {
                 throw new IOException("response exceeds " + maxBytes + " bytes");
             }
             buf.write(chunk, 0, n);
+            if (SystemClock.elapsedRealtime() > deadlineMs) {
+                throw new IOException("response exceeded the overall"
+                        + " deadline of " + RPC_OVERALL_TIMEOUT_MS + "ms");
+            }
         }
         return buf.toByteArray();
     }
@@ -2376,6 +3073,23 @@ public class NodeService extends Service {
             TrackStore.saveUptimeMs(this, total);
             baseUptimeMs = total;
             sessionStartElapsedMs = SystemClock.elapsedRealtime();
+        }
+    }
+
+    /**
+     * Fold the live session's uptime into the stored base and CLOSE
+     * the accrual (versionCode 25, audit finding F-05): called by
+     * the worker at the moment it observes the node process's exit,
+     * with {@link #stateLock} held and its generation verified, so
+     * the session's total covers exactly spawn → exit — not the
+     * bookkeeping that follows the exit (the drain join, the finish
+     * path). The teardown paths' own {@link #saveUptimeLocked} calls
+     * afterwards see the -1 anchor and add nothing.
+     */
+    private void closeUptimeAtExitLocked() {
+        if (sessionStartElapsedMs >= 0) {
+            saveUptimeLocked();
+            sessionStartElapsedMs = -1; // accrual closed at the exit
         }
     }
 
