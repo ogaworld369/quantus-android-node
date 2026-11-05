@@ -22,7 +22,6 @@
 - [x] release バイナリで APK を組み直し、サイズと同梱物を確認する（strip 後 約53.4MB、テスト配布版 versionCode 4〜10 で実施済み（vc10 は依存関係のセキュリティ更新を反映した再ビルド版、strip 後 53,411,080 bytes））
 - [x] バージョン番号を確定する（初回公開は v0.1.0。2026-11-04、versionCode 19 / versionName 0.1.0 に確定）
 - [ ] 【版上げのたび】build-manual.sh（aapt2 の --version-code / --version-name）と build.gradle の versionCode / versionName に加えて、StringsTable の FOOTER_INFO（全9言語）の版数を新しい versionName に揃え、docs/I18N.md の「All strings」表も StringsTable から再生成して揃える。確認は機械的に: (1) 現在の versionName が FOOTER_INFO の全9言語に現れること、(2) 再生成した表と docs/I18N.md の全セル（49キー × 9言語 = 441セル）が一致すること（diff ゼロ）。旧 versionName の grep は補助に留める — 直前版でない版数（2版前など）の残留は「旧版数」の grep では原理的に捕捉できない（vc22 / v0.1.2 でフッターが v0.1.1 のまま出荷された DOC-1 と、vc23 / v0.1.3 で I18N.md のフッター行が v0.1.1 のまま残った C23-1 の再発防止 — 全セクション監査）
-
 - [ ] 【版上げのたび】旧 versionName と旧 versionCode を全追跡テキストファイルで検索し、ヒットを1件ずつ分類する。履歴記録（CHANGELOG、過去の公開記録、監査記録）は残してよいが、現在形の主張は新しい版を指していなければならない。対象の例: USAGE 全9ファイル冒頭のステータス行、SECURITY.md の「current release」、app/README.md 冒頭の仕様サマリ（versionName / versionCode）。フッター表記（FOOTER_INFO）と docs/I18N.md 生成表は上の項目で機械確認するため、ここでは重ねて扱わない（vc24 / v0.1.4 公開後の全体点検で、USAGE 全9ファイル・SECURITY.md・app/README.md に v0.1.3 を現行とする記述が残っていたことへの再発防止）
 
 ## Gate 3: 署名
