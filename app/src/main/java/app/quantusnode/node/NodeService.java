@@ -26,6 +26,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -589,12 +590,32 @@ public class NodeService extends Service {
             drain.setDaemon(true);
             drain.start();
 
-            int code;
+            int code = -1;
+            boolean interrupted = false;
             try {
-                code = running.waitFor();
-            } catch (InterruptedException e) {
-                running.destroy();
-                return;
+                for (;;) {
+                    try {
+                        code = running.waitFor();
+                        break;
+                    } catch (InterruptedException e) {
+                        // versionCode 21 (audit finding 1): this catch
+                        // used to destroy the process and return,
+                        // abandoning the session — the service stayed
+                        // "started" with no node behind it and
+                        // finishAsStopped() never ran. Nothing
+                        // interrupts this thread today; if that ever
+                        // changes, destroy the process and keep waiting
+                        // for its real exit instead, so the ordinary
+                        // finish path below (attempt record, then
+                        // finishAsStopped under the generation check)
+                        // settles the session exactly as a plain exit
+                        // does. The quick-failure linker64 retry is
+                        // skipped for an interrupted attempt: an
+                        // interrupt is a teardown, not a failed start.
+                        interrupted = true;
+                        running.destroy();
+                    }
+                }
             } finally {
                 // F-1 + third-audit ownership race: clear the
                 // reference only if it still points at THIS session's
@@ -648,8 +669,13 @@ public class NodeService extends Service {
             // Per-attempt capture replaces the old file-tail snapshot,
             // in which the retry overwrote the first attempt's record
             // and [app] lines crowded out the node's own output.
+            // The join is bounded at 3 s (1 s until versionCode 20,
+            // audit finding 5): once the process has exited the pipe
+            // is closed and the drain normally ends at once; the bound
+            // only caps how long a large unflushed backlog can delay
+            // this attempt's record.
             try {
-                drain.join(1000);
+                drain.join(3000);
             } catch (InterruptedException ignored) {
             }
             attempts.add(new NodeState.Attempt(triedLinker, livedMs, code,
@@ -668,7 +694,8 @@ public class NodeService extends Service {
 
             // Quick, failed start on the direct path: try linker64 once.
             // Anything else is a real exit — record it and stop, no loop.
-            if (started.get() && gen == sessionGen.get()
+            // An interrupted attempt is not retried either (see above).
+            if (!interrupted && started.get() && gen == sessionGen.get()
                     && !triedLinker && quickFailure) {
                 logApp("quick exit; retrying once via /system/bin/linker64");
                 triedLinker = true;
@@ -923,6 +950,16 @@ public class NodeService extends Service {
      * directory exists and its cmdline names the node binary. Any read
      * failure reads as "not ours" — a process we cannot identify is
      * never waited on.
+     *
+     * The match is the binary's file name ({@link #NODE_LIB}) — the
+     * same criterion the /proc child scan uses (versionCode 18). It
+     * was a loose "quantus" substring until versionCode 21 (audit
+     * finding 2): that also matched this app's own main process
+     * (app.quantusnode.node), so a pid recycled to the app itself
+     * could have been mistaken for a leftover node and blocked every
+     * start. The strict match can in principle miss a real leftover,
+     * but that failure surfaces as a refused start on the node's own
+     * database lock — recoverable, never a stuck state.
      */
     private static boolean isQuantusProcess(long pid) {
         File procDir = new File("/proc/" + pid);
@@ -937,7 +974,7 @@ public class NodeService extends Service {
                 buf.write(chunk, 0, n);
             }
             return new String(buf.toByteArray(), StandardCharsets.UTF_8)
-                    .contains("quantus");
+                    .contains(NODE_LIB);
         } catch (IOException e) {
             return false;
         }
@@ -1233,9 +1270,12 @@ public class NodeService extends Service {
     /**
      * Copy the bundled Mozilla CA roots (assets/cacert.pem, the official
      * curl.se extract) into filesDir so the node process can read them
-     * by path, and return that path. Refreshed when the bundled copy's
-     * size changes. Returns null when the copy is unavailable; the
-     * caller then relies on the SSL_CERT_DIR hint alone.
+     * by path, and return that path. Refreshed when the file on disk
+     * is not byte-identical to the bundled copy (a length-only check,
+     * used until versionCode 20, would have kept a stale bundle whose
+     * replacement happened to be the same size — audit finding 4).
+     * Returns null when the copy is unavailable; the caller then
+     * relies on the SSL_CERT_DIR hint alone.
      */
     private String ensureCaBundle() {
         try {
@@ -1250,7 +1290,7 @@ public class NodeService extends Service {
                 data = buf.toByteArray();
             }
             File out = new File(getFilesDir(), "cacert.pem");
-            if (!out.isFile() || out.length() != data.length) {
+            if (!out.isFile() || !bundleContentsMatch(out, data)) {
                 // F-7: write atomically. A kill mid-write straight
                 // into cacert.pem would leave a truncated bundle that
                 // the node then fails telemetry TLS with. Write the
@@ -1279,6 +1319,21 @@ public class NodeService extends Service {
         } catch (Exception e) {
             logApp("CA bundle unavailable: " + e);
             return null;
+        }
+    }
+
+    /** True when the file at {@code out} holds exactly {@code data}. */
+    private static boolean bundleContentsMatch(File out, byte[] data) {
+        try (InputStream in = new FileInputStream(out);
+             ByteArrayOutputStream buf = new ByteArrayOutputStream()) {
+            byte[] chunk = new byte[8192];
+            int n;
+            while ((n = in.read(chunk)) != -1) {
+                buf.write(chunk, 0, n);
+            }
+            return Arrays.equals(buf.toByteArray(), data);
+        } catch (IOException e) {
+            return false;
         }
     }
 
