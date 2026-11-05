@@ -129,11 +129,21 @@ public class NodeService extends Service {
      * Whether the live session is the first one this process has
      * established, captured under stateLock at establishment time
      * (before {@link #sessionEstablishedInProcess} is set for it)
-     * and read by that session's worker in the leftover path — the
-     * orphan-recovery gate of audit finding A-4. A stale worker can
-     * only ever read a value captured for its own establishment or a
-     * later session's "not first", both of which err toward not
-     * killing.
+     * and read by that session's worker in the leftover path — one
+     * condition of the orphan-recovery gate of audit finding A-4.
+     *
+     * The field is per-INSTANCE, and that is not by itself enough
+     * (versionCode 24, audit finding A-6): a worker of a DESTROYED
+     * instance keeps the "first" it captured for its own session,
+     * and if it is stalled before the leftover path while a new
+     * instance establishes a session and spawns its node, the pid
+     * file it then reads names the NEW session's living node — its
+     * captured "first" would read as a licence to kill a process
+     * that has a living owner. The gate therefore treats this flag
+     * as a first screen only and revalidates, immediately before
+     * any kill, that the worker's generation is still current and
+     * that the pid record is unchanged since its wait began (see
+     * {@link #awaitLeftoverNodeProcess(int)}).
      */
     private volatile boolean sessionIsFirstInProcess = false;
 
@@ -210,6 +220,17 @@ public class NodeService extends Service {
     private volatile long baseUptimeMs = 0;
     private volatile long lastUptimeSaveElapsedMs = 0;
     private volatile long prevBestBlock = -1;
+    /**
+     * The last isSyncing value a health response actually STATED
+     * (versionCode 24, audit finding B23-B1): an absent — or
+     * non-boolean — isSyncing field is "not said", not false, the
+     * same principle F8 and B-1 applied to highestBlock and peers.
+     * Updated only inside pollOnce's generation-checked locked
+     * batch, and reset at session establishment with the other
+     * retained poll values. False before the first stated value —
+     * the same default the old optBoolean fallback produced there.
+     */
+    private volatile boolean lastKnownSyncing = false;
     private volatile String lastNotifText = "";
 
     private LogSink logSink;
@@ -338,6 +359,7 @@ public class NodeService extends Service {
             sessionStartElapsedMs = SystemClock.elapsedRealtime();
             lastUptimeSaveElapsedMs = sessionStartElapsedMs;
             prevBestBlock = -1;
+            lastKnownSyncing = false;
             // External audit round 2 (F9): the notification de-dup
             // key must not survive into a new session. The
             // startForeground() above posted this session's first
@@ -939,7 +961,7 @@ public class NodeService extends Service {
         final boolean pidRecorded;
         final long resolvedPid;
         synchronized (PID_LOCK) {
-            awaitLeftoverNodeProcess();
+            awaitLeftoverNodeProcess(gen);
             proc = pb.start();
             // Finding 7: the lifetime clock starts HERE, at the actual
             // spawn — not before launch(), whose wait above could
@@ -1033,12 +1055,29 @@ public class NodeService extends Service {
      * or left by one of this process's own sessions — is never
      * killed: it has an owner, or its owner already destroyed it.
      *
+     * The kill is revalidated at the last moment (versionCode 24,
+     * audit finding A-6): the gate conditions above are evaluated
+     * from values this worker captured or read earlier — above all
+     * {@link #sessionIsFirstInProcess}, which lives on the service
+     * INSTANCE. A worker of a destroyed instance can be stalled
+     * before this method while a new instance establishes its own
+     * session and spawns its node; the pid file such a worker then
+     * reads names the new session's living node, and its captured
+     * "first" is still true. So immediately before terminating
+     * anything, this method confirms (a) that the caller's
+     * generation is still the current generation — a stale worker's
+     * is not, every teardown bumps it — and (b) that the pid file
+     * still names the pid this call has been waiting on, unchanged
+     * since the wait began. If either check fails, nothing is
+     * killed and the launch refuses, exactly as it did before the
+     * orphan recovery existed.
+     *
      * Called with {@link #PID_LOCK} held (from launch()); the pid-file
      * reads and clears inside ride on the same lock (monitors are
      * reentrant), which is what makes this check indivisible from the
      * spawn that follows it.
      */
-    private void awaitLeftoverNodeProcess() throws IOException {
+    private void awaitLeftoverNodeProcess(int gen) throws IOException {
         final Process prev = nodeProcess;
         final long leftoverPid;
         final boolean trackByObject;
@@ -1073,20 +1112,42 @@ public class NodeService extends Service {
             // verifiably gone — the strict identity is re-checked by
             // the wait itself, so a pid recycled in the meantime is
             // never mistaken for the orphan.
-            logApp("node process (pid " + leftoverPid + ") was left behind"
-                    + " by a previous incarnation of this app and has no"
-                    + " living owner; terminating it to recover");
-            try {
-                android.os.Process.killProcess((int) leftoverPid);
-            } catch (RuntimeException e) {
-                logApp("orphan termination failed for pid " + leftoverPid
-                        + ": " + e);
-            }
-            if (awaitLeftoverExit(null, leftoverPid, false)) {
-                clearPidFileIfMatches(leftoverPid);
-                logApp("orphaned node process (pid " + leftoverPid
-                        + ") terminated; proceeding with the start");
-                return;
+            //
+            // First, though, the last-moment revalidation
+            // (versionCode 24, audit finding A-6; see the method
+            // doc): this worker's generation must still be the
+            // current generation, and the pid record must still
+            // name the pid this call has been waiting on, unchanged
+            // since the wait began. A stale worker of a destroyed
+            // instance fails the generation check by construction —
+            // its session's teardown bumped the generation — and a
+            // record written by a newer session fails the second.
+            // Either failure stands the recovery down: nothing is
+            // killed, and the refusal below is the outcome, exactly
+            // as before the recovery existed.
+            if (gen == sessionGen.get()
+                    && readPidFile() == leftoverPid) {
+                logApp("node process (pid " + leftoverPid + ") was left behind"
+                        + " by a previous incarnation of this app and has no"
+                        + " living owner; terminating it to recover");
+                try {
+                    android.os.Process.killProcess((int) leftoverPid);
+                } catch (RuntimeException e) {
+                    logApp("orphan termination failed for pid " + leftoverPid
+                            + ": " + e);
+                }
+                if (awaitLeftoverExit(null, leftoverPid, false)) {
+                    clearPidFileIfMatches(leftoverPid);
+                    logApp("orphaned node process (pid " + leftoverPid
+                            + ") terminated; proceeding with the start");
+                    return;
+                }
+            } else {
+                logApp("orphan recovery stood down for pid " + leftoverPid
+                        + ": the asking session is no longer current, or"
+                        + " the pid record changed during the wait;"
+                        + " refusing instead of terminating a process"
+                        + " that may have a living owner");
             }
         }
         logApp("previous node process (pid " + leftoverPid
@@ -2095,9 +2156,26 @@ public class NodeService extends Service {
         // retained count below; -1 now means "this response did not
         // say", and the batch keeps the retained value — the same
         // principle F8 applied to highestBlock.
-        boolean peersKnown = health.has("peers") && !health.isNull("peers");
-        int peers = peersKnown ? health.optInt("peers", 0) : -1;
-        boolean isSyncing = health.optBoolean("isSyncing", false);
+        //
+        // versionCode 24 (audit finding B23-B1): the same principle,
+        // applied to the value's TYPE as well as its presence. A
+        // "peers" that is present but not a number (a string, say)
+        // still fell through to optInt's coercion/default and could
+        // overwrite the retained count with a manufactured 0; it is
+        // adopted now only when it actually is a JSON number, like
+        // the optLong sentinel pattern current/highest already use.
+        // And "isSyncing" used to be read with a flat false default:
+        // absent meant "not syncing" by construction and could call
+        // a node SYNCED on a response that never said. It now has a
+        // retained value (lastKnownSyncing), stated only by an
+        // actual JSON boolean and applied inside the locked batch
+        // below; anything else is "not said".
+        Object peersValue = health.opt("peers");
+        int peers = (peersValue instanceof Number)
+                ? ((Number) peersValue).intValue() : -1;
+        Object syncingValue = health.opt("isSyncing");
+        Boolean freshSyncing = (syncingValue instanceof Boolean)
+                ? (Boolean) syncingValue : null;
 
         JSONObject sync = rpcCall("system_syncState");
         long current = -1;
@@ -2116,6 +2194,10 @@ public class NodeService extends Service {
                 st.peers = peers;
                 TrackStore.observePeers(this, peers);
             }
+            if (freshSyncing != null) {
+                lastKnownSyncing = freshSyncing;
+            }
+            boolean isSyncing = lastKnownSyncing;
             if (sync != null) {
                 if (current >= 0) {
                     if (prevBestBlock >= 0 && current > prevBestBlock) {
