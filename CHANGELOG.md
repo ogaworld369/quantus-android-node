@@ -8,6 +8,110 @@ the first public release (published 2026-11-04).
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 25 / v0.1.5 — 2026-11-06
+- **Maintenance release: all eleven verified findings of the
+  three external audits of v0.1.4 (ChatGPT chat, re-audit and
+  Codex/Astra rounds) — five mediums (M1, M2, M3, F-02, F-03) and
+  six lows (F-01/L2, L3, L4, M4, M5, F-05). Nothing is deferred.**
+  No changes to the node launch arguments, the database, the
+  permissions, or the bundled node binary (still the versionCode
+  10 build). Two audits' findings overlapped (the re-audit's F-01
+  and F-02 are the first round's L2 and L1); the list below uses
+  the consolidated numbering of the verification reports.
+  - **Cleartext loopback RPC is permitted by an explicit, narrow
+    configuration (medium, M1).** The 2026-11-04 dismissal of this
+    finding rested on a premise primary sources do not support:
+    for targetSdk 28+ the platform's default network security
+    policy denies cleartext everywhere, with no loopback exception
+    before the implicit localhost configuration of API 37. The app
+    now ships a network security configuration whose base denies
+    cleartext and whose only permitted destinations are 127.0.0.1
+    and localhost — the loopback polling the UI depends on is
+    permitted by policy across the whole supported range, and
+    nothing else is. SECURITY.md's earlier wording is corrected.
+  - **Orphan recovery is licensed by provenance, not by a
+    consumable first-session flag (medium, M2).** The pid record
+    now also stamps the incarnation id of the app process that
+    spawned the child. A leftover stamped by a previous, dead
+    incarnation (or unstamped — a pre-versionCode-25 record) can
+    be recovered by any session of this process, so a recovery
+    that stands down (a stop landing inside the leftover wait)
+    no longer consumes the right forever. A leftover stamped by
+    THIS process is never orphan-killed, the versionCode 24
+    last-moment revalidation (generation still current, record
+    unchanged) is kept, and at most one recovery completes per
+    process.
+  - **An interrupted spawn leaves a findable trace (medium,
+    M3).** launch() stamps a spawn-intent marker (its incarnation
+    id) immediately before ProcessBuilder.start() and removes it
+    once the child's pid is on record; if the record write fails,
+    the marker stays. A later incarnation that finds a foreign
+    marker scans /proc for processes running this app's node
+    executable — not limited to its own children — strictly
+    verifies each candidate's full executable path, and treats a
+    found process through the same wait-and-recovery gate as a
+    recorded leftover. A foreign marker whose scan finds nothing
+    is stale and cleared.
+  - **"Sync complete" now requires evidence (medium, F-02; the
+    first round's L1, re-rated on verification).** A session is
+    judged SYNCED only after at least one system_syncState
+    response in that session carried a valid block height. Before
+    that evidence exists the status stays SYNCING — on the first
+    poll (the original L1 shape) and for as long as a partial
+    failure (health answering, syncState failing) persists,
+    instead of re-deriving SYNCED from the initial retained
+    values on every poll indefinitely.
+  - **A stop now escalates (medium, F-03).** The user-stop path
+    still delivers destroy() immediately after the teardown
+    settles, but a daemon thread now waits (bounded) for the exit
+    and escalates to destroyForcibly() for a child that ignores
+    it — previously one destroy() with no wait was all any stop
+    path had, and an unresponsive child wedged every later start
+    in the process. The same escalation backs onDestroy and the
+    FGS-timeout path (their destroy stays immediate; the wait is
+    the thread's), and the not-accepted teardown escalates before
+    deciding whether the child's pid record may be cleared.
+  - **The log drain bounds a line while reading it (low,
+    F-01/L2).** The drain reads in chunks and accumulates a line
+    only up to a byte cap (one byte under the log sink's per-line
+    cap); the rest of an over-long line is consumed and discarded
+    up to its newline. A newline-free input of any length —
+    the auditor demonstrated an out-of-memory with 64 MiB against
+    the old readLine() drain — now costs a bounded buffer; the
+    sinks' own caps still apply to the delivered prefix.
+  - **An RPC call has an overall deadline, and a stop aborts the
+    in-flight call (low, L3).** One monotonic 5 s deadline covers
+    the whole call (the per-read timeout never bounded a trickling
+    response), and the teardowns disconnect the in-flight
+    connection so a blocked poll ends with its session instead of
+    outliving it.
+  - **The destroyed-child wait uses the monotonic clock (low,
+    L4).** waitForExitBounded was the one remaining wall-clock
+    deadline in the service; a clock setback could stretch its
+    5 s bound by the full setback.
+  - **A cancelled start no longer spawns (low, M4).** launch()
+    re-checks, after the leftover wait and immediately before the
+    spawn, that its session is still started and current; a stop
+    delivered during the wait now results in no spawn at all,
+    instead of a spawn with stale settings that the acceptance
+    check then had to destroy.
+  - **Parallel manual builds cannot cross-contaminate (low,
+    M5).** build-manual.sh gives every run a private work
+    directory (signing mode + pid), so the file a run moves to
+    the final path is always the file that same run signed and
+    verified; the previous-APK set-aside on failure (P-5/F10) is
+    unchanged.
+  - **Uptime accrues from the spawn, not the session (low,
+    F-05).** The accrual anchor is set when the first spawned
+    process is accepted, to the spawn timestamp — the leftover
+    wait (up to 5 s) no longer counts — and the worker closes
+    the accrual at the moment it observes the exit, so a session
+    refused or failed before any spawn accrues nothing and the
+    post-exit bookkeeping no longer inflates the total.
+  - All nine FOOTER_INFO strings read v0.1.5, and the generated
+    table in docs/I18N.md is regenerated to match (49 keys × 9
+    languages, all cells compared).
+
 ## versionCode 24 / v0.1.4 — 2026-11-05
 - **Maintenance release: all five findings of the full-section
   audit of v0.1.3 (three new lows — A-6, B23-B1, C23-1 — and two
