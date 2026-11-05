@@ -48,6 +48,28 @@ if [ "$SIGNING" = "release" ]; then
   REL_ALIAS="${QUANTUS_RELEASE_ALIAS:-quantus-release}"
   OUT_DIR="$APP_DIR/build/outputs/apk/release"
   OUT_APK="$OUT_DIR/quantus-node-release.apk"
+elif [ "$SIGNING" != "debug" ]; then
+  echo "ERROR: QUANTUS_SIGNING must be 'debug' or 'release' (got: $SIGNING)" >&2
+  exit 1
+fi
+
+# P-5: a failed build must never leave a stale APK at the final path
+# (it was reproduced being mistaken for the new build). Set the
+# previous build aside first; the fresh APK is moved to $OUT_APK only
+# after every step — signing included — has succeeded.
+# External audit round 2 (F10): this block used to sit AFTER the
+# keystore and native-library preflight checks, so a build that
+# failed in one of those checks left the previous APK at the final
+# path after all. $OUT_APK is final at this point, so the set-aside
+# happens here — before every check that can fail the build.
+if [ -f "$OUT_APK" ]; then
+  mv -f "$OUT_APK" "$OUT_APK.prev"
+fi
+if [ -f "$OUT_APK.idsig" ]; then
+  mv -f "$OUT_APK.idsig" "$OUT_APK.idsig.prev"
+fi
+
+if [ "$SIGNING" = "release" ]; then
   if [ ! -f "$REL_KS" ]; then
     echo "ERROR: release keystore not found: $REL_KS" >&2
     exit 1
@@ -56,9 +78,6 @@ if [ "$SIGNING" = "release" ]; then
     echo "ERROR: release keystore password file not found: $REL_PASS_FILE" >&2
     exit 1
   fi
-elif [ "$SIGNING" != "debug" ]; then
-  echo "ERROR: QUANTUS_SIGNING must be 'debug' or 'release' (got: $SIGNING)" >&2
-  exit 1
 fi
 
 for so in libquantus_node.so libc++_shared.so; do
@@ -70,17 +89,6 @@ done
 
 rm -rf "$WORK"
 mkdir -p "$WORK/classes" "$WORK/dex" "$WORK/stage/lib/arm64-v8a" "$OUT_DIR"
-
-# P-5: a failed build must never leave a stale APK at the final path
-# (it was reproduced being mistaken for the new build). Set the
-# previous build aside first; the fresh APK is moved to $OUT_APK only
-# after every step — signing included — has succeeded.
-if [ -f "$OUT_APK" ]; then
-  mv -f "$OUT_APK" "$OUT_APK.prev"
-fi
-if [ -f "$OUT_APK.idsig" ]; then
-  mv -f "$OUT_APK.idsig" "$OUT_APK.idsig.prev"
-fi
 
 # 1) Debug keystore (same well-known debug key AGP uses), created once.
 if [ ! -f "$DEBUG_KS" ]; then

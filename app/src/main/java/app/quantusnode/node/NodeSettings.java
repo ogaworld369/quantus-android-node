@@ -140,12 +140,33 @@ public final class NodeSettings {
         // node's CLI parser as another option instead of the --name
         // value, failing the start. If nothing usable remains, the
         // check below falls back to the default name.
-        int lead = 0;
-        while (lead < s.length() && s.charAt(lead) == '-') {
-            lead++;
-        }
-        if (lead > 0) {
+        //
+        // External audit round 2 (F11): one strip-then-trim pass is
+        // not enough — in "- --help" the space hides the second dash
+        // run, so the single pass produced "--help", an option token
+        // again. Strip-and-trim now repeats until the value is
+        // stable. A value that needs more than one stripping pass
+        // was a dash run smuggled past whitespace ("- --help"):
+        // rather than keep whatever it reduces to, fall back to the
+        // default name. A single contiguous run is an ordinary typo
+        // and is simply removed ("--abc" -> "abc", "-" -> default).
+        int stripPasses = 0;
+        while (true) {
+            int lead = 0;
+            while (lead < s.length() && s.charAt(lead) == '-') {
+                lead++;
+            }
+            if (lead == 0) {
+                break;
+            }
+            stripPasses++;
             s = s.substring(lead).trim();
+            if (s.isEmpty()) {
+                break;
+            }
+        }
+        if (stripPasses > 1) {
+            return DEFAULT_NODE_NAME;
         }
         return s.isEmpty() ? DEFAULT_NODE_NAME : s;
     }

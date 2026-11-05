@@ -9,12 +9,12 @@ the first public release (published 2026-11-04).
 node binary is unchanged unless a build says otherwise).
 
 ## versionCode 22 / v0.1.2 — 2026-11-05
-- **Maintenance release: the six findings of the external
-  (ChatGPT) audit of v0.1.1 — three medium, three low — each
-  verified against the code first, and all fixed here.** No
-  changes to the node launch arguments, the database, the
-  permissions, or the bundled node binary (still the versionCode
-  10 build).
+- **Maintenance release: the findings of the external (ChatGPT)
+  audit of v0.1.1 — eleven in total, delivered in two rounds
+  (six, then five more), each verified against the code first,
+  and all fixed here.** No changes to the node launch arguments,
+  the database, the permissions, or the bundled node binary
+  (still the versionCode 10 build). The first six:
   - **A cancelled start no longer loses track of its child
     (medium).** When a stop arrived while the node was still
     starting, the unaccepted child was destroyed and its pid
@@ -81,6 +81,57 @@ node binary is unchanged unless a build says otherwise).
     source set (its roots must contain ABI-named
     subdirectories), so the staging directory is now named
     explicitly and the staging step stays required.
+- The second round's five:
+  - **A deeply nested RPC response can no longer kill the
+    poller (medium).** org.json parses recursively, and a
+    response body (up to the 64 KiB cap) of almost pure
+    brackets overflows the stack: StackOverflowError is an
+    Error, so it escaped rpcCall's catch (Exception) and
+    runPoller's, and the polling thread died silently while
+    the node kept running. (Reproduced against the AOSP
+    org.json implementation, not on a device.) rpcCall now
+    guards the parse with catch (Throwable) and returns null —
+    a failed call, exactly like a timeout — and runPoller's
+    catch is widened to Throwable as a last-resort net: a
+    failed poll is a state, never a dead thread. State stays
+    consistent because pollOnce applies its writes in
+    generation-checked locked batches and the next poll
+    re-reads everything.
+  - **A missing highestBlock no longer reads as "synced"
+    (low).** When system_syncState answered without a
+    highestBlock, "at head" was judged true by definition and
+    the status flipped to SYNCED mid-sync. Both status
+    branches now judge against the retained last-known
+    highest (updated first when a fresh value arrives); with
+    no sync state at all, the retained best and highest are
+    compared the same way. Before the first successful read
+    nothing is retained and the behaviour is as before.
+  - **The status notification can no longer get stuck on the
+    previous session's text (low).** The de-duplication key
+    survived across sessions while the new session's first
+    notification is posted directly by startForeground —
+    which never updates the key — so a matching key made the
+    poller skip a post that had never reached the shade for
+    the new session. The key is now reset where the session
+    is established, alongside the other per-session state.
+  - **The manual build's stale-APK set-aside now happens
+    before every preflight check (low).** This closes the
+    residual gap in P-5: the set-aside block sat after the
+    keystore and native-library checks, so a build failing
+    there still left the previous APK at the final path. It
+    now runs as soon as the output path is decided. Verified
+    with a negative test (keystore path pointed nowhere):
+    the build fails, and the old APK and its .idsig are
+    already at *.prev.
+  - **Display-name sanitizing no longer lets a dash run hide
+    behind a space (low).** Stripping leading dashes once and
+    then trimming turned "- --help" into "--help" — an
+    option token again. Strip-and-trim now repeats until
+    stable, and a value that needs more than one pass (a
+    dash run smuggled past whitespace) falls back to the
+    default name instead of keeping what it reduces to; a
+    single contiguous run is still just removed
+    ("--abc" -> "abc").
 
 ## versionCode 21 / v0.1.1 — 2026-11-05
 - **Maintenance release: the low-severity findings of the
