@@ -52,7 +52,11 @@ node binary is unchanged unless a build says otherwise).
     a public issue keeps its diagnostic structure without them.
     The summary block carries none of those values either way.
     If the device's addresses cannot be enumerated, masking
-    stays on for that share.
+    stays on for that share. The external address the node
+    learns through its peers (the "Discovered new external
+    address" lines) is the network's outward-facing public
+    address, not an interface address, so it is not masked and
+    can remain in a shared log.
   - **Two small records feed the summary.** Accepted session
     starts are stamped (kept for 7 days, at most 100 entries; a
     full record marks the 24-hour count as a lower bound) for
