@@ -10,9 +10,10 @@ node binary is unchanged unless a build says otherwise).
 
 ## versionCode 25 / v0.1.5 — 2026-11-06
 - **Maintenance release: all eleven verified findings of the
-  three external audits of v0.1.4 (ChatGPT chat, re-audit and
-  Codex/Astra rounds) — five mediums (M1, M2, M3, F-02, F-03) and
-  six lows (F-01/L2, L3, L4, M4, M5, F-05). Nothing is deferred.**
+  three external audits of v0.1.4 (the first audit, the
+  re-audit and an additional audit round) — five mediums
+  (M1, M2, M3, F-02, F-03) and six lows (F-01/L2, L3, L4,
+  M4, M5, F-05). Nothing is deferred.**
   No changes to the node launch arguments, the database, the
   permissions, or the bundled node binary (still the versionCode
   10 build). Two audits' findings overlapped (the re-audit's F-01
@@ -110,7 +111,7 @@ node binary is unchanged unless a build says otherwise).
     the accrual at the moment it observes the exit, so a session
     refused or failed before any spawn accrues nothing and the
     post-exit bookkeeping no longer inflates the total.
-  - **A re-audit of this build (Codex/Astra, against the
+  - **A further re-audit of this build (run against the
     repository at the versionCode 25 commit) confirmed seven of
     the eleven closed, returned four as partially closed, and
     added four new observations — eight residuals in total, all
