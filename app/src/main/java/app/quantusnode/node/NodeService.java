@@ -449,6 +449,17 @@ public class NodeService extends Service {
             st.lastExitCode = null;
             st.lastNote = null;
             st.lastAttempts = java.util.Collections.emptyList();
+            // versionCode 26: the stop classification and the
+            // per-session display anchors start empty for the new
+            // session. sessionAcceptedElapsedMs stamps the moment
+            // this start was accepted (session establishment): the
+            // UI's "current uptime" counts from here — not from the
+            // button press, and not from the spawn (the cumulative
+            // accrual keeps its own spawn anchor, finding F-05).
+            st.lastStopKind = NodeState.StopKind.NONE;
+            st.sessionAcceptedElapsedMs = SystemClock.elapsedRealtime();
+            st.lastObservedBestBlock = -1;
+            st.lastObservedElapsedMs = -1;
             // No launch snapshot yet for this session: the worker fills
             // it in when the process is actually launched. Until then
             // the UI must not claim a settings/restart mismatch against
@@ -583,6 +594,9 @@ public class NodeService extends Service {
             started.set(false);
             logApp("foreground service timed out by the system; stopping node");
             NodeState.get().lastNote = I18n.get(this, StringsTable.NOTE_FGS_TIMEOUT);
+            // versionCode 26: display classification — this stop is
+            // the system's time limit, not a failure (spec A (c)).
+            markStopKindLocked(NodeState.StopKind.TIME_LIMIT);
             disconnectInFlightRpc();
             Process p = nodeProcess;
             if (p != null) {
@@ -623,6 +637,9 @@ public class NodeService extends Service {
             stoppedProcess = nodeProcess;
             saveUptimeLocked();
             sessionStartElapsedMs = -1; // no live session any more
+            // versionCode 26: display classification — a user stop,
+            // even when the destroyed child exits non-zero (spec A (d)).
+            markStopKindLocked(NodeState.StopKind.USER);
             NodeState.get().status = NodeState.Status.STOPPED;
             // The self-stop is decided and executed inside this same
             // locked section (finding 3, re-audit): no START can slip
@@ -772,6 +789,8 @@ public class NodeService extends Service {
                 if (gen == sessionGen.get()) {
                     NodeState.get().lastNote =
                             I18n.get(this, StringsTable.NOTE_BINARY_MISSING);
+                    // versionCode 26: display classification.
+                    markStopKindLocked(NodeState.StopKind.BINARY_MISSING);
                 }
             }
             finishAsStopped(gen, null);
@@ -826,6 +845,9 @@ public class NodeService extends Service {
                     if (gen == sessionGen.get()) {
                         NodeState.get().lastNote = I18n.format(
                                 this, StringsTable.NOTE_START_FAILED, e.getMessage());
+                        // versionCode 26: display classification —
+                        // both launch attempts failed (spec A (a)).
+                        markStopKindLocked(NodeState.StopKind.START_FAILED);
                     }
                 }
                 finishAsStopped(gen, null);
@@ -866,6 +888,9 @@ public class NodeService extends Service {
                     if (gen == sessionGen.get()) {
                         NodeState.get().lastNote = I18n.format(
                                 this, StringsTable.NOTE_START_FAILED, what);
+                        // versionCode 26: display classification —
+                        // both launch attempts failed (spec A (a)).
+                        markStopKindLocked(NodeState.StopKind.START_FAILED);
                     }
                 }
                 finishAsStopped(gen, null);
@@ -1114,6 +1139,18 @@ public class NodeService extends Service {
                 logApp("quick exit; retrying once via /system/bin/linker64");
                 triedLinker = true;
                 continue;
+            }
+            // versionCode 26: classify this end of session for the
+            // UI (display only). Reaching the finish with the
+            // generation still current and `started` still set means
+            // no stop path settled the session — the child exited on
+            // its own, and classifyWorkerExit tells a start that
+            // never got going from a node that ran and then stopped.
+            synchronized (stateLock) {
+                if (gen == sessionGen.get() && started.get()) {
+                    markStopKindLocked(
+                            classifyWorkerExit(attempts, QUICK_EXIT_MS));
+                }
             }
             finishAsStopped(gen, code);
             return;
@@ -2404,6 +2441,50 @@ public class NodeService extends Service {
     }
 
     /**
+     * Record how the current stopped episode ended (versionCode 26).
+     * Caller MUST hold {@link #stateLock}. First writer wins:
+     * whichever path settles the session first owns the
+     * classification, so a worker exit that lands just before a user
+     * stop is not rewritten as a user stop, and a stop that lands
+     * first is not rewritten as an unexpected exit by the worker's
+     * delayed finish. Display data only — no lifecycle decision
+     * reads this back.
+     */
+    private void markStopKindLocked(NodeState.StopKind kind) {
+        NodeState st = NodeState.get();
+        if (st.lastStopKind == NodeState.StopKind.NONE) {
+            st.lastStopKind = kind;
+        }
+    }
+
+    /**
+     * Classify a worker-observed end of session (versionCode 26).
+     * An attempt "failed to start" when it never produced a process
+     * (no exit code) or exited non-zero inside the quick-exit
+     * window — the same quick-failure notion the launch retry uses.
+     * When EVERY attempt of the session failed to start, the start
+     * itself failed; otherwise some attempt genuinely got going (a
+     * long run, or a clean exit nobody requested) and its end is an
+     * unexpected stop. Static and value-based, so the real method
+     * can be exercised on a JVM.
+     */
+    static NodeState.StopKind classifyWorkerExit(
+            List<NodeState.Attempt> attempts, long quickExitMs) {
+        boolean allFailedToStart = !attempts.isEmpty();
+        for (NodeState.Attempt a : attempts) {
+            boolean failedToStart = a.exitCode == null
+                    || (a.exitCode != 0 && a.livedMs < quickExitMs);
+            if (!failedToStart) {
+                allFailedToStart = false;
+                break;
+            }
+        }
+        return allFailedToStart
+                ? NodeState.StopKind.START_FAILED
+                : NodeState.StopKind.UNEXPECTED;
+    }
+
+    /**
      * End-of-session teardown for the worker / timeout paths. The
      * whole decision — "is my generation still the live one?" — and
      * every write that follows from it happen inside {@link #stateLock}:
@@ -3058,6 +3139,10 @@ public class NodeService extends Service {
                 return; // stopped / finished while the calls were in flight
             }
             NodeState st = NodeState.get();
+            // versionCode 26: the batch's "before" picture, for the
+            // observation record at the end of the batch.
+            long bestBeforeBatch = st.bestBlock;
+            NodeState.Status statusBeforeBatch = st.status;
             if (peers >= 0) {
                 st.peers = peers;
                 TrackStore.observePeers(this, peers);
@@ -3144,6 +3229,21 @@ public class NodeService extends Service {
                         || st.bestBlock >= st.highestBlock;
                 st.status = (isSyncing || !atHead || !syncEvidenceSeen)
                         ? NodeState.Status.SYNCING : NodeState.Status.SYNCED;
+            }
+            // versionCode 26: an "observation" is a poll that first
+            // sees a higher best block while the node was ALREADY
+            // synced — the transition into SYNCED does not count,
+            // and neither does the session's first read
+            // (bestBeforeBatch < 0). The service records it here so
+            // the UI's ripple and "last observed" line key off facts
+            // the service saw, and an activity rebuild can neither
+            // fabricate nor lose one.
+            if (current >= 0 && bestBeforeBatch >= 0
+                    && current > bestBeforeBatch
+                    && statusBeforeBatch == NodeState.Status.SYNCED
+                    && st.status == NodeState.Status.SYNCED) {
+                st.lastObservedBestBlock = current;
+                st.lastObservedElapsedMs = SystemClock.elapsedRealtime();
             }
         }
         updateNotificationMaybe(gen);
