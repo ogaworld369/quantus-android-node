@@ -1,98 +1,99 @@
-# 一般公開までの手順（リリース準備チェックリスト）
+# Steps to Public Release (Release Preparation Checklist)
 
-作成: 2026-11-03。本人の決定により、一般公開（GitHub Release での APK 配布）は以下のゲートをすべて通してから行う。通過していない項目がある状態では公開しない。
+Created: 2026-11-03. By the owner's decision, a public release (APK distribution via GitHub Release) is performed only after passing all of the following gates. Nothing is published while any item is unpassed.
 
-現状: 公開済みの最新版は v0.2.0（versionCode 26、UI 全面刷新版）で、2026-11-06 16:48 に GitHub Release で公開済み（Latest。タグ対象は main コミット 0459e9e7）。v0.1.5（versionCode 25）は 2026-11-06、v0.1.4 は 2026-11-05 23:59、v0.1.3 は同日 23:29、v0.1.2 は同日 22:29、v0.1.1 は同日 13:53、v0.1.0 は 2026-11-04 22:50 に公開。本文書の以下の記録は公開済み版についてのもの。v0.2.0 は単一スクロールページを4画面（ホーム／ノード詳細／航跡／設定）に再構成した UI 全面刷新版で、失敗の分類表示と理由・再試行の導線、表示名の検証付きダイアログ編集（サニタイズ後 64 コードポイントを超える場合は切り詰めずに拒否）、未適用設定の項目別表示とホームの確認リンク、言語別の複数形、Quantus 公式カラー（quantus.com の void #0E0E0E・surface #181818・flare #FF6B35・content #E8E6E0、同期完了はブランドグリーン #4ADE80）への配色変更を含む。あわせて、出荷版で「?」に化けていた非英語 UI 文字列 242 件を vc24 のコミット済みテーブルから原文どおり復旧し（再発防止の検査を追加）、「未提供」の注記だけを表示していた量子ウォッチのプレースホルダ表示を排除した。ノード起動引数・DB・権限・同梱ノードバイナリ（vc10 ビルド）に変更はない。公開前の全セクション監査では重大・高・中ゼロ（低7件、全件対応済み）。実機での上書き更新と設定・同期データの保持を確認済み。APK（quantus-node-v0.2.0.apk、55,733,030 bytes）の SHA-256 は `ec13212cf4e4a6e9597b7779591966e094eff30fc12454030a08535442e218ee` で、公開ページのアセット digest と照合済み。v0.1.5 は v0.1.4 への外部監査（3回分）の検証済み所見 全11件（中5件・低6件）と、その修正版への再監査で見つかった残件8件（いずれも低、見送りなし）への対応版で、実機での上書き更新とデータ保持（ユーザーデータ 1.21GB の維持）を確認済み。APK（quantus-node-v0.1.5.apk、55,700,262 bytes）の SHA-256 は `22ab1fe1faa9e07598a3b13f24dd7a299c8bef403af655239a7fe25029e9ec2e` で、公開ページのアセット digest と照合済み。v0.1.4 は vc23 全セクション監査の全5件（新規の低3件と持ち越し2件、見送りなし）への対応版で、実機での上書き更新と先端復帰、停止→即開始、フッターの v0.1.4 表示も確認済み。APK（quantus-node-v0.1.4.apk、55,700,181 bytes）の SHA-256 は `f662112bc213b0ae5f9be724b5421badf39730652381ca0ae3dc22e8b1ec74b2` で、公開ページのアセット digest と照合済み。v0.1.3 は vc22 全セクション監査（中3件・低17件）のうち中3件と実害系の低への対応版で、実機での上書き更新と先端復帰、停止→即開始、フッターの v0.1.3 表示も確認済み。APK（quantus-node-v0.1.3.apk、55,700,181 bytes）の SHA-256 は `dff1df99e5fa75f253477dcae1e46c04a2cf2672c4411c88b8207cdf639680e0` で、公開ページのアセット digest と照合済み。v0.1.2 は ChatGPT 外部監査（v0.1.1 対象、全11件）の対応版で、実機での上書き更新と先端復帰、開始直後の停止→即開始（監査の中心所見だった起動取消し競合の修正箇所）も確認済み（APK の SHA-256 は `7c196901d0160a6035bf931eb8bc69fbbf13e4ea17c9510e2891be7ac0548b7f`）。v0.1.1 は vc20 全監査の低重要度所見への修正版で、実機での上書き更新と先端復帰も確認済み。リリース版での実機フル同期（2026-11-05、#349,518）とテレメトリ掲載も確認済み。DB 容量の初回実測は同期完了時点で合計1.30GB。残るのは Gate 1 の定量評価（DB 容量の頭打ち・電池・発熱）と Gate 4 のライセンス同梱など、Phase 4 側の項目。
+Current status: The latest published release is v0.2.0 (versionCode 26, the UI redesign release), published as a GitHub Release on 2026-11-06 16:48 (Latest; the tag target is main commit 0459e9e7). v0.1.5 (versionCode 25) was published on 2026-11-06, v0.1.4 on 2026-11-05 23:59, v0.1.3 the same day at 23:29, v0.1.2 the same day at 22:29, v0.1.1 the same day at 13:53, and v0.1.0 on 2026-11-04 22:50. The records below in this document concern the published releases. v0.2.0 is the UI redesign release that restructured the single scrolling page into four screens (Home / Node details / Track record / Settings), including failure classification display with a reason and retry path, dialog editing of the display name with validation (if it exceeds 64 code points after sanitization, it is refused rather than truncated), per-item display of unapplied settings and a check link on the home screen, per-language plural forms, and the color change to the official Quantus colors (quantus.com's void #0E0E0E, surface #181818, flare #FF6B35, content #E8E6E0; Synced uses the brand green #4ADE80). Along with this, 242 non-English UI strings that had been mangled into "?" in the shipped build were restored verbatim from the table committed at vc24 (with a regression check added), and the Quantum Watch placeholder display — which had shown only a "not available yet" note — was removed. There are no changes to the node launch arguments, the DB, permissions, or the bundled node binary (the vc10 build). The pre-release full-section audit found zero critical, high, or medium findings (7 low, all addressed). An in-place update on a real device and the preservation of settings and sync data were confirmed. The SHA-256 of the APK (quantus-node-v0.2.0.apk, 55,733,030 bytes) is `ec13212cf4e4a6e9597b7779591966e094eff30fc12454030a08535442e218ee`, verified against the asset digest on the release page. v0.1.5 addressed all 11 verified findings (5 medium, 6 low) from the external audits of v0.1.4 (3 rounds) and the 8 remaining items (all low, none deferred) found in the re-audit of the fixed version; an in-place update on a real device and data preservation (user data of 1.21GB maintained) were confirmed. The SHA-256 of the APK (quantus-node-v0.1.5.apk, 55,700,262 bytes) is `22ab1fe1faa9e07598a3b13f24dd7a299c8bef403af655239a7fe25029e9ec2e`, verified against the asset digest on the release page. v0.1.4 addressed all 5 findings of the vc23 full-section audit (3 new low and 2 carried over, none deferred); an in-place update on a real device, return to the tip, stop → immediate start, and the footer's v0.1.4 display were confirmed. The SHA-256 of the APK (quantus-node-v0.1.4.apk, 55,700,181 bytes) is `f662112bc213b0ae5f9be724b5421badf39730652381ca0ae3dc22e8b1ec74b2`, verified against the asset digest on the release page. v0.1.3 addressed the 3 medium findings and the harmful low findings of the vc22 full-section audit (3 medium, 17 low); an in-place update on a real device, return to the tip, stop → immediate start, and the footer's v0.1.3 display were confirmed. The SHA-256 of the APK (quantus-node-v0.1.3.apk, 55,700,181 bytes) is `dff1df99e5fa75f253477dcae1e46c04a2cf2672c4411c88b8207cdf639680e0`, verified against the asset digest on the release page. v0.1.2 addressed all 11 findings of the external audit of v0.1.1; an in-place update on a real device, return to the tip, and stop → immediate start right after starting (the fixed location of the startup-cancellation race that was the audit's central finding) were confirmed (the APK's SHA-256 is `7c196901d0160a6035bf931eb8bc69fbbf13e4ea17c9510e2891be7ac0548b7f`). v0.1.1 fixed the low-severity findings of the full vc20 audit; an in-place update on a real device and return to the tip were confirmed. A real-device full sync on the release build (2026-11-05, #349,518) and the telemetry listing were also confirmed. The first DB-size measurement was 1.30GB in total at sync completion. What remains are Phase 4-side items such as Gate 1's quantitative evaluation (the DB-size ceiling, battery, heat) and Gate 4's license bundling.
 
-## Gate 1: 実機検証（Pixel 9a / GrapheneOS）
+## Gate 1: Real-device verification (Pixel 9a / GrapheneOS)
 
-- [x] MVP APK がインストールでき、ノードが起動する（2026-11-03、versionCode 4 で確認）
-- [x] ブロック高が実際に増加し、同期が進む（同日、ジェネシスから先端 #341592 まで完走を確認）
-- [ ] 数時間の連続稼働で落ちない（Foreground Service の常駐が維持される）
-- [ ] プルーニング済み DB の容量が頭打ちになる傾向を確認する
-- [ ] 電池消費と発熱が日常使いと両立する範囲か
-- [ ] アプリ再起動・端末再起動のあと、同じプルーニング指定で正常に復帰する（モード不一致エラーにならない）
-- [x] 停止操作でノードが正常に止まる（2026-11-03、停止→開始の実施を確認。反復と端末再起動後は継続確認）
+- [x] The MVP APK installs and the node starts (confirmed 2026-11-03 with versionCode 4)
+- [x] The block height actually increases and syncing progresses (confirmed the same day, running to completion from genesis to the tip #341592)
+- [ ] It does not crash over several hours of continuous operation (Foreground Service residency is maintained)
+- [ ] Confirm the tendency for the pruned DB size to level off
+- [ ] Whether battery consumption and heat are in a range compatible with daily use
+- [ ] After an app restart or device reboot, it recovers normally with the same pruning settings (does not become a mode-mismatch error)
+- [x] The node stops normally with the stop operation (confirmed 2026-11-03, stop → start performed. Repetition and after device reboot remain under continued confirmation)
 
-判定: このゲートが全体の土台。1つでも失敗したら、原因を直してから次へ進む。
+Judgment: this gate is the foundation of everything. If even one item fails, fix the cause before moving on.
 
-## Gate 2: リリースビルド
+## Gate 2: Release build
 
-- [x] `cargo build --release` の Android 向けビルドが完走する（確認済み。fat LTO はビルド機のメモリ不足で不採用、thin LTO は実験の結果サイズ減に寄与せず不採用 — 設計書「その5」参照）
-- [x] release バイナリで APK を組み直し、サイズと同梱物を確認する（strip 後 約53.4MB、テスト配布版 versionCode 4〜10 で実施済み（vc10 は依存関係のセキュリティ更新を反映した再ビルド版、strip 後 53,411,080 bytes））
-- [x] バージョン番号を確定する（初回公開は v0.1.0。2026-11-04、versionCode 19 / versionName 0.1.0 に確定）
-- [ ] 【版上げのたび】build-manual.sh（aapt2 の --version-code / --version-name）と build.gradle の versionCode / versionName を新しい版に揃え、docs/I18N.md の「All strings」表を StringsTable から再生成して揃える。確認は機械的に: (1) アプリ内の版数表示（設定の最下部。ビルドの versionName から生成され、文字列テーブルには版数を埋め込まない。vc26 で FOOTER_INFO キー自体を廃止した）、(2) 再生成した表と docs/I18N.md の全セル（151キー × 9言語 = 1359セル）が一致すること（diff ゼロ）。旧 versionName の grep は補助に留める — 直前版でない版数（2版前など）の残留は「旧版数」の grep では原理的に捕捉できない（vc22 / v0.1.2 でフッターが v0.1.1 のまま出荷された DOC-1 と、vc23 / v0.1.3 で I18N.md のフッター行が v0.1.1 のまま残った C23-1 の再発防止 — 全セクション監査）
-- [ ] 【版上げのたび】旧 versionName と旧 versionCode を全追跡テキストファイルで検索し、ヒットを1件ずつ分類する。履歴記録（CHANGELOG、過去の公開記録、監査記録）は残してよいが、現在形の主張は新しい版を指していなければならない。対象の例: USAGE 全9ファイル冒頭のステータス行、SECURITY.md の「current release」、app/README.md 冒頭の仕様サマリ（versionName / versionCode）。フッター表記（FOOTER_INFO）と docs/I18N.md 生成表は上の項目で機械確認するため、ここでは重ねて扱わない（vc24 / v0.1.4 公開後の全体点検で、USAGE 全9ファイル・SECURITY.md・app/README.md に v0.1.3 を現行とする記述が残っていたことへの再発防止）
+- [x] The Android release build of `cargo build --release` runs to completion (confirmed. fat LTO was not adopted due to insufficient memory on the build machine; thin LTO was not adopted after the experiment showed it did not contribute to size reduction — see the design document's "part 5")
+- [x] Rebuild the APK with the release binary and confirm the size and bundled contents (about 53.4MB after strip; performed on the test distribution builds versionCode 4–10 (vc10 is the rebuild reflecting the dependency security updates, 53,411,080 bytes after strip))
+- [x] Settle the version number (the first public release is v0.1.0. Settled on 2026-11-04 as versionCode 19 / versionName 0.1.0)
+- [ ] [At every version bump] Align build-manual.sh (aapt2's --version-code / --version-name) and build.gradle's versionCode / versionName to the new version, and regenerate docs/I18N.md's "All strings" table from StringsTable to match. Confirmation is mechanical: (1) the in-app version display (at the bottom of Settings; generated from the build's versionName, and no version number is embedded in the string table. The FOOTER_INFO key itself was abolished in vc26), (2) the regenerated table and all cells of docs/I18N.md (151 keys × 9 languages = 1359 cells) agree (zero diff). A grep for the old versionName is only an aid — a grep for "old versions" in principle cannot catch leftovers of versions that are not the immediately preceding one (two versions back, etc.) (recurrence prevention for DOC-1, where in vc22 / v0.1.2 the footer shipped still showing v0.1.1, and C23-1, where in vc23 / v0.1.3 the footer row of I18N.md remained at v0.1.1 — full-section audit)
+- [ ] [At every version bump] Search all tracked text files for the old versionName and old versionCode, and classify each hit one by one. Historical records (the CHANGELOG, past release records, audit records) may remain, but statements in the present tense must point to the new version. Examples of targets: the status line at the top of all 9 USAGE files, SECURITY.md's "current release", the spec summary at the top of app/README.md (versionName / versionCode). The footer wording (FOOTER_INFO) and the docs/I18N.md generated table are mechanically confirmed in the item above, so they are not duplicated here (recurrence prevention for the fact that, at the post-release full check of vc24 / v0.1.4, descriptions stating v0.1.3 as current remained in all 9 USAGE files, SECURITY.md, and app/README.md)
 
-## Gate 3: 署名
+## Gate 3: Signing
 
-- [x] 配布専用のリリース鍵を生成する（debug 鍵は使わない）（2026-11-04 実施。詳細は後述「署名鍵の置き場所と正式署名ビルドの手順」）
-- [x] 鍵のバックアップを本人が安全に保持する。**この鍵を失うと、同じアプリとして更新版を二度と配れなくなる**（バックアップメモと本人保管用コピーを用意済み。パスワードの転記保管は本人の実施事項）
-- [x] keystore はリポジトリ・GitHub に絶対に入れない（リポジトリ外の `~/workspace/release-signing/` に保管し、混入がないことを git status と grep で確認済み）
-- [x] リリース鍵で署名した APK を検証し、SHA-256 チェックサムを Release に併記する（当初用意した versionCode 19 の APK の SHA-256 は `b01269297b8eb5d8a64a7b9629a5a9ebf782a56f2826760bf1eebcbbc884351d`。実際に公開したのはスクロール修正を入れた versionCode 20 で、その SHA-256 は `ef1ef477d6102333f7a5c2deaee9e512eee7a98b6282cd0c167dbd4d1d003583`。apksigner verify と証明書フィンガープリントの照合で確認済みで、Release 本文にも併記した）
+- [x] Generate a release-dedicated release key (do not use the debug key) (performed 2026-11-04. Details in "Where the signing key lives and the official signed-build procedure" below)
+- [x] The owner keeps a backup of the key safely. **If this key is lost, updated versions can never be distributed as the same app again** (a backup memo and a copy for the owner's keeping have been prepared. Transcribing and storing the password is the owner's own task)
+- [x] Never put the keystore in the repository or on GitHub (stored outside the repository in `~/workspace/release-signing/`, and confirmed free of contamination via git status and grep)
+- [x] Verify the APK signed with the release key and include the SHA-256 checksum with the Release (the SHA-256 of the versionCode 19 APK prepared initially was `b01269297b8eb5d8a64a7b9629a5a9ebf782a56f2826760bf1eebcbbc884351d`. What was actually published was versionCode 20, which included a scroll fix, and its SHA-256 is `ef1ef477d6102333f7a5c2deaee9e512eee7a98b6282cd0c167dbd4d1d003583`. Confirmed by apksigner verify and certificate fingerprint matching, and included in the Release body as well)
 
-## Gate 4: ライセンスと表記
+## Gate 4: Licensing and wording
 
-確認済みの事実: 上流 chain リポジトリのルート LICENSE は MIT 表記（Copyright 2025 Quantus Network）。一方でノードの crate メタデータは Apache-2.0 を宣言しており、表記に揺れがある。依存 crate にはそれぞれのライセンスがある。
+Confirmed facts: the root LICENSE of the upstream chain repository states MIT (Copyright 2025 Quantus Network). On the other hand, the node's crate metadata declares Apache-2.0, and the wording wavers. Each dependency crate has its own license.
 
-- [ ] 上流の LICENSE を APK / リポジトリに同梱し、出典を明記する
-- [ ] 第三者ライセンスの一覧を用意する（依存 crate 分）
-- [x] アプリ自体のライセンスを最終決定する（2026-11-04、本人が Apache-2.0 で確定。LICENSE ファイルを設置済み）
-- [ ] README に利用条件を書く: 対応環境（Android 12 以降・arm64）、必要な空き容量の目安、初回同期にかかる時間と通信量の注意（Wi-Fi 推奨）
-- [ ] 既知の制限を明記する（プルーニング済みノードでは古い履歴の照会ができないこと等）
-- [x] SECURITY.md の文言を現行の状態に合わせて整理する（2026-11-04、公開前の表現に修正済み）
+- [ ] Bundle the upstream LICENSE in the APK / repository and state the source
+- [ ] Prepare a list of third-party licenses (for the dependency crates)
+- [x] Make the final decision on the app's own license (settled by the owner as Apache-2.0 on 2026-11-04. A LICENSE file is in place)
+- [ ] Write the terms of use in the README: the supported environment (Android 12 or later, arm64), a guide for the required free space, and cautions about the time and traffic volume the initial sync takes (Wi-Fi recommended)
+- [ ] State the known limitations (e.g., that on a pruned node, queries of old history are not possible)
+- [x] Organize SECURITY.md's wording to match the current state (revised to pre-publication wording on 2026-11-04)
 
-## Gate 5: 監査の残件クローズ
+## Gate 5: Closing the audit's remaining items
 
-- [ ] 実回線での DB 容量実測（Gate 1 と兼ねる）
-- [x] fast 同期が実際に成立するか → コード精査の結果、機構的障壁2件により不成立と確定（2026-11-03、設計書「その5」参照）。追わない
-- [ ] 2026-11-03 監査の未検証項目のうち、公開のブロッカーになるものがないか再確認する
+- [ ] Real-connection DB-size measurement (doubles as Gate 1)
+- [x] Whether fast sync actually works → as a result of the close code reading, settled as not viable due to 2 mechanism-level barriers (2026-11-03, see the design document's "part 5"). Will not be pursued
+- [ ] Reconfirm that among the unverified items of the 2026-11-03 audit, none is a blocker for publication
 
-## Gate 6: 公開作業
+## Gate 6: Publication work
 
-- [x] GitHub Release を作成する（タグ v0.1.0、APK とチェックサムを添付）（2026-11-04 22:50 に公開済み。https://github.com/ogaworld369/quantus-android-node/releases/tag/v0.1.0。本人の依頼で助手がブラウザ経由で代行作成）
-- [x] リリースノートを用意する: 概要、要件、既知の制限、フィードバック方法（Issue テンプレートへの導線）（v0.1.0 の完成文を用意し、公開時に本文へ掲載済み）
-- [ ] コミュニティ向け告知文の下書きを用意する（過剰な宣伝にせず、テスト版であることを正直に書く）（定常項目として版のたびに実施するもので、完了で消す項目ではない: v0.1.1〜v0.1.4 はいずれも下書きを用意し本人へ提示済み。投稿するかどうかは本人の判断）
-- [ ] 【公開物の表記ルール（定常）】GitHub への公開物（Release 本文、README の公開記録、CHANGELOG・SECURITY.md の新規エントリ等）では、監査について AI の名前（ChatGPT・Codex・Astra・Claude 等）や「AI監査」と書かず、ただ「監査」「外部監査」とだけ書く（英語では audit / external review とする）。2026-11-06 の本人指示によるルールで、新規エントリから適用し、v0.1.5 の記録については本人の追加指示で遡って適用した（告知文の項目と同様、完了で消す項目ではない）
-- [x] v0.1.2（versionCode 22）を公開する（2026-11-05 22:29 に公開済み・Latest。https://github.com/ogaworld369/quantus-android-node/releases/tag/v0.1.2。ChatGPT 外部監査の全11件への対応版で、リリースノートも用意し公開時に本文へ掲載済み。APK の SHA-256 は `7c196901d0160a6035bf931eb8bc69fbbf13e4ea17c9510e2891be7ac0548b7f`（55,700,181 bytes）で公開ページのアセット digest と一致を確認。実機では v0.1.1 への上書き→先端復帰と開始直後の停止→即開始を確認済み）
-- [x] v0.1.3（versionCode 23）を公開する（2026-11-05 23:29 に公開済み・Latest。https://github.com/ogaworld369/quantus-android-node/releases/tag/v0.1.3。vc22 全セクション監査の中3件＋実害系の低への対応版で、リリースノートも用意し公開時に本文へ掲載済み。APK の SHA-256 は `dff1df99e5fa75f253477dcae1e46c04a2cf2672c4411c88b8207cdf639680e0`（55,700,181 bytes）で公開ページのアセット digest と一致を確認。実機では v0.1.2 への上書き→先端復帰と停止→即開始、フッターの v0.1.3 表示を確認済み）
-- [x] v0.1.4（versionCode 24）を公開する（2026-11-05 23:59 に公開済み・Latest。https://github.com/ogaworld369/quantus-android-node/releases/tag/v0.1.4。タグ対象は main コミット 67e39b4c。vc23 全セクション監査の全5件（新規の低3件＋持ち越し2件）への対応版で見送りなし、リリースノートも用意し公開時に本文へ掲載済み。APK の SHA-256 は `f662112bc213b0ae5f9be724b5421badf39730652381ca0ae3dc22e8b1ec74b2`（55,700,181 bytes）で公開ページのアセット digest と一致を確認。実機では v0.1.3 への上書き→先端復帰と停止→即開始、フッターの v0.1.4 表示を確認済み）
-- [x] v0.1.5（versionCode 25）を公開する（2026-11-06 に公開済み・Latest。https://github.com/ogaworld369/quantus-android-node/releases/tag/v0.1.5。タグ対象は main コミット c27959ec。v0.1.4 への外部監査（3回分）の検証済み所見 全11件（中5件・低6件）と、その修正版への再監査で見つかった残件8件（いずれも低）への対応版で見送りなし、リリースノートも用意し公開時に本文へ掲載済み。公開前の GitHub 全体点検では要修正0件。APK の SHA-256 は `22ab1fe1faa9e07598a3b13f24dd7a299c8bef403af655239a7fe25029e9ec2e`（55,700,262 bytes）で公開ページのアセット digest と一致を確認。実機では v0.1.4 への上書きインストールとデータ保持（ユーザーデータ 1.21GB）を確認済み）
-- [x] v0.2.0（versionCode 26）を公開する（2026-11-06 16:48 に公開済み・Latest。https://github.com/ogaworld369/quantus-android-node/releases/tag/v0.2.0。タグ対象は main コミット 0459e9e7。単一スクロールページを4画面（ホーム／ノード詳細／航跡／設定）に再構成した UI 全面刷新版で、失敗の分類表示、表示名の検証付きダイアログ編集、未適用設定の項目別表示、言語別の複数形、Quantus 公式カラーへの配色変更、出荷版で「?」に化けていた非英語 UI 文字列 242 件の復旧（vc24 のコミット済みテーブルから原文どおり復旧し、再発防止の検査を追加）、量子ウォッチのプレースホルダ表示の排除を含む。ノード起動引数・DB・権限・同梱ノードバイナリ（vc10 ビルド）に変更なし。公開前の全セクション監査では重大・高・中ゼロ（低7件、全件対応済み）。リリースノートも用意し公開時に本文へ掲載済み。APK の SHA-256 は `ec13212cf4e4a6e9597b7779591966e094eff30fc12454030a08535442e218ee`（55,733,030 bytes）で公開ページのアセット digest と一致を確認。実機では v0.1.5 への上書きインストールと設定・同期データの保持を確認済み）
+- [x] Create a GitHub Release (tag v0.1.0, with the APK and checksum attached) (published 2026-11-04 22:50. https://github.com/ogaworld369/quantus-android-node/releases/tag/v0.1.0. Created by the assistant via the browser, at the owner's request)
+- [x] Prepare release notes: summary, requirements, known limitations, how to give feedback (guidance to the Issue templates) (the completed text for v0.1.0 was prepared and published in the body at release time)
+- [ ] Prepare a draft of the community announcement text (without excessive promotion, honestly stating that it is a test build) (a standing item performed at each version, not an item to be deleted when completed: for v0.1.1 through v0.1.4, drafts were prepared and presented to the owner each time. Whether to post is the owner's judgment)
+- [ ] [Standing wording rule for public material] In GitHub-facing public material (Release bodies, the README's release records, new entries in CHANGELOG and SECURITY.md, etc.), when writing about audits, do not name AI products or write "AI audit"; write only "audit" / "external audit" (in English: audit / external review). A rule from the owner's instruction on 2026-11-06, applied from new entries onward; for the v0.1.5 records it was applied retroactively under the owner's additional instruction (like the announcement item, this is not an item to be deleted when completed)
+- [ ] [Standing language rule for public material] All GitHub-facing text (release notes, documentation, commit messages) is written in English. (A rule from the owner's instruction on 2026-11-06. Like the announcement item, this is a standing item, not one to be deleted when completed)
+- [x] Publish v0.1.2 (versionCode 22) (published 2026-11-05 22:29, Latest. https://github.com/ogaworld369/quantus-android-node/releases/tag/v0.1.2. The release addressing all 11 findings of the external audit; release notes were also prepared and published in the body at release time. The APK's SHA-256 is `7c196901d0160a6035bf931eb8bc69fbbf13e4ea17c9510e2891be7ac0548b7f` (55,700,181 bytes), confirmed to match the asset digest on the release page. On a real device, in-place update over v0.1.1 → return to the tip and stop → immediate start right after starting were confirmed)
+- [x] Publish v0.1.3 (versionCode 23) (published 2026-11-05 23:29, Latest. https://github.com/ogaworld369/quantus-android-node/releases/tag/v0.1.3. The release addressing the 3 medium findings and the harmful low findings of the vc22 full-section audit; release notes were also prepared and published in the body at release time. The APK's SHA-256 is `dff1df99e5fa75f253477dcae1e46c04a2cf2672c4411c88b8207cdf639680e0` (55,700,181 bytes), confirmed to match the asset digest on the release page. On a real device, in-place update over v0.1.2 → return to the tip, stop → immediate start, and the footer's v0.1.3 display were confirmed)
+- [x] Publish v0.1.4 (versionCode 24) (published 2026-11-05 23:59, Latest. https://github.com/ogaworld369/quantus-android-node/releases/tag/v0.1.4. The tag target is main commit 67e39b4c. The release addressing all 5 findings of the vc23 full-section audit (3 new low + 2 carried over), with none deferred; release notes were also prepared and published in the body at release time. The APK's SHA-256 is `f662112bc213b0ae5f9be724b5421badf39730652381ca0ae3dc22e8b1ec74b2` (55,700,181 bytes), confirmed to match the asset digest on the release page. On a real device, in-place update over v0.1.3 → return to the tip, stop → immediate start, and the footer's v0.1.4 display were confirmed)
+- [x] Publish v0.1.5 (versionCode 25) (published 2026-11-06, Latest. https://github.com/ogaworld369/quantus-android-node/releases/tag/v0.1.5. The tag target is main commit c27959ec. The release addressing all 11 verified findings (5 medium, 6 low) of the external audits of v0.1.4 (3 rounds) and the 8 remaining items (all low) found in the re-audit of the fixed version, with none deferred; release notes were also prepared and published in the body at release time. The pre-release full GitHub check required 0 fixes. The APK's SHA-256 is `22ab1fe1faa9e07598a3b13f24dd7a299c8bef403af655239a7fe25029e9ec2e` (55,700,262 bytes), confirmed to match the asset digest on the release page. On a real device, an in-place install over v0.1.4 and data preservation (user data 1.21GB) were confirmed)
+- [x] Publish v0.2.0 (versionCode 26) (published 2026-11-06 16:48, Latest. https://github.com/ogaworld369/quantus-android-node/releases/tag/v0.2.0. The tag target is main commit 0459e9e7. The UI redesign release restructuring the single scrolling page into four screens (Home / Node details / Track record / Settings), including failure classification display, dialog editing of the display name with validation, per-item display of unapplied settings, per-language plural forms, the color change to the official Quantus colors, and the restoration of 242 non-English UI strings that had been mangled into "?" in the shipped build (restored verbatim from the table committed at vc24, with a regression check added), and the removal of the Quantum Watch placeholder display. No changes to the node launch arguments, the DB, permissions, or the bundled node binary (the vc10 build). The pre-release full-section audit found zero critical, high, or medium findings (7 low, all addressed). Release notes were also prepared and published in the body at release time. The APK's SHA-256 is `ec13212cf4e4a6e9597b7779591966e094eff30fc12454030a08535442e218ee` (55,733,030 bytes), confirmed to match the asset digest on the release page. On a real device, an in-place install over v0.1.5 and the preservation of settings and sync data were confirmed)
 
-## 署名鍵の置き場所と正式署名ビルドの手順
+## Where the signing key lives and the official signed-build procedure
 
-（2026-11-04、Gate 3 実施時に追記）
+(Added 2026-11-04, when Gate 3 was performed)
 
-### 鍵の置き場所（リポジトリの外）
+### Where the key lives (outside the repository)
 
-- キーストア: `~/workspace/release-signing/quantus-release.jks`（権限 600）
-- パスワードファイル: `~/workspace/release-signing/keystore-password.txt`（権限 600）
-  - パスワードの実値はこの手順書を含め、リポジトリ内のどこにも書かない
-- エイリアス: `quantus-release`
-- 証明書 SHA-256 フィンガープリント（公開情報）:
+- Keystore: `~/workspace/release-signing/quantus-release.jks` (permissions 600)
+- Password file: `~/workspace/release-signing/keystore-password.txt` (permissions 600)
+  - The password's actual value is written nowhere in the repository, including this procedure document
+- Alias: `quantus-release`
+- Certificate SHA-256 fingerprint (public information):
   `65:BB:1A:5F:EF:27:D7:0B:E1:DD:12:FC:12:CE:34:84:B4:C8:48:FC:EC:A9:2F:88:98:CD:96:CB:27:84:F6:FF`
-- 本人保管用にキーストアのコピーとバックアップメモを別途渡してある
-  （ゴール側ファイル置き場。リポジトリではない）
+- A copy of the keystore and a backup memo have been handed over separately for the owner's keeping
+  (the goal-side file area. Not the repository)
 
-### 正式署名ビルド
+### The official signed build
 
 ```sh
 cd app
 QUANTUS_SIGNING=release bash build-manual.sh
-# 成果物: app/build/outputs/apk/release/quantus-node-release.apk
+# Artifact: app/build/outputs/apk/release/quantus-node-release.apk
 ```
 
-- 環境変数を付けなければ従来どおり debug 署名（開発用）
-- 署名時、スクリプトはパスワードファイルから値を環境変数へ読み込み、
-  apksigner へ `env:` 経由で渡す。パスワードがスクリプト内・コマンド
-  ライン・ビルドログに現れることはない
-- 置き場所を変える場合は `QUANTUS_RELEASE_KS` /
-  `QUANTUS_RELEASE_KS_PASS_FILE` / `QUANTUS_RELEASE_ALIAS` で上書きできる
-- 確認: `apksigner verify --print-certs` の証明書 SHA-256 が上記
-  フィンガープリントと一致すること、`aapt2 dump badging` で
-  versionCode / versionName と権限（4つ）を確認すること
+- Without the environment variable, it is a debug signature (for development), as before
+- At signing time, the script reads the value from the password file into an environment variable,
+  and passes it to apksigner via `env:`. The password never appears in the script, the
+  command line, or the build log
+- The location can be overridden with `QUANTUS_RELEASE_KS` /
+  `QUANTUS_RELEASE_KS_PASS_FILE` / `QUANTUS_RELEASE_ALIAS`
+- Checks: that the certificate SHA-256 from `apksigner verify --print-certs` matches the
+  fingerprint above, and that versionCode / versionName and the permissions (4) are confirmed
+  with `aapt2 dump badging`
 
-## 公開のあと（Phase 4 として分離）
+## After publication (separated as Phase 4)
 
-- F-Droid 申請、他 Android 機種での検証、release ビルドの CI 化と再現可能ビルド
+- The F-Droid application, verification on other Android devices, CI-ization of release builds and reproducible builds

@@ -1,245 +1,245 @@
-# Quantus Android ノード ― 設計書 v0.2（ノード専用に改訂）
+# Quantus Android Node — Design Document v0.2 (revised to node-only)
 
-作成: 2026-11-03 / 改訂: 同日、本人決定によりマイニングを外しノード専用へ
-目的の一文: **報酬のためではなく、分散のため。** 誰のスマホでも Quantus Network（QTC）のノードとして参加できる、Android 専用のオープンソースアプリを作る。
+Created: 2026-11-03 / Revised: the same day; mining removed and the app made node-only by the owner's decision
+Purpose in one sentence: **Not for rewards — for decentralization.** Build an open-source, Android-only app that lets anyone's smartphone take part as a node of the Quantus Network (QTC).
 
-> v0.1 からの変更: 当初は「ノード＋マイニング」だったが、本人が「マイニングは無し、ノードだけ」と確定。マイナー関連の設計（ウォームホール、inner_hash、QUIC マイナープロトコル等）は対象外として削除した。
+> Changes from v0.1: the app was initially "node + mining", but the owner settled on "no mining, node only". The miner-related design (wormholes, inner_hash, the QUIC miner protocol, etc.) was removed as out of scope.
 
 ---
 
-## 1. 前提と原則
+## 1. Premises and principles
 
-- 対象は Android のみ。iOS は対象外。
-- 対象端末の方針（2026-11-03 本人決定）: Pixel 限定にはしない。動作要件は Android 12 以降・arm64 の一般の Android とし（実装は minSdk 31 / arm64-v8a のみ。Google サービスや Pixel 固有機能への依存はない）、「動作確認済み」と「動作見込み」を分けて正直に表記する。現時点の動作確認済みは Pixel 9a + GrapheneOS のみ。その他の端末は動作見込みとし、メーカー独自の省電力機能（Samsung・Xiaomi 等）が常駐サービスを止める可能性を留保として明記する。確認済み端末は、GitHub の Issue への動作報告で増やしていく（公開リポジトリ上で情報共有が回る前提）。
-- オープンソースで公開する（GitHub）。ライセンスは上流に合わせ Apache-2.0 を第一候補とする。
-- セキュリティは最優先。急がず、テストを繰り返し、本番として出せる品質まで作り込む。
-- 「今までにない最新」がテーマ。公式には Android 版ノードが存在せず、スマホで常駐する量子耐性チェーンのフルノードという形自体が新しい。
+- Android only. iOS is out of scope.
+- Device policy (owner's decision, 2026-11-03): not limited to Pixel. The requirement is a general Android device running Android 12 or later on arm64 (implementation: minSdk 31 / arm64-v8a only; no dependence on Google services or Pixel-specific features), and "verified working" and "expected to work" are stated separately and honestly. At present, the only verified device is the Pixel 9a + GrapheneOS. All other devices are "expected to work", with the caveat stated explicitly that vendor-specific power saving (Samsung, Xiaomi, etc.) may stop the resident service. The list of verified devices will grow through run reports filed as GitHub Issues (premised on information sharing working on the public repository).
+- Published as open source (GitHub). The license's first candidate is Apache-2.0, to match upstream.
+- Security is the top priority. No rushing: test repeatedly and build it to a quality that can ship as a production release.
+- The theme is "the newest, like nothing before". There is officially no Android node, and a full node for a quantum-resistant chain residing on a smartphone is itself a new form.
 
-## 2. 「ノードだけ」とは何か（このアプリの役割）
+## 2. What "node only" means (this app's role)
 
-このアプリが動かすのは、ブロック生成（マイニング）をしない**通常フルノード**である:
+What this app runs is an ordinary full node that does not produce blocks (no mining):
 
-- チェーンを同期し、すべてのブロックとトランザクションを自分で検証する（他人を信用しない検証）。
-- ピアと接続し、ブロックやトランザクションを中継してネットワークを支える。
-- 自分の端末でチェーンの状態を照会できる（外部の RPC サービスに依存しない）。
+- It syncs the chain and verifies every block and transaction itself (trustless verification).
+- It connects to peers and relays blocks and transactions, supporting the network.
+- The chain state can be queried on the device itself (no dependence on an external RPC service).
 
-分散化への効き方: 検証するノードが増えるほど、ネットワークは特定の事業者や少数のサーバーに依存しなくなる。報酬は発生しない。そこが本人の言う「ロマン」の中身であり、設計もそれに合わせて割り切る。
+How this helps decentralization: the more nodes that verify, the less the network depends on a particular operator or a small number of servers. No rewards are generated. That is the substance of what the owner calls "romance", and the design commits to it.
 
-ノード専用になったことで得た大きな利点:
+Major advantages gained by going node-only:
 
-1. **ウォレットの秘密を一切扱わない。** フレーズも inner_hash も不要。盗まれて困る資産情報がアプリ内に存在しない（残る秘密はノードの身元キーだけ）。
-2. **発熱と電池消費が桁違いに小さい。** 継続的な計算負荷がなく、同期と中継が主。日常使いのスマホと両立しやすい。
-3. **配布の選択肢が広がる。** Google Play が禁止しているのは端末上マイニングであり、ノードアプリはその条項に触れない（掲載可否は別途審査前提だが、少なくとも規約上の即NGではなくなった）。ただし当面の配布は GitHub Releases の署名付き APK + F-Droid を前提とする。
+1. **No wallet secrets are handled at all.** No seed phrase, no inner_hash. There is no asset information in the app whose theft would matter (the only remaining secret is the node identity key).
+2. **Heat and battery consumption are orders of magnitude smaller.** No continuous computational load; syncing and relaying are the main work. It coexists easily with a daily-use phone.
+3. **Wider distribution options.** What Google Play prohibits is on-device mining; a node app does not touch that clause (listing is still subject to separate review, but at least it is no longer an immediate policy violation). For the time being, however, distribution is premised on signed APKs via GitHub Releases plus F-Droid.
 
-### プロダクトコンセプト（2026-11-03 本人決定）
+### Product concept (owner's decision, 2026-11-03)
 
-「ただのノードアプリではつまらない」という本人の問題意識から、プロダクトの軸を**可視化＋気配デザイン**とし、2つの要素を入れることで決定した。
+From the owner's concern that "a plain node app would be boring", the product's axis was set to **visualization + a design of presence (kehai)**, with two elements.
 
-- **要素1: ノードの「脈動」の可視化**。ブロックの到達、ピアの接続・切断、同期の進捗をライブに美しく表示し、裏方であるノードに「生きている」実感を持たせる。データは端末内のノード状態（ローカル RPC 等）からのみ取得し、外部送信はしない。
-- **要素2: 貢献の見える化**。中継したブロック数、接続したピア数、稼働時間を端末内に記録し、「分散化への自分の寄与」を個人の航跡として表示する。金銭的価値は持たせず、ランキング競争にはしない。他者との比較や集計は、匿名統計の設計が固まるまで行わない。
-- **世界観: 「気配」のデザイン**。本人の写真の作風（85mm 相当、気配を消して静かに撮る、ソール・ライター的な光と影）と地続きの美学で全体を貫く。暗色基調、最小限の文字と動き、主張しないが確かにそこに在る存在としてノードを描く。
+- **Element 1: Visualizing the node's "pulse".** Block arrivals, peer connections and disconnections, and sync progress are shown live and beautifully, giving the behind-the-scenes node a felt sense of "being alive". Data is obtained only from the node state inside the device (local RPC, etc.) and is never transmitted externally.
+- **Element 2: Making contributions visible.** The number of relayed blocks, the number of connected peers, and uptime are recorded on the device and shown as one's personal track record of "my contribution to decentralization". No monetary value is attached, and it is not made into a ranking competition. Comparisons with others and aggregation are deferred until an anonymous-statistics design is settled.
+- **Worldview: a design of "presence" (kehai).** The whole is unified by an aesthetic continuous with the owner's photography style (85mm equivalent, shooting quietly with one's presence erased, Saul Leiter-like light and shadow). A dark base tone, minimal text and motion, depicting the node as a presence that does not assert itself yet is certainly there.
 
-なお、当初は要素3として「量子ウォッチ」（量子コンピューターの脅威動向と自ノードの健全性を並べる監視画面）も入れる決定だったが、外部脅威情報は未実装のまま表示枠だけが残る形になっていたため、2026-11-06 に本人が「要らない」と判断し、v0.2.0 で表示枠ごと完全に排除した。コンセプトは上記2本柱が現行である。
+Note: a third element, "Quantum Watch" (a monitoring screen lining up quantum-computer threat trends and the health of one's own node), was also initially decided on, but since the external threat information was never implemented and only the display frame remained, the owner judged on 2026-11-06 that it was "not needed", and it was removed completely, frame and all, in v0.2.0. The concept now stands on the two pillars above.
 
-制約は不変: ウォレット・マイニング・資産の秘密は入れない。解析 SDK は入れない。可視化と記録は端末内で完結させる。
+The constraints are unchanged: no wallet, no mining, no asset secrets. No analytics SDKs. Visualization and recording are completed entirely on the device.
 
-## 3. 調査で確認した公式仕様（2026-11-03 時点、実物で検証済み）
+## 3. Official specifications confirmed by research (as of 2026-11-03, verified against the real thing)
 
-### ノード（quantus-node v1.0.5）
-- Substrate ベース。コンセンサスは QPoW（Poseidon2）、署名は ML-DSA 系、ブロック時間はメインネット約12秒。QTC は最大 2,100万枚。
-- 最小要件（公式 MINING.md）: CPU 2コア+ / RAM 4GB / **ストレージ 100GB** / 回線 3Mbps+。推奨 RAM 8GB+ / SSD 500GB+。
-  ※ この要件はバリデータ運用を想定した公式値。プルーニングした通常ノードの実容量は Phase 0 で実測中。
-- 同期モード: `--sync full | fast | fast-unsafe | warp` と並んでいるが、Phase 0 実測で **mainnet / v1.0.5 では full のみ有効**と確定（詳細は §3.5）。
-- プルーニング: `--state-pruning` / `--blocks-pruning` の CLI 指定は Phase 0 実測で**ノード側に上書きされ効かない**と確定（詳細は §3.5）。
-- RPC は既定でローカルのみ。Prometheus や RPC を外部公開しないのが公式の安全指針（アプリでも厳守する）。
+### The node (quantus-node v1.0.5)
+- Substrate-based. Consensus is QPoW (Poseidon2), signatures are of the ML-DSA family, block time is about 12 seconds on mainnet. QTC has a maximum supply of 21 million.
+- Minimum requirements (official MINING.md): CPU 2+ cores / RAM 4GB / **storage 100GB** / connection 3Mbps+. Recommended RAM 8GB+ / SSD 500GB+.
+  * These are official figures assuming validator operation. The actual size of a pruned ordinary node is being measured in Phase 0.
+- Sync modes: `--sync full | fast | fast-unsafe | warp` are listed side by side, but Phase 0 measurement established that **only full is valid on mainnet / v1.0.5** (details in §3.5).
+- Pruning: Phase 0 measurement established that the CLI options `--state-pruning` / `--blocks-pruning` are **overridden on the node side and do not take effect** (details in §3.5).
+- RPC is local-only by default. Not publishing Prometheus or RPC externally is the official safety guideline (strictly observed in the app as well).
 
-### Phase 0 実測で判明したこと（2026-11-03、§3・§4 の前提を修正する確定事実）
+### Findings from Phase 0 measurement (2026-11-03; confirmed facts that revise the premises of §3 and §4)
 
-- **warp 同期は使えない。** 起動直後に「Warp sync enabled, but no warp sync provider configured.」で終了（PoW でファイナリティ機構がないため）。バリデータ／非バリデータ共通。
-- **fast 同期も使えない。** 「Fast sync doesn't work for archive nodes」で終了。有効な同期は **full のみ**。
-- **プルーニング指定が効かない。** `--state-pruning 256` / `--blocks-pruning 256` を指定しても起動ログは State pruning: ArchiveCanonical / Blocks pruning: KeepFinalized を表示。標準バイナリのままではスマホ向け小容量化はできず、**ノード側の改変が前提**になる。
-- **容量は想定よりずっと小さい見込み。** 助手の VM は外向きプロキシの制約で P2P 接続が成立せず同期実測はできなかったため、公式 RPC の49ブロックサンプリングからの推計: ブロック本体は平均約17KB（中央値 267B、約7割が空ブロック）、先端 #337,678（2026-11-03）までの本体合計は外挿で約5.7GB、ステート込みの総量は **おそらく6〜15GB級**。公式の「最低100GB」は現行チェーンの実態と大きく乖離している可能性が高い。増加ペースは約120MB/日（年約45GB）の外挿。（→ この推計は 2026-11-05 の実測で更新された: 同期完了時点の実使用量は合計1.30GB と推計より大幅に小さかった。プルーニング256が効いているためと考えられ、長期の増加ペースは継続観測中。）
-- **最大の未知数は同期時間。** full 同期のみのため、33.7万ブロックの全実行検証をスマホ CPU で終える時間が未検証。次の実測は P2P の通る通常回線の環境（実機等）で取り直す。
-- ノードは GB 級の trie キャッシュを前提とする設計（起動時に 1GB 確保の警告を確認）。同期時ピーク RAM は未測定で、Pixel 9a（8GB）での注意材料。
+- **Warp sync cannot be used.** It exits immediately after startup with "Warp sync enabled, but no warp sync provider configured." (PoW has no finality mechanism.) The same for validators and non-validators.
+- **Fast sync cannot be used either.** It exits with "Fast sync doesn't work for archive nodes". The only valid sync is **full**.
+- **The pruning options do not take effect.** Even specifying `--state-pruning 256` / `--blocks-pruning 256`, the startup log shows State pruning: ArchiveCanonical / Blocks pruning: KeepFinalized. With the stock binary, smartphone-friendly size reduction is impossible, and **modifying the node side becomes a prerequisite**.
+- **Capacity looks much smaller than expected.** The assistant's VM could not establish P2P connections due to outbound proxy constraints, so sync could not be measured there; the estimate comes from sampling 49 blocks via the official RPC: block bodies average about 17KB (median 267B, about 70% are empty blocks), extrapolating the total of bodies up to the tip #337,678 (2026-11-03) gives about 5.7GB, and the total including state is **probably in the 6–15GB range**. The official "minimum 100GB" may diverge greatly from the current chain's reality. The growth pace extrapolates to about 120MB/day (about 45GB/year). (→ This estimate was updated by the 2026-11-05 measurement: the actual usage at the completion of syncing was 1.30GB in total, far below the estimate. This is thought to be because pruning 256 is in effect; the long-term growth pace remains under continued observation.)
+- **The biggest unknown is sync time.** With full sync only, the time for a smartphone CPU to finish full execution verification of 337k blocks is unverified. The next measurement will be retaken in an environment with normal connectivity that passes P2P (a real device, etc.).
+- The node is designed on the assumption of a GB-scale trie cache (a warning about reserving 1GB at startup was confirmed). Peak RAM during sync is unmeasured, and a point of caution for the Pixel 9a (8GB).
 
-### Phase 0 実測で判明したこと（その2: Android 移植、2026-11-03）
+### Findings from Phase 0 measurement (part 2: the Android port, 2026-11-03)
 
-- **quantus-node 本体が Android 向けにコンパイル検証（cargo check）を通過した。** 対象は `aarch64-linux-android`、Wasm ランタイム有効時も EXIT 0 で、`quantus_runtime.wasm`（約3.1MB）の生成まで確認。基盤クレート（qpow-math、qp-dilithium-crypto、sc-network、sc-executor-wasmtime、sc-client-db）も全て通過し、RocksDB と ring のクロスコンパイル生成物も確認した。
-- 踏んだブロッカーは5件すべて回避実証済みで、**上流コードへのパッチはゼロ**:
-  - rustix 1.1.2 の Android 向けバグ → `cargo update -p rustix`（1.1.6、Cargo.lock のみの変更）
-  - litep2p の protoc 要求 → protoc 29.3 を用意
-  - bindgen の libclang / Android ヘッダ解決 → NDK 同梱 libclang の指定とクロス引数の追加
-  - ホスト側ビルドの重さ（Binaryen と ZK 回路生成で約20分/回）→ CI はキャッシュ前提の設計が必須
-- 当初恐れた glibc 前提・wasmtime のプラットフォーム前提は、check の範囲では表面化しなかった。
-- **最終リンクも成功（2026-11-03 朝、追記）**: `cargo build -p quantus-node --target aarch64-linux-android` が完走し、ARM aarch64 の ELF 実行ファイル（interpreter は Android の /system/bin/linker64、strip 後約123MB）を生成。リンクエラーの追加パッチは不要だった。ビルド手順はリポジトリの docs/BUILD-android.md に固定済み。実行時に libc++_shared.so のアプリ側同梱が必要（NEEDED に含まれる）。
-- **その後の進展（2026-11-03 追記）**: 実機実行は実施済みで、ノードは DB（ParityDB）を開きジェネシス初期化まで到達した。ただしネットワーク開始直後に後述のパニックで終了しており、同期の完走は未検証のまま（詳細は「その4」。なお完走は同日夜に確認済みで、詳細は「その5」）。release プロファイルのビルドも実施済み。当時の「リンク成功は『動く』証明ではない」という留保は正しかった。
-- 代替路線の結論: light client（smoldot 等）は Quantus に痕跡がなく、finality のない PoW では成立しない。本命は「full 同期＋プルーニング改変ノードの Android ビルド」で、そのビルド自体に追加の原理的障壁は見当たらない。
+- **The quantus-node binary itself passed compile verification (cargo check) for Android.** The target is `aarch64-linux-android`; it exited 0 even with the Wasm runtime enabled, and generation of `quantus_runtime.wasm` (about 3.1MB) was confirmed. The foundational crates (qpow-math, qp-dilithium-crypto, sc-network, sc-executor-wasmtime, sc-client-db) all passed, and cross-compiled RocksDB and ring artifacts were also confirmed.
+- All five blockers encountered were proven avoidable, with **zero patches to upstream code**:
+  - An Android bug in rustix 1.1.2 → `cargo update -p rustix` (1.1.6, a Cargo.lock-only change)
+  - litep2p's protoc requirement → provided protoc 29.3
+  - libclang / Android header resolution for bindgen → specified the NDK-bundled libclang and added cross arguments
+  - The heaviness of host-side builds (about 20 min/run with Binaryen and ZK circuit generation) → CI must be designed around caching
+- The initially feared glibc assumptions and wasmtime platform assumptions did not surface within the scope of check.
+- **The final link also succeeded (added on the morning of 2026-11-03)**: `cargo build -p quantus-node --target aarch64-linux-android` ran to completion, producing an ARM aarch64 ELF executable (interpreter is Android's /system/bin/linker64, about 123MB after strip). No additional patches were needed for link errors. The build procedure is fixed in the repository's docs/BUILD-android.md. At runtime, libc++_shared.so must be bundled on the app side (it is in NEEDED).
+- **Subsequent progress (added 2026-11-03)**: a real-device run has been performed; the node opened its DB (ParityDB) and reached genesis initialization. However, it terminated with the panic described later immediately after the network started, and completion of syncing remained unverified (details in "part 4"; completion was confirmed later the same night, details in "part 5"). A release-profile build has also been performed. The caveat at the time — "a successful link is not proof that it 'works'" — was correct.
+- Conclusion on the alternative route: a light client (smoldot etc.) has no trace in Quantus, and does not hold up in PoW without finality. The main route is "full sync + a pruning-modified node built for Android", and no additional principled barriers to that build itself are in sight.
 
-### Phase 1 調査で判明したこと（その3: プルーニング改変、2026-11-03）
+### Findings from the Phase 1 investigation (part 3: the pruning modification, 2026-11-03)
 
-- **プルーニング指定が効かない原因は Quantus 独自コードの1箇所のみ**。`node/src/command.rs` の通常起動分岐で「Obligatory configuration for all node holders」として `ArchiveCanonical` と `KeepFinalized` を無条件に上書きしていた。CLI パース層と Configuration 構築は正常で、指定値は正しく届いた後に捨てられていた。意図的な設計で、README にも「mandatory storage configuration settings that cannot be overridden」「enforced at the code level」と明記がある（ZKツリーの過去ブロック proof 読み取りと archive RPC を全ノードに担保する思想）。
-- **最小パッチ案を作成し、Android 向け cargo check を通過**: 1ファイル +12行/−3行。数値指定のときだけ指定を尊重し、未指定時は従来の強制値を維持する（既存運用者の既定挙動は不変）。パッチは spike クローンの未コミット差分として保持し、コピーを作業ファイルにも保存済み。
-- **副次効果**: fast 同期の拒否条件は「実効プルーニングが archive か」であることをコードで特定した。プルーニングが数値で効けば fast のゲートはコード上開く（実際に状態ダウンロードまで成立するかは未検証）。warp はプロバイダ未構成＋PoW のため引き続き不可。
-- トレードオフ: プルーニング済みノードでは深い履歴の state_call / zkTree proof / archive RPC が「状態なし」で失敗する。スマホの個人ノード用途では許容範囲と判断するが、公式思想との差異として明記する。
-- **未検証**: パッチ適用バイナリを P2P の通る環境で起動し、起動ログの切替・同期時の DB 容量の頭打ち・fast 同期の成否を確認すること。この VM では P2P が通らず未実施。
+- **The cause of the pruning options not taking effect is a single place in Quantus's own code.** In the normal startup branch of `node/src/command.rs`, "Obligatory configuration for all node holders" unconditionally overwrote the values with `ArchiveCanonical` and `KeepFinalized`. The CLI parsing layer and Configuration construction were normal; the specified values were correctly delivered and then discarded. It is intentional design, and the README also states "mandatory storage configuration settings that cannot be overridden" and "enforced at the code level" (a philosophy of guaranteeing past-block proof reads for the ZK tree and archive RPC on all nodes).
+- **A minimal patch was drafted and passed cargo check for Android**: 1 file, +12/−3 lines. Only when a numeric value is specified is the specification respected; when unspecified, the conventional forced values are maintained (the default behavior of existing operators is unchanged). The patch is kept as an uncommitted diff in the spike clone, and a copy is also saved in the working files.
+- **Side effect**: the rejection condition for fast sync was identified in code as "the effective pruning is archive". If pruning takes effect numerically, the fast gate opens in code (whether state download actually succeeds is unverified). Warp remains unavailable due to the unconfigured provider and PoW.
+- Trade-off: on a pruned node, state_call / zkTree proofs / archive RPC for deep history fail with "no state". Judged acceptable for personal smartphone-node use, but noted explicitly as a difference from the official philosophy.
+- **Unverified**: starting the patched binary in an environment where P2P passes, and confirming the startup-log switching, the DB-size ceiling during sync, and the success or failure of fast sync. Not performed in this VM because P2P does not pass.
 
-### Phase 1 実装で確定したこと（2026-11-03）
+### Established in the Phase 1 implementation (2026-11-03)
 
-- **ノード起動引数の確定形**（CLI 仕様とノード側コードで裏取り済み）: `--chain mainnet --base-path <アプリ専用領域>/node --name quantus-android-node --state-pruning 256 --blocks-pruning 256 --trie-cache-size 134217728 --max-blocks-per-request 128 --rpc-port 9944 --rpc-methods safe --no-telemetry`
-  - `--chain mainnet` は必須（既定は heisenberg テストネット）。RPC は `--rpc-external` を付けないことで 127.0.0.1 のみに閉じる。プルーニングは両フラグを毎回必ず渡す（監査 P-2/P-3 の帰結）。ノード名の既定は端末を特定しない汎用名 `quantus-android-node` で、利用者が表示名を設定した場合はその値になる（後述のテレメトリ・オプトイン項参照）。
-  - mainnet の chain spec には公式 telemetry エンドポイントが含まれるため、外部送信の最小化として既定では `--no-telemetry` を明示する（テレメトリ表示をオプトインした場合は外す。後述）。
-  - ノードキー（Dilithium）は既定で base-path 配下（`chains/mainnet/network/secret_dilithium`）に自動生成・保存される。アプリ専用領域＋ allowBackup=false で設計 §6-2 を満たす。
-- **依存関係の是正**: 監査で「高」とされた h2 0.4.12 の既知 Advisory（DoS 級6件）は、`cargo update -p h2` で 0.4.20 へ更新し、cargo-audit 再実行で解消を確認した。他の上流由来の指摘（ring 等）は上流の追随待ちとして残る。
-- **テレメトリ表示のオプトイン**（2026-11-03 本人決定、MVP に実装済み）: 公式テレメトリ（telemetry.quantus.com）の一覧に自分のノードが出ると安心感がある、という本人の希望により、既定オフ・任意オンのオプトインとして実装した。オフ時は上記の確定形どおり `--no-telemetry` を付けて起動する。オン時は `--no-telemetry` だけを外し、送信先は chain spec 既定の公式エンドポイントとする（送信先 URL をアプリ側で独自に指定しない）。オン時はノード名と稼働状態が誰でも見える公開情報になることを、設定トグルのそばに明記し、本人も了承済み。表示名は既定の汎用名 `quantus-android-node` を基本とし、利用者が任意の表示名を設定できる（端末内にのみ保存し、引数へは配列渡しで渡す）。設定変更は次回のノード起動時に反映される。稼働中に変えた場合は、実際に起動した値と保存値が異なる項目が設定画面で項目ごとに「未適用」として示され、ホームにも未適用設定の確認リンクが出るだけで、アプリが黙って再起動することはない（v0.2.0 の UI。当初は再起動を促す注記文を表示する形だった）。権限は増やさない（テレメトリ送信はノード本体の通信に乗る）。なお実際に一覧へ表示されるかは実機＋実回線での確認が別途必要だったが、2026-11-05 にリリース版 v0.1.0（versionCode 20）で表示名つきの掲載を確認済み。
+- **The finalized form of the node launch arguments** (verified against the CLI spec and the node-side code): `--chain mainnet --base-path <app-private storage>/node --name quantus-android-node --state-pruning 256 --blocks-pruning 256 --trie-cache-size 134217728 --max-blocks-per-request 128 --rpc-port 9944 --rpc-methods safe --no-telemetry`
+  - `--chain mainnet` is required (the default is the heisenberg testnet). RPC is closed to 127.0.0.1 only by not adding `--rpc-external`. Both pruning flags are always passed every time (a consequence of audit P-2/P-3). The node name defaults to the generic, device-non-specific name `quantus-android-node`; when the user sets a display name, that value is used (see the telemetry opt-in item below).
+  - Because the mainnet chain spec includes the official telemetry endpoint, `--no-telemetry` is given explicitly by default to minimize external transmission (removed when the user opts in to telemetry display; see below).
+  - The node key (Dilithium) is auto-generated and stored under the base-path by default (`chains/mainnet/network/secret_dilithium`). Placed in app-private storage with allowBackup=false, this satisfies design §6-2.
+- **Dependency correction**: the known advisories (6 DoS-class items) in h2 0.4.12, rated "high" in the audit, were updated with `cargo update -p h2` to 0.4.20, and a re-run of cargo-audit confirmed the resolution. Other upstream-origin findings (ring etc.) remain pending upstream follow-up.
+- **Telemetry display opt-in** (owner's decision, 2026-11-03; implemented in the MVP): at the owner's wish — seeing one's own node in the official telemetry list (telemetry.quantus.com) gives peace of mind — it was implemented as an opt-in, off by default and on by choice. When off, the node starts with `--no-telemetry` as in the finalized form above. When on, only `--no-telemetry` is removed, and the destination is the official endpoint that is the chain spec default (the app does not specify a destination URL of its own). It is stated explicitly next to the setting toggle that when on, the node name and live status become publicly visible to anyone, and the owner has agreed. The display name is based on the default generic name `quantus-android-node`, and the user can set an arbitrary display name (stored only on the device, and passed to the arguments as an array). Setting changes take effect at the next node start. If a setting is changed while running, each item whose actually-started value differs from the saved value is shown per-item as "not applied" on the settings screen, and a link to check unapplied settings also appears on the home screen; the app never silently restarts (the v0.2.0 UI; initially it was a form that displayed a note urging a restart). No permissions are added (telemetry transmission rides on the node binary's own communication). Whether it would actually appear in the list required separate confirmation on a real device and a real connection, and on 2026-11-05 the listing with a display name was confirmed on release v0.1.0 (versionCode 20).
 
-### Phase 1 実機で判明したこと（その4: ndk-context パニックと DNS フォールバック修正、2026-11-03）
+### Findings on a real device in Phase 1 (part 4: the ndk-context panic and the DNS fallback fix, 2026-11-03)
 
-- **実機でノードがネットワーク開始直後に死ぬ原因を特定した。** 証拠取り版（versionCode 3）を Pixel 9a / GrapheneOS で実行したところ、ノードは起動し、DB（ParityDB）を開き、ジェネシス初期化まで完了したが、「Running litep2p network backend」の直後に panic して終了コード1で終了した（生存約17.8秒）。ログは証拠取り版の共有機能で取得でき、パニック文言がそのまま残っていた。
-- **パニックの正体**: `Thread 'main' panicked at 'android context was not initialized'`、発生箇所は ndk-context 0.1.1 の src/lib.rs:72。依存連鎖は quantus-node → litep2p 0.13.3 → hickory-resolver 0.26.1 → ndk-context 0.1.1。
-- **仕組み**: hickory-resolver（DNS リゾルバ）の Android 版 `read_system_conf()` が、システムの DNS 設定を読む冒頭で `ndk_context::android_context()` を呼ぶ。この関数は NativeActivity 等の Android ランタイムがコンテキストを初期化している前提で、未初期化だと panic する。本アプリのノードはアプリから exec された素のプロセスであり、コンテキストを初期化する者が存在しない。
-- **引き金**: mainnet のブートノードは全て /dns/ アドレスのため、ネットワーク開始直後の最初の名前解決で必ずこの経路に入る。
-- **なぜ PC で再現しなかったか**: Linux にはこの経路自体が存在しない（hickory は /etc/resolv.conf を読む）。ホスト再現実験で公式バイナリ・パッチ版バイナリとも正常起動したことと整合し、「環境側」と切り分けられた問題の内訳が、この Android 固有の依存経路だったことが判明した。
-- **修正（上流への2つ目のパッチ。1つ目はプルーニングパッチ）**: ndk-context 0.1.1 と hickory-resolver 0.26.1 を spike ツリー（chain/vendor/）にベンダー化し、chain/Cargo.toml の `[patch.crates-io]` で差し替えた。
-  - ndk-context に、panic しない `try_android_context() -> Option<AndroidContext>` を追加した。
-  - hickory-resolver の `read_system_conf()` を振り分けに変更した: コンテキストがある場合は従来どおり JNI 経由で ConnectivityManager から DNS サーバを取得する（挙動不変）。ない場合はフォールバックとして、libc の `__system_property_get` で `net.dns1`〜`net.dns4` を読み、IP として解釈できたものを採用する。それも得られなければ公開 DNS（1.1.1.1 / 8.8.8.8）を使う。フォールバック使用時は warn ログを出す。どの経路でも panic しない。あわせて hickory-resolver の Cargo.toml に Android 向け libc 依存を追加した。
-  - 差分の正本はリポジトリの `patches/hickory-ndk-fallback-patch.diff`（クレート3ファイル＋chain/Cargo.toml の計4件）。再現手順は同ファイル冒頭の記載どおり（レジストリから2クレートを vendor/ にコピーし差分を適用、[patch.crates-io] を追加、Cargo.lock は cargo が更新する）。
-- **検証済みの範囲**: Android（aarch64-linux-android）とホスト両方の `cargo check -p quantus-node` が EXIT 0。Android release を再ビルドし、フォールバックの warn 文字列がバイナリに埋め込まれていることを確認した。この release バイナリ（strip 後 約53.4MB）を同梱して APK versionCode 4 を作成済み。
-- **実機で解消を確認した（2026-11-03 17:25）**: versionCode 4 を Pixel 9a / GrapheneOS で実行し、ノードは panic 地点を越えて起動し、ピア12に接続、同期中（ベスト #61642 / 最高 #341089、稼働累計18分）であることを本人が画面で確認した。残る実機確認は、同期の完走、数時間の常駐、プルーニング256での DB 容量の頭打ち、電池・発熱、停止と再開。フォールバックの細部（net.dns* が読めたのか公開 DNS 経路だったのか）は未確定のままである。
+- **The cause of the node dying immediately after network start on a real device was identified.** Running an evidence-gathering build (versionCode 3) on a Pixel 9a / GrapheneOS, the node started, opened its DB (ParityDB), and completed genesis initialization, but right after "Running litep2p network backend" it panicked and exited with exit code 1 (survival about 17.8 seconds). The log was obtained through the evidence build's share feature, and the panic message remained verbatim.
+- **The panic itself**: `Thread 'main' panicked at 'android context was not initialized'`, occurring at src/lib.rs:72 of ndk-context 0.1.1. The dependency chain is quantus-node → litep2p 0.13.3 → hickory-resolver 0.26.1 → ndk-context 0.1.1.
+- **The mechanism**: the Android version of `read_system_conf()` in hickory-resolver (the DNS resolver) calls `ndk_context::android_context()` at the outset of reading the system DNS settings. This function assumes an Android runtime such as NativeActivity has initialized the context, and panics if uninitialized. This app's node is a plain process exec'd from the app; there is no one to initialize the context.
+- **The trigger**: because all mainnet bootnodes are /dns/ addresses, the first name resolution immediately after the network starts always enters this path.
+- **Why it did not reproduce on PC**: on Linux this path itself does not exist (hickory reads /etc/resolv.conf). This is consistent with the host reproduction experiment, in which both the official binary and the patched binary started normally, and it turned out that the breakdown of what had been separated out as "environment-side" was this Android-specific dependency path.
+- **The fix (a second patch to upstream; the first is the pruning patch)**: ndk-context 0.1.1 and hickory-resolver 0.26.1 were vendored into the spike tree (chain/vendor/) and replaced via `[patch.crates-io]` in chain/Cargo.toml.
+  - A non-panicking `try_android_context() -> Option<AndroidContext>` was added to ndk-context.
+  - hickory-resolver's `read_system_conf()` was changed to dispatch: when a context exists, it obtains DNS servers from ConnectivityManager via JNI as before (behavior unchanged). When it does not, the fallback reads `net.dns1`–`net.dns4` via libc's `__system_property_get` and adopts those interpretable as IPs. If that also yields nothing, public DNS (1.1.1.1 / 8.8.8.8) is used. A warn log is emitted when the fallback is used. No path panics. An Android libc dependency was also added to hickory-resolver's Cargo.toml.
+  - The canonical diff is the repository's `patches/hickory-ndk-fallback-patch.diff` (4 items: 3 crate files + chain/Cargo.toml). The reproduction procedure is as described at the top of that file (copy the 2 crates from the registry into vendor/, apply the diff, add [patch.crates-io]; Cargo.lock is updated by cargo).
+- **Verified scope**: `cargo check -p quantus-node` passes with EXIT 0 for both Android (aarch64-linux-android) and host. The Android release was rebuilt, and the fallback's warn string was confirmed embedded in the binary. APK versionCode 4 was created bundling this release binary (about 53.4MB after strip).
+- **Confirmed resolved on a real device (2026-11-03 17:25)**: running versionCode 4 on a Pixel 9a / GrapheneOS, the node started past the panic point, connected to 12 peers, and was syncing (best #61642 / highest #341089, cumulative uptime 18 minutes), as the owner confirmed on screen. Remaining real-device checks: completion of syncing, several hours of residency, the DB-size ceiling at pruning 256, battery and heat, stop and restart. The details of the fallback (whether net.dns* could be read, or whether it was the public DNS path) remain undetermined.
 
-### Phase 1 実機で判明したこと（その5: 同期完走・テレメトリTLS・チューニング、2026-11-03〜04）
+### Findings on a real device in Phase 1 (part 5: sync completion, telemetry TLS, tuning, 2026-11-03 to 04)
 
-- **初回同期が完走した（2026-11-03 19:28）**: 実機でベスト #341592 ＝ 最高 #341592、ピア18、「Synced」を確認。開始（17:07）から稼働累計2時間21分、同期速度は約50ブロック/秒を維持した。電池は同期全体で71%→27%（外出中のモバイル回線同期を含む）。残る実機確認は、数時間の常駐継続、プルーニング256での DB 容量の頭打ち、停止と再開の反復。
-- **テレメトリに載らない原因は TLS の CA 証明書だった**: 本人が共有したノードログで、公式テレメトリへの wss 接続が "no native root CA certificates found" で約10秒ごとに失敗し続けていたことを確認した。ノードは素のネイティブプロセスとして動くため、rustls-native-certs が Android の CA ストアを見つけられない。修正（versionCode 5）: 公式の Mozilla CA バンドル（curl.se 配布、SHA-256 を公式ハッシュで検証済み）をアプリに同梱し、起動時に `SSL_CERT_FILE` / `SSL_CERT_DIR` を子プロセスの環境変数として渡す。掲載の最終確認は、修正版での実機起動後に行う（→ 2026-11-05、リリース版 v0.1.0 で掲載を確認し決着）。
-- **起動引数のチューニング（versionCode 6）**: ノード側コードの精査に基づき、`--trie-cache-size 134217728`（128MiB。既定の1GiBは実機で初期化失敗の警告が出ており、キャッシュが実効として働いていなかった）と `--max-blocks-per-request 128`（既定64、応答側の上限まで）を追加した。並列ダウンロードの引き上げ（`--max-parallel-downloads`、`--out-peers`）は発熱・電池とのトレードオフが読めないため、混ぜずに単独で後評価とする。
-- **fast 同期は不成立と決着した**: プルーニングパッチで builder のゲートは開くが、(1) ファイナライズ済み state が DB にあると LightState が初期化時に Full へ逆戻りする、(2) state 同期の開始条件（ファイナライズが先端の8ブロック以内）が、ベストから100ブロック遅れる QPoW のファイナライズ方式と構造的に両立しない、という2つの機構的障壁をコードで確認した。成立には SDK 側への追加パッチが複数必要で、上流追従のたびに再適用・再検証する保守負担に見合わない。追わない。
-- **thin LTO は不採用**: 実験ビルド（prod-thin プロファイル）は完走したが、strip 後のサイズは現行 release 比 +2.5% で軽量化に寄与せず、2026-11-04 に本人が「軽量化は不要」と判断したため終了した。fat LTO（ビルド機のメモリ不足）と panic="abort"（常駐ノードの回復経路を失う）も不採用で確定。
-- **設定ロック（versionCode 7）**: 棚に置いた端末の誤タップ防止として、設定セクションに「設定をロック」ボタンを追加した。ロック中はテレメトリ スイッチ・表示名・言語ピッカーが無効化される。PIN は持たない（認証機能ではない）こと、ノードの開始/停止はロックしないことを仕様として明記する。
+- **The initial sync completed (2026-11-03 19:28)**: on the real device, best #341592 = highest #341592, 18 peers, "Synced" confirmed. From the start (17:07), cumulative uptime was 2 hours 21 minutes, and sync speed held at about 50 blocks/second. Battery over the whole sync went 71% → 27% (including sync over a mobile connection while out). Remaining real-device checks: several hours of continued residency, the DB-size ceiling at pruning 256, repetition of stop and restart.
+- **The cause of not appearing in telemetry was the TLS CA certificates**: in the node log the owner shared, wss connections to the official telemetry were failing about every 10 seconds with "no native root CA certificates found". Because the node runs as a plain native process, rustls-native-certs cannot find Android's CA store. Fix (versionCode 5): the official Mozilla CA bundle (distributed by curl.se, SHA-256 verified against the official hash) is bundled in the app, and `SSL_CERT_FILE` / `SSL_CERT_DIR` are passed as environment variables to the child process at startup. The final listing confirmation was to be made after a real-device start with the fixed version (→ settled on 2026-11-05, with the listing confirmed on release v0.1.0).
+- **Launch-argument tuning (versionCode 6)**: based on a close reading of the node-side code, `--trie-cache-size 134217728` (128MiB; the 1GiB default produced an initialization-failure warning on the real device, and the cache was not effectively working) and `--max-blocks-per-request 128` (default 64, up to the responder-side limit) were added. Raising parallel downloads (`--max-parallel-downloads`, `--out-peers`) was not mixed in, since the trade-off with heat and battery cannot be read; it will be evaluated separately later.
+- **Fast sync was settled as not viable**: the pruning patch opens the builder gate, but two mechanism-level barriers were confirmed in code: (1) if finalized state exists in the DB, LightState reverts to Full at initialization, and (2) the start condition for state sync (finalization within 8 blocks of the tip) is structurally incompatible with QPoW's finalization method, which lags 100 blocks behind the best. Viability would require multiple additional patches on the SDK side, out of proportion to the maintenance burden of reapplying and re-verifying at every upstream follow-up. It will not be pursued.
+- **thin LTO was not adopted**: the experiment build (prod-thin profile) ran to completion, but the size after strip was +2.5% versus the current release, contributing nothing to size reduction, and on 2026-11-04 the owner judged that "size reduction is unnecessary", ending it. fat LTO (insufficient memory on the build machine) and panic="abort" (losing the resident node's recovery path) were also settled as not adopted.
+- **Settings lock (versionCode 7)**: as protection against accidental taps on a device left sitting around, a "Lock settings" button was added to the settings section. While locked, the telemetry switch, the display name, and the language picker are disabled. It is specified explicitly that there is no PIN (it is not an authentication feature) and that starting/stopping the node is not locked.
 
-### 外部監査前の仕上げ（その6、2026-11-04）
+### Finishing touches before the external audit (part 6, 2026-11-04)
 
-- **vc8 で監査の競合2件を修正した**: 全ソースのバグ監査（2026-11-04、重大度「高」なし）で見つかった「停止→即開始」の競合（旧セッションの終了処理が新セッションのプロセス参照を消す問題、旧プロセスの DB ロック解放を待たずに新プロセスを開始する問題）を解消した（前者は所有者チェック、後者は有界3秒の終了待ち）。あわせて drain スレッドの例外耐性、表示名の先頭 '-' 除去、CA バンドルの原子的な書き込みも入れた。
-- **vc9 で残件5件を解消した**: FGS タイムアウト経路の世代読み取りを他の停止パスと同じロック内に統一し、起動スナップショットの記録をプロセス起動成功の後へ移し、波紋は同期完了後のベストブロック増加時のみに限定し、ポーリングの実効間隔を改善し（RPC が低速なときに最悪約10秒まで伸びていた）、ログ共有の読み込みをバックグラウンド化した。
-- **公開側のセキュリティ記録を整備した**: SECURITY.md に「Security notes」節を追加し、依存関係の Advisory 状況と上流追随の方針、設計上のセキュリティ境界、受容した既知事項、監査の実施記録を明記した。使い方ガイド全9言語には、共有ログに自ノードのグローバル IP アドレスやピア情報が含まれうる旨の注意を追記した。明日の外部監査（ChatGPT によるセキュリティ・バグ監査）に備えるための仕上げである。
-- **残る既知事項**: LogSink の行ごと open/close は実機フル同期（約2時間21分）で実害が観測されておらず、性能項目として受容している。依存関係の ring / curve25519-dalek / yanked の anyhow は上流由来で残存しており、上流の更新に追随する（詳細は SECURITY.md）。
+- **vc8 fixed two race conditions found in the audit**: a full-source bug audit (2026-11-04, no findings of "high" severity) found and resolved the "stop → start immediately" races (the old session's exit handling deleting the new session's process reference, and starting a new process without waiting for the old process's DB lock release) (the former via an ownership check, the latter via a bounded 3-second exit wait). Along with this, exception resilience of the drain thread, removal of a leading '-' from the display name, and atomic writing of the CA bundle were included.
+- **vc9 resolved five remaining items**: the FGS timeout path's generation reads were unified inside the same lock as the other stop paths, the startup snapshot recording was moved to after successful process spawn, ripples were limited to only when the best block increases after sync completion, the effective polling interval was improved (when the RPC was slow it had stretched to about 10 seconds at worst), and log-sharing reads were moved to the background.
+- **The public security record was put in order**: a "Security notes" section was added to SECURITY.md, stating the dependency advisory status and upstream follow-up policy, the design security boundaries, accepted known items, and the audit record. A note was added to the usage guides in all 9 languages that shared logs may contain one's own node's global IP address and peer information. These are finishing touches in preparation for tomorrow's external audit (a security and bug audit).
+- **Remaining known items**: LogSink's per-line open/close showed no observed harm in a real-device full sync (about 2 hours 21 minutes) and is accepted as a performance item. The upstream-origin ring / curve25519-dalek / yanked anyhow dependencies remain and will follow upstream updates (details in SECURITY.md).
 
-### 設計初期記述と実装の差異（その7、2026-11-04）
+### Differences between the early design description and the implementation (part 7, 2026-11-04)
 
-§5・§6 は設計初期（Phase 0 時点）の記述であり、履歴として書き換えない。ただし現行の実装とは次の点で異なるため、ここに差異を明記する（外部の読者が初期記述を現行仕様と誤読しないため）。
+§5 and §6 are descriptions from the early design stage (Phase 0) and are not rewritten, as history. However, they differ from the current implementation in the following points, so the differences are stated here (so that outside readers do not misread the early description as the current specification).
 
-- **技術スタック**: §5 のアーキテクチャ案は Kotlin / Jetpack Compose / JNI による .so 化を描いていたが、実装は素の Java（Android SDK のみ、外部依存なし）になった。ノード本体は JNI では呼ばず、アプリの子プロセスとして実行ファイルを直接起動する方式である。UI も Compose ではなく通常の View と Canvas 描画（PulseView）で実装している。
-- **ノードキーの保管**: §6-2 は「ノードキーは Android Keystore で保護」を必須要件としていたが、実装では Android Keystore を使用していない（アプリコード内に Keystore の参照はない）。ノードキーはノード本体が base-path 配下にファイルとして生成・保持するものであり、その置き場所はアプリ専用領域（他アプリから読み取り不可）の中にあり、`allowBackup=false` でクラウドバックアップからも除外される。キーが端末外に出ないという要件の実質はこの方式で満たしている。README.md / SECURITY.md 側の記述（app-private storage）が現行の実装どおりである。
-- **ライセンス**: §1 の「Apache-2.0 を第一候補」と §10 の「ライセンス（Apache-2.0 案）」は未確定時点の記述である。ライセンスは 2026-11-04 に本人が Apache-2.0 で確定し、リポジトリに LICENSE ファイルを設置済みである。
+- **Tech stack**: §5's architecture proposal depicted Kotlin / Jetpack Compose / JNI-izing as a .so, but the implementation became plain Java (Android SDK only, no external dependencies). The node binary is not called via JNI; the executable is launched directly as a child process of the app. The UI is also implemented with ordinary Views and Canvas drawing (PulseView), not Compose.
+- **Node key storage**: §6-2 made "node keys protected by Android Keystore" a mandatory requirement, but the implementation does not use Android Keystore (there are no Keystore references in the app code). The node key is generated and held as a file by the node binary under the base-path; its location is inside app-private storage (not readable by other apps), and allowBackup=false excludes it from cloud backup as well. The substance of the requirement that keys never leave the device is satisfied by this arrangement. The descriptions in README.md / SECURITY.md (app-private storage) match the current implementation.
+- **License**: §1's "Apache-2.0 as the first candidate" and §10's "license (Apache-2.0 proposal)" are descriptions from before the decision was final. The license was settled as Apache-2.0 by the owner on 2026-11-04, and a LICENSE file is in place in the repository.
 
-### 依存関係の再監査とバイナリ再ビルド（その8、2026-11-04）
+### Dependency re-audit and binary rebuild (part 8, 2026-11-04)
 
-- 外部監査に備えた第三者ダブルチェックをきっかけに、RustSec Advisory DB（当日取得）で依存関係を取り直した。出荷バイナリ（quantus-node）の依存閉包（aarch64-linux-android、normal+build）内の脆弱性は **22件**で、2026-11-03 の社内監査の報告（残件は上流由来の数件）とは大きく異なった。同監査は古いロック状態を見ていたとみられ、特に SECURITY.md に残っていた curve25519-dalek 3.2.0 と yanked anyhow 1.0.99 の「残存」記述は現行ロック（dalek 4.1.3、anyhow 1.0.104）と一致しない誤りだった。ring 0.17.14 も RUSTSEC-2025-0009 の修正範囲（≥0.17.12）内で対象外である。
-- **対応**: semver 範囲内のロックファイル更新で 20件を解消した（wasmtime 36.0.13→36.0.20、quinn-proto 0.11.15→0.11.19、rustls 0.23.32→0.23.46、rustls-webpki 0.103.13→0.103.16、zstd 系）。更新後のロックで `cargo check -p quantus-node --target aarch64-linux-android` が通過したことを確認し、ノードバイナリを再ビルドして **versionCode 10** として配布に回した（strip 後 53,411,080 bytes）。残る2件（zstd-safe 6.0.6 の legacy フレーム限定の件、crypto-bigint 0.5.5 のタイミングの件）は互換範囲内に修正版がなく、上流のフレームワーク更新待ち。到達可能性の評価（quinn-proto はマイナーサーバ経路でのみ到達し本アプリでは無効、wasmtime の component-model/WASI 系は到達不可、等）と正確な現況は SECURITY.md の「Dependency advisories」に集約した。
-- 詳細レポートは作業記録側（dependency-audit-2026-11-04）に保持。再ビルドしたバイナリの実機確認は Gate 1 の継続確認に含める。
+- Prompted by a third-party double-check in preparation for the external audit, the dependencies were retaken against the RustSec Advisory DB (fetched the same day). The vulnerabilities within the dependency closure of the shipped binary (quantus-node) (aarch64-linux-android, normal+build) numbered **22**, differing greatly from the 2026-11-03 internal audit report (remaining items were a few upstream-origin ones). That audit appears to have been looking at an old lock state; in particular, the "remaining" descriptions of curve25519-dalek 3.2.0 and yanked anyhow 1.0.99 that had remained in SECURITY.md were errors not matching the current lock (dalek 4.1.3, anyhow 1.0.104). ring 0.17.14 is also outside the target, being within the fixed range of RUSTSEC-2025-0009 (≥0.17.12).
+- **Response**: 20 items were resolved by lockfile updates within semver ranges (wasmtime 36.0.13→36.0.20, quinn-proto 0.11.15→0.11.19, rustls 0.23.32→0.23.46, rustls-webpki 0.103.13→0.103.16, the zstd family). It was confirmed that `cargo check -p quantus-node --target aarch64-linux-android` passes with the updated lock, and the node binary was rebuilt and put into distribution as **versionCode 10** (53,411,080 bytes after strip). The remaining 2 items (zstd-safe 6.0.6's legacy-frames-only item and crypto-bigint 0.5.5's timing item) have no fixed version within a compatible range and wait on an upstream framework update. Reachability assessments (quinn-proto is reachable only via the miner server path, which is disabled in this app; wasmtime's component-model/WASI family is unreachable, etc.) and the accurate current status are consolidated in SECURITY.md's "Dependency advisories".
+- The detailed report is kept on the working-record side (dependency-audit-2026-11-04). Real-device confirmation of the rebuilt binary is included in Gate 1's continued confirmation.
 
-### v0.2.0 の UI 刷新（2026-11-06）
+### The v0.2.0 UI redesign (2026-11-06)
 
-v0.1.x の単一ページ＋カード構成を廃し、UI を全面刷新した（versionCode 26 / v0.2.0）。ノードの起動引数、データベース、権限、設定の保存値、同梱ノードバイナリ（vc10 のまま）は不変で、変わるのは表示層だけである。
+The v0.1.x single-page + card layout was abolished and the UI fully redesigned (versionCode 26 / v0.2.0). The node launch arguments, database, permissions, saved setting values, and the bundled node binary (unchanged since vc10) are unchanged; only the presentation layer changes.
 
-- **4画面構成**: ホーム（脈動・状態・主ボタン、稼働中はピア数と今回の稼働時間）、ノード詳細（ベスト／最高ブロック、同期差、診断）、航跡（累計の記録）、設定。画面遷移は即時で、各画面はスクロール位置を保持する。
-- **状態は5つ**: 停止／起動中／同期中／同期完了／失敗。失敗の分類はサービス側で行う（2回の起動試行が両方失敗、予期しない終了、ノードバイナリなしは「失敗」として理由と再試行を表示。システムの時間制限による停止は理由つきの停止、ユーザーの停止は通常の停止として扱い、終了コードだけで失敗と決めない）。
-- **脈動の意味を一つに絞った**: 波紋は同期完了中に、新しいベストブロックを初めて観測した取得のときだけ1回出る。観測時刻はサービス側が記録し、ホームの「最終観測」表示と一致させる。
-- **ノード詳細と診断**: 同期差は意味があるときだけ表示し、0でも「同期完了」とは言わない。診断は開閉式で、終了コード、サービスのメモ、起動試行ごとの記録、ログ共有を持つ。停止中は前回セッションの値を現在値のように見せず、累計の航跡を表示する。
-- **設定**: テレメトリと表示名は、保存値と実際に起動した値が異なる間、項目ごとに未適用と示され、ホームにも確認リンクが出る。表示名はダイアログで編集し、サニタイズ後の64コードポイントを超える場合は切り詰めずに保存を拒否する（文字数カウンタと保存後プレビューつき）。言語は選んで即反映のまま。版数表示は設定の最下部に移した。
-- **数量表現**: 時間・残りブロック数・経過時間は、言語ごとの複数形カテゴリ（ロシア語の few/many、アラビア語の全カテゴリを含む）を実際の数値から選ぶ。文字列は 151キー × 9言語。
-- **配色**: Quantus 公式サイト（quantus.com）のブランドトークンに合わせた。背景 #0E0E0E（void）、面 #181818（surface）、アクセント #FF6B35（flare）、本文 #E8E6E0（content）、同期完了はブランドの緑 #4ADE80。
-- **量子ウォッチの排除**: §2 に記したとおり、本人の判断で表示枠と専用文字列を完全に排除した（コンセプトは脈動の可視化と貢献の見える化の2本柱）。
-- あわせて、翻訳文字列242件が「?」に化けて出荷されていた問題（v0.1.x 系にも含まれていた）を、vc24 時点のコミット済みテーブルから原文どおり復旧し、再発防止の検査を検証ハーネスに追加した。
+- **Four-screen structure**: Home (pulse, state, main button; while running, the peer count and this session's uptime), Node details (best/highest block, sync gap, diagnostics), Track record (cumulative records), Settings. Screen transitions are immediate, and each screen retains its scroll position.
+- **Five states**: Stopped / Starting / Syncing / Synced / Failed. Failure classification is done on the service side (when both of the two startup attempts fail, on an unexpected exit, or when the node binary is missing, it is "Failed" with the reason and retry shown. A stop due to the system's time limit is treated as a stop with a reason, and a user stop as an ordinary stop; failure is never decided by the exit code alone).
+- **The pulse's meaning was narrowed to one**: a ripple appears only during Synced, at the fetch that first observes a new best block. The observation time is recorded on the service side and kept consistent with the home screen's "Last observed" display.
+- **Node details and diagnostics**: the sync gap is shown only when it is meaningful, and it never says "Synced" just because the gap is 0. Diagnostics is an expandable section holding the exit code, the service's notes, per-startup-attempt records, and log sharing. While stopped, the previous session's values are not shown as if they were current; the cumulative track record is displayed instead.
+- **Settings**: while the saved value and the actually-started value differ for telemetry and the display name, each item is shown as not applied, and a check link also appears on the home screen. The display name is edited in a dialog; if it exceeds 64 code points after sanitization, saving is refused without truncation (with a character counter and a post-save preview). Language remains immediate-apply on selection. The version display was moved to the bottom of Settings.
+- **Quantity expressions**: times, remaining block counts, and elapsed times choose the plural category of each language (including Russian's few/many and all of Arabic's categories) from the actual number. Strings total 151 keys × 9 languages.
+- **Colors**: aligned with the brand tokens of the official Quantus site (quantus.com). Background #0E0E0E (void), surface #181818 (surface), accent #FF6B35 (flare), text #E8E6E0 (content), and Synced uses the brand green #4ADE80.
+- **Removal of Quantum Watch**: as recorded in §2, by the owner's decision the display frame and dedicated strings were removed completely (the concept is the two pillars of pulse visualization and contribution visibility).
+- Along with this, the problem of 242 translated strings having been shipped mangled into "?" (also included in the v0.1.x line) was restored verbatim from the table committed at vc24, and a regression check was added to the verification harness.
 
-### Pixel 9a（実機ターゲット）
-- Tensor G4（X4 ×1 + A720 ×3 + A520 ×4）、RAM 8GB、ストレージ 128/256GB UFS 3.1（microSD なし）、電池 5,100mAh、Titan M2。
-- ノード用途では CPU は十分。勝負はストレージ容量とバックグラウンド常駐の可否に絞られる。
+### Pixel 9a (the real-device target)
+- Tensor G4 (1× X4 + 3× A720 + 4× A520), RAM 8GB, storage 128/256GB UFS 3.1 (no microSD), battery 5,100mAh, Titan M2.
+- For node use, the CPU is sufficient. The contest narrows to storage capacity and whether background residency is possible.
 
-## 4. 実現可能性の判定（率直な査定）
+## 4. Feasibility assessment (a frank evaluation)
 
-| 論点 | 判定 | 根拠 |
+| Question | Verdict | Basis |
 |---|---|---|
-| 計算・メモリ | ◎ | ノードの同期・検証は Pixel 9a の性能で足りる見込み。マイニング負荷がない |
-| ストレージ | ▲ 最大の関門 | 公式最小 100GB。強プルーニングでの実測は同期完了時点で合計1.30GB（2026-11-05）。結果次第で「256GB モデル推奨」「最低空き容量」等の条件が付く可能性 |
-| Android への移植 | ▲ 難所 | Substrate フルノードは glibc 前提。Android（bionic）への移植、wasmtime / DB（RocksDB・ParityDB）のビルド可否がブロッカー洗い出し中 |
-| 常駐 | △ 設計次第 | Foreground Service で動かす。GrapheneOS の厳しい制限下での長期安定は実機テストで詰める |
+| Compute and memory | ◎ | The node's sync and verification look sufficient on the Pixel 9a's performance. No mining load |
+| Storage | ▲ The biggest gate | Official minimum 100GB. The measurement under strong pruning was 1.30GB in total at sync completion (2026-11-05). Depending on results, conditions such as "256GB model recommended" or a "minimum free space" may attach |
+| Porting to Android | ▲ A hard part | Substrate full nodes assume glibc. The Android (bionic) port, and whether wasmtime / the DBs (RocksDB, ParityDB) build, are being inventoried as blockers |
+| Residency | △ Design-dependent | Run it in a Foreground Service. Long-term stability under GrapheneOS's strict limits will be worked out in real-device tests |
 
-## 5. アーキテクチャ案
+## 5. Architecture proposal
 
 ```
-┌────────────────────── Android アプリ ──────────────────────┐
-│ UI 層 (Kotlin / Jetpack Compose)                            │
-│  同期状態 / ピア数 / ブロック高 / DB使用量 / 接続設定          │
-├────────────────────────────────────────────────────────────┤
-│ 制御層 (Kotlin, Foreground Service)                         │
-│  起動・停止、Wi-Fi のみ同期、充電状態に応じた節電、通知        │
-├────────────────────────────────────────────────────────────┤
-│ ノード層 (Rust, JNI 経由で .so 化)                           │
-│  quantus-node を warp + pruned 構成で内蔵                    │
-│  RPC は loopback のみ、外部公開なし                          │
-├────────────────────────────────────────────────────────────┤
-│ 鍵保管 (Android Keystore)                                   │
-│  ノードキー (P2P identity) のみ。資産の秘密は扱わない          │
-└────────────────────────────────────────────────────────────┘
+┌────────────────────── Android app ──────────────────────┐
+│ UI layer (Kotlin / Jetpack Compose)                      │
+│  Sync state / peers / block height / DB use / settings   │
+├──────────────────────────────────────────────────────────┤
+│ Control layer (Kotlin, Foreground Service)               │
+│  Start/stop, Wi-Fi-only sync, power saving, alerts       │
+├──────────────────────────────────────────────────────────┤
+│ Node layer (Rust, as a .so via JNI)                      │
+│  quantus-node built in, warp + pruned configuration      │
+│  RPC is loopback only, never published externally        │
+├──────────────────────────────────────────────────────────┤
+│ Key storage (Android Keystore)                           │
+│  Node key (P2P identity) only. No asset secrets          │
+└──────────────────────────────────────────────────────────┘
 ```
 
-- 計算とプロトコルは Rust（上流再利用とメモリ安全性）、Kotlin は UI と Android 生命周期だけ。
-- ユーザーが触る設定は少なく保つ: 同期の開始/停止、Wi-Fi のみ、ストレージ上限、データ削除。専門用語は噛み砕いて表示する。
-- DB が上限に近づいたら、黙って溢れさせず、警告して安全に停止する。
+- Compute and protocol are Rust (upstream reuse and memory safety); Kotlin handles only the UI and the Android lifecycle.
+- Keep the settings the user touches few: sync start/stop, Wi-Fi only, storage cap, data deletion. Jargon is displayed in plain language.
+- If the DB approaches its cap, do not let it overflow silently; warn and stop safely.
 
-## 6. セキュリティ設計（最優先事項）
+## 6. Security design (the top priority)
 
-脅威モデル: ①端末の盗難・紛失 ②悪性アプリ ③ネットワーク上の攻撃者（偽ピア、盗聴） ④サプライチェーン（依存クレート・配布 APK の改竄） ⑤誤操作。
+Threat model: ① device theft or loss ② malicious apps ③ network attackers (fake peers, eavesdropping) ④ supply chain (dependency crates, tampering with the distributed APK) ⑤ operational mistakes.
 
-必須要件:
-1. **資産の秘密を持たない設計を守る。** ウォレット機能は入れない。将来入れる話が出たら別途設計する。
-2. **ノードキーは Keystore で保護**し、平文で外部ストレージに出さない。クラウドバックアップ対象外（`allowBackup=false`）。
-3. **RPC・管理ポートを外部公開しない。** アプリ内通信は loopback のみ。P2P ポートだけが外と繋がる。
-4. **外部送信ゼロが既定。** 解析 SDK・広告 SDK・クラッシュ自動送信は入れない。ログに個人情報やキーを出さない。
-5. **バイナリの自己配布をしない。** ネイティブコードは署名付き APK 内蔵のみ。ネットから実行コードを落とす仕組みは作らない。更新は署名付き APK の更新のみ。
-6. **最小権限。** インターネット、Foreground Service、通知程度まで。連絡先・位置情報等は要求しない。
-7. **再現可能ビルド。** 誰がビルドしても同じハッシュになる構成を目指し、リリースにはチェックサムと署名を付ける。依存は固定し、監査を CI に組み込む。
-8. **上流追従の規律。** 公式ノードの更新に追随し、古いバージョンを配り続けない。量子耐性は上流の ML-DSA / ML-KEM 構成をそのまま使い、自作暗号はしない。
+Mandatory requirements:
+1. **Preserve the design of holding no asset secrets.** No wallet functionality. If talk of adding it comes up in the future, design it separately.
+2. **Node keys are protected by the Keystore** and never placed in plaintext on external storage. Excluded from cloud backup (`allowBackup=false`).
+3. **RPC and management ports are never published externally.** In-app communication is loopback only. Only the P2P port connects outside.
+4. **Zero external transmission by default.** No analytics SDKs, ad SDKs, or automatic crash reporting. No personal information or keys in logs.
+5. **No self-distribution of binaries.** Native code comes only inside the signed APK. No mechanism for downloading executable code from the net is built. Updates are signed APK updates only.
+6. **Minimal permissions.** Internet, Foreground Service, notifications, about that much. Contacts, location, etc. are never requested.
+7. **Reproducible builds.** Aim for a configuration in which anyone's build yields the same hash, and attach checksums and signatures to releases. Dependencies are pinned, and audits are built into CI.
+8. **Discipline in following upstream.** Follow official node updates and do not keep distributing old versions. Quantum resistance uses upstream's ML-DSA / ML-KEM configuration as-is; no home-grown cryptography.
 
-## 7. テスト戦略（本番品質の条件）
+## 7. Test strategy (conditions for production quality)
 
-- **同期の正しさ**: 公式ノード（PC 版）と同じチェーン先端に到達し、ブロックハッシュが一致すること。
-- **長時間ソークテスト**: Pixel 9a 実機で 24h / 72h / 1週間 の連続稼働（再接続、メモリ、DB 増加、電池消費）。
-- **異常系**: 回線断と復帰、機内モード、ストレージ逼迫、アプリ強制終了からの復旧、チェーン再編成（reorg）時。
-- **省電力系**: Doze、アプリスタンバイ、GrapheneOS の制限下での挙動。
-- **再現可能ビルド検証**: CI と手元ビルドのハッシュ一致。
-- **段階投入**: dev チェーン → テストネット相当 → メインネット。
+- **Correctness of sync**: reach the same chain tip as the official node (PC version), with matching block hashes.
+- **Long-duration soak tests**: continuous operation on a Pixel 9a real device for 24h / 72h / 1 week (reconnection, memory, DB growth, battery consumption).
+- **Failure cases**: connection loss and recovery, airplane mode, storage pressure, recovery from a forced app kill, and chain reorganizations (reorgs).
+- **Power-saving cases**: Doze, app standby, behavior under GrapheneOS restrictions.
+- **Reproducible-build verification**: hash agreement between CI and local builds.
+- **Staged rollout**: dev chain → testnet equivalent → mainnet.
 
-## 8. ロードマップ
+## 8. Roadmap
 
-- **Phase 0 ― 検証スパイク（進行中）**
-  0-1. メインネット DB 容量の実測（非バリデータ構成、warp + プルーニング）※計測中
-  0-2. quantus-node の Android 移植ブロッカー洗い出し ※着手中
-- **Phase 1 ― ノード MVP**: 同期・検証・ピア中継が動く最小アプリ。同期状態の表示、Foreground Service 化
-- **Phase 2 ― 実機での生活耐性**: 省電力・通信量・ストレージ上限管理、GrapheneOS での長期安定化、Pixel 9a 以外の機種確認
-- **Phase 3 ― 堅牢化と公開準備**: セキュリティレビュー、再現可能ビルド、README / 脅威モデルの公開、GitHub 公開リリース
-- **Phase 4 ― 本番**: メインネット正式版、他 Android 機種への展開、F-Droid 掲載手続き
+- **Phase 0 — Verification spike (in progress)**
+  0-1. Measure the mainnet DB size (non-validator configuration, warp + pruning) *measuring*
+  0-2. Inventory the blockers for porting quantus-node to Android *started*
+- **Phase 1 — Node MVP**: the minimal app where sync, verification, and peer relay work. Sync-state display, Foreground Service.
+- **Phase 2 — Real-device livability**: power saving, traffic volume, storage-cap management, long-term stability on GrapheneOS, checking models other than the Pixel 9a.
+- **Phase 3 — Hardening and release preparation**: security review, reproducible builds, publishing the README / threat model, GitHub public release.
+- **Phase 4 — Production**: mainnet official release, expansion to other Android devices, F-Droid listing procedures.
 
-## 9. 未確定・リスク（隠さない）
+## 9. Undecided items and risks (not hidden)
 
-- DB 容量は実測結果待ち。128GB モデルでは条件が厳しくなる可能性がある。
-- Android 移植で上流パッチが必要になれば、保守負担が恒常化する。Phase 0-2 の結果で継続可否を判断する。
-- 実際に上流パッチは2件体制になった（プルーニング、ndk-context / hickory-resolver の DNS フォールバック。§3「その4」参照）。上流の版上げのたびに再適用と再検証が必要で、保守負担は現実のものになっている。上流への還元（Issue / PR）が望ましい。
-- モバイル回線での同期は通信量が大きい。既定は Wi-Fi のみとし、ユーザーが選んだ場合だけモバイル回線を許可する。
+- DB size awaits measurement results. Conditions may become stricter on the 128GB model.
+- If the Android port requires upstream patches, the maintenance burden becomes permanent. Continuation is judged on the Phase 0-2 results.
+- The upstream patches did in fact become a two-patch arrangement (the pruning patch, and the ndk-context / hickory-resolver DNS fallback. See §3, "part 4"). Each upstream version bump requires reapplication and re-verification, and the maintenance burden is real. Upstreaming (Issues / PRs) is desirable.
+- Syncing over a mobile connection uses a large amount of traffic. The default is Wi-Fi only, and a mobile connection is permitted only when the user chooses it.
 
-## 10. 決めること
+## 10. Things to decide
 
-1. Pixel 9a のストレージ容量（128GB / 256GB）― ノード成立条件の判定材料。急がない、起きてからでよい。
-2. アプリ名・リポジトリ名、ライセンス（Apache-2.0 案）― 後日でよい。
+1. The Pixel 9a's storage capacity (128GB / 256GB) — material for judging the node's viability conditions. No rush; after waking is fine.
+2. The app name and repository name, and the license (Apache-2.0 proposal) — can be later.
 
-## 11. GitHub 活用方針（2026-11-03 本人指示で追加）
+## 11. GitHub usage policy (added 2026-11-03 at the owner's instruction)
 
-「多くの人に知ってもらい、修正案が来る状態」を最初から設計する:
+Design from the start for "a state where many people know about it and improvement proposals come in":
 
-- **公開リポジトリ**（ogaworld369 配下、名前は仮称 quantus-android-node）。設計段階から公開し、進捗そのものを見せる。
-- **README は英語＋日本語**。何を作っているか、なぜ作るか（分散のため、報酬なし）を冒頭で明確にし、誤解（マイニング詐欺系アプリ等）との差別化も兼ねる。
-- **Topics（タグ）を付ける**: quantus, qtc, android, substrate, rust, post-quantum, full-node, grapheneos, kotlin 等、検索で見つかる状態にする。
-- **Issue テンプレート**（不具合 / 提案）と **good first issue** ラベルを用意し、外部の修正案・PR が来やすい入口を作る。CONTRIBUTING.md に参加方法と検証手順を書く。
-- **SECURITY.md** を置き、脆弱性は公開 Issue ではなく非公開報告に誘導する。
-- **Releases** は署名付き APK ＋ チェックサムで配布し、変更履歴を残す。
-- **CI（GitHub Actions）** でビルドとテストを自動化し、PR が来ても検証できる状態を保つ。
-- 進捗は Milestones / Projects で可視化する。Quantus Network JAPAN のコミュニティとも連携し、上流（Quantus-Network）へ還元できる成果（Android 移植パッチ等）は上流にも共有する。
+- **A public repository** (under ogaworld369, provisionally named quantus-android-node). Public from the design stage, showing the progress itself.
+- **The README is in English + Japanese**. What is being built and why (for decentralization, no rewards) is made clear at the top, doubling as differentiation from misunderstandings (mining-scam-like apps, etc.).
+- **Attach Topics (tags)**: quantus, qtc, android, substrate, rust, post-quantum, full-node, grapheneos, kotlin, etc., so it can be found in search.
+- **Issue templates** (bug / proposal) and the **good first issue** label are prepared, creating an entrance where external improvement proposals and PRs come easily. CONTRIBUTING.md describes how to participate and the verification procedure.
+- **SECURITY.md** is placed, directing vulnerability reports to private reporting rather than public Issues.
+- **Releases** are distributed as signed APKs + checksums, keeping a change history.
+- **CI (GitHub Actions)** automates builds and tests, keeping a state in which PRs can be verified when they come.
+- Progress is visualized with Milestones / Projects. In coordination with the Quantus Network JAPAN community, results that can be returned upstream (the Quantus-Network org) — such as the Android port patches — are also shared upstream.
