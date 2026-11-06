@@ -72,6 +72,15 @@ public class NodeService extends Service {
      * monotonic deadline caps the whole call instead.
      */
     private static final long RPC_OVERALL_TIMEOUT_MS = 5000;
+    /**
+     * Grace past the RPC deadline before the deadline watchdog
+     * force-disconnects a still-running call (versionCode 25,
+     * re-audit residual of finding L3): the watchdog exists for the
+     * waits no in-call deadline check can reach — the response
+     * header wait above all — and the grace keeps it from racing a
+     * call that is completing on time.
+     */
+    private static final long RPC_WATCHDOG_GRACE_MS = 500;
     private static final long POLL_MS = 3000;
     private static final long UPTIME_SAVE_EVERY_MS = 10000;
 
@@ -163,13 +172,20 @@ public class NodeService extends Service {
     private static final String PROCESS_INCARNATION_ID = newIncarnationId();
 
     /**
-     * Set when an orphan recovery has COMPLETED in this process
-     * (the orphan was terminated and its exit confirmed). From then
-     * on, no further orphan kill is licensed in this process: the
-     * record such a kill would act on has been cleared and rewritten
-     * by this process's own spawn, so any later pid-file leftover is
-     * this process's own by construction. Read and written only
-     * inside {@link #awaitLeftoverNodeProcess}, which runs under
+     * Set when an orphan-recovery EPISODE involving at least one
+     * termination has completed in this process: every orphan
+     * attested by the foreign evidence is gone — terminated and
+     * its exit confirmed, or exited on its own during the wait —
+     * and a final scan found none left (versionCode 25, re-audit
+     * finding N4 — an episode may recover several orphans; the
+     * flag is NOT set between them, or the rest of the episode
+     * would stand itself down). From then on, no further orphan
+     * kill is licensed in this process: the record such a kill
+     * would act on has been cleared and rewritten by this
+     * process's own spawn, so any later pid-file leftover is this
+     * process's own by construction.
+     * Read and written only inside
+     * {@link #awaitLeftoverNodeProcess}, which runs under
      * {@link #PID_LOCK}; volatile for the same belt-and-braces
      * visibility as the other cross-instance state.
      */
@@ -288,19 +304,39 @@ public class NodeService extends Service {
      * both under {@link #stateLock}.
      */
     private volatile boolean syncEvidenceSeen = false;
+    /** One in-flight RPC connection, tagged with its session's generation. */
+    private static final class InFlightRpc {
+        final HttpURLConnection conn;
+        final int gen;
+
+        InFlightRpc(HttpURLConnection conn, int gen) {
+            this.conn = conn;
+            this.gen = gen;
+        }
+    }
+
     /**
      * The RPC connection currently in flight, if any, so a teardown
      * can abort it (versionCode 25, audit finding L3): a poll blocked
      * in a slow response otherwise outlives its session's stop until
-     * the overall deadline expires. Written by the poller thread at
-     * the start of {@link #rpcCall}, cleared by identity in its
-     * finally; read by the teardown paths, which run under
-     * {@link #stateLock} — the same lock session establishment takes
-     * — so a disconnect issued by a teardown can only ever hit the
-     * connection of the session being torn down, never a newer
-     * session's.
+     * the overall deadline expires. Registration is
+     * generation-tagged and compare-and-set (versionCode 25,
+     * re-audit finding N1): a call installs its connection only
+     * while no NEWER generation owns the slot, and deregisters by
+     * identity, so a stale poller can neither overwrite nor clear a
+     * newer session's registration — the failure this replaces was
+     * exactly that overwrite, after which a teardown disconnected
+     * the dead connection and missed the live one. Teardown takes
+     * the slot atomically (see {@link #disconnectInFlightRpc}).
+     * The guarantee is best-effort, deliberately: in the worst
+     * interleaving the slot can hold a stale session's connection
+     * when a teardown fires, and disconnecting THAT is harmless
+     * (its own call is already doomed), while the live call is
+     * still bounded by its deadline and its deadline watchdog —
+     * the deadline, not this slot, is the hard bound.
      */
-    private volatile HttpURLConnection inFlightRpc;
+    private final java.util.concurrent.atomic.AtomicReference<InFlightRpc>
+            inFlightRpc = new java.util.concurrent.atomic.AtomicReference<>();
     private volatile String lastNotifText = "";
 
     private LogSink logSink;
@@ -658,18 +694,28 @@ public class NodeService extends Service {
     /**
      * Abort the RPC call currently in flight, if any (versionCode
      * 25, audit finding L3). Called from the teardown paths with
-     * {@link #stateLock} held — the same lock session establishment
-     * takes — so the connection this can hit always belongs to the
-     * session being torn down. disconnect() is the documented way to
-     * abort a blocked HttpURLConnection from another thread: the
-     * poll's read fails, rpcCall returns null, and the poller's
+     * {@link #stateLock} held. The slot is taken atomically, so
+     * exactly one teardown disconnects a given registration, and a
+     * registration a newer session installs afterwards is never
+     * retroactively hit by this call. What the slot holds at that
+     * moment is the dying session's connection in every realistic
+     * interleaving — a newer session can only be established (and
+     * its poller can only register) after this teardown releases
+     * the lock — but the contract is stated as it is implemented
+     * (versionCode 25, re-audit finding N1): the disconnect hits
+     * whatever is registered, a stale registration is harmless to
+     * disconnect, and a live call's hard bound is its overall
+     * deadline and deadline watchdog, not this best-effort abort.
+     * disconnect() is the documented way to abort a blocked
+     * HttpURLConnection from another thread: the poll's read
+     * fails, rpcCall returns null, and the poller's
      * generation-checked batch discards the result as usual.
      */
     private void disconnectInFlightRpc() {
-        HttpURLConnection conn = inFlightRpc;
-        if (conn != null) {
+        InFlightRpc slot = inFlightRpc.getAndSet(null);
+        if (slot != null) {
             try {
-                conn.disconnect();
+                slot.conn.disconnect();
             } catch (RuntimeException ignored) {
                 // Aborting is best-effort; the overall deadline in
                 // rpcCall is the backstop.
@@ -1192,12 +1238,14 @@ public class NodeService extends Service {
             // delivered during it was only noticed AFTER the spawn —
             // the session then started a node with the settings
             // captured before the wait, only for the acceptance
-            // check to destroy it immediately. Re-check, here at the
-            // last moment before the spawn: a session that is no
-            // longer started, or no longer current, spawns nothing.
-            // The refusal is an ordinary failed launch for the
-            // worker; its generation checks keep the linker64 retry
-            // and every state write from firing for a stale session.
+            // check to destroy it immediately. Re-check here, after
+            // the wait — and once more after the marker write below
+            // (the re-audit's residual of this finding): a session
+            // that is no longer started, or no longer current,
+            // spawns nothing. The refusal is an ordinary failed
+            // launch for the worker; its generation checks keep the
+            // linker64 retry and every state write from firing for
+            // a stale session.
             if (!started.get() || gen != sessionGen.get()) {
                 throw new IOException("start cancelled while waiting"
                         + " for the previous node process to exit");
@@ -1214,6 +1262,29 @@ public class NodeService extends Service {
                 logApp("spawn-intent marker could not be written;"
                         + " interrupted-spawn detection is degraded"
                         + " for this launch");
+            }
+            // versionCode 25 (re-audit residual of finding M4): the
+            // re-check above sits BEFORE the marker write, and the
+            // marker write is file I/O — a STOP completing inside
+            // that write still reached the spawn below (the spawn's
+            // product was then destroyed by the acceptance check,
+            // so the window cost a brief run of a stopped session's
+            // node, never a stuck state). STOP does not take
+            // PID_LOCK, so no lock can close the sequence outright;
+            // what CAN be closed is everything up to the spawn
+            // itself: re-check once more, here, after the marker
+            // write, so the only window left is the execution of
+            // pb.start() itself — for which the acceptance refusal
+            // remains, by design, the final defense.
+            if (!started.get() || gen != sessionGen.get()) {
+                if (markerWritten) {
+                    // No spawn will happen: the marker must not
+                    // outlive the intent (same cleanup as the
+                    // spawn-failure path below).
+                    clearSpawnMarkerIfMatches(PROCESS_INCARNATION_ID);
+                }
+                throw new IOException("start cancelled after the"
+                        + " spawn-intent marker was written");
             }
             try {
                 proc = pb.start();
@@ -1344,8 +1415,10 @@ public class NodeService extends Service {
      * tracked by object, or stamped with this process's incarnation
      * id — is never killed: it has an owner, or its owner already
      * destroyed it (and finding F-03's escalation stands behind that
-     * destroy). At most one recovery completes per app process: see
-     * {@link #orphanRecoveryCompletedInProcess}.
+     * destroy). At most one recovery EPISODE completes per app
+     * process — an episode being every orphan attested by the same
+     * foreign evidence, recovered one at a time under it (finding
+     * N4): see {@link #orphanRecoveryCompletedInProcess}.
      *
      * Until versionCode 24 the exception was licensed by "the asking
      * session is the first this process established" — a flag the
@@ -1378,7 +1451,9 @@ public class NodeService extends Service {
      */
     private void awaitLeftoverNodeProcess(int gen) throws IOException {
         final Process prev = nodeProcess;
-        final long leftoverPid;
+        // Not final: the marker path's recovery loop below moves on
+        // to the next orphan after each recovery (finding N4).
+        long leftoverPid;
         final boolean trackByObject;
         // Provenance of a leftover known by evidence (paths b/c):
         // the incarnation id stamped by whoever wrote the record or
@@ -1427,9 +1502,16 @@ public class NodeService extends Service {
                 }
                 // More than one strict-verified orphan can exist
                 // only if the interrupted-spawn window was hit more
-                // than once across incarnations; they are recovered
-                // one per start, oldest (lowest pid) first, never
-                // guessed at in bulk.
+                // than once across incarnations. They are recovered
+                // one at a time, oldest (lowest pid) first, in the
+                // loop below: after each recovery the scan runs
+                // again, and the marker — the only evidence by which
+                // the remaining orphans can be found at all — is
+                // cleared only when a scan comes back empty
+                // (versionCode 25, re-audit finding N4; the first
+                // version of this path settled the marker and the
+                // completion flag after the FIRST orphan, stranding
+                // every other one permanently).
                 leftoverPid = orphans.get(0);
                 trackByObject = false;
                 evidenceIncarnation = marker;
@@ -1439,82 +1521,168 @@ public class NodeService extends Service {
                         + " process (pid " + leftoverPid + ")");
             }
         }
-        logApp("previous node process (pid " + leftoverPid
-                + ") still exiting; waiting up to 5s");
-        if (awaitLeftoverExit(prev, leftoverPid, trackByObject)) {
-            clearPidFileIfMatches(leftoverPid);
-            if (viaMarker) {
-                clearSpawnMarkerIfMatches(evidenceIncarnation);
-            }
-            return;
-        }
-        if (!trackByObject
-                && !orphanRecoveryCompletedInProcess
-                && (evidenceIncarnation == null
-                    || !evidenceIncarnation.equals(PROCESS_INCARNATION_ID))
-                && isOwnNodeProcessStrict(leftoverPid)) {
-            // Orphan of a dead incarnation (see the method doc): it
-            // will never exit by itself, and refusing here would
-            // refuse every future start with it. Terminate it, wait
-            // with the same bound, and proceed only once it is
-            // verifiably gone — the strict identity is re-checked by
-            // the wait itself, so a pid recycled in the meantime is
-            // never mistaken for the orphan.
-            //
-            // First, though, the last-moment revalidation
-            // (versionCode 24, audit finding A-6; see the method
-            // doc): this worker's generation must still be the
-            // current generation, and the evidence this call has
-            // been waiting on — the pid record, or the spawn marker —
-            // must be unchanged since the wait began. A stale worker
-            // of a destroyed instance fails the generation check by
-            // construction — its session's teardown bumped the
-            // generation — and evidence written by a newer session
-            // fails the second (and, being stamped with this
-            // process's own incarnation id, the provenance check
-            // above as well). Any failure stands the recovery down:
-            // nothing is killed, and the refusal below is the
-            // outcome, exactly as before the recovery existed.
-            boolean evidenceUnchanged = viaMarker
-                    ? evidenceIncarnation.equals(readSpawnMarker())
-                    : readPidFile() == leftoverPid;
-            if (gen == sessionGen.get() && evidenceUnchanged) {
-                logApp("node process (pid " + leftoverPid + ") was left behind"
-                        + " by a previous incarnation of this app and has no"
-                        + " living owner; terminating it to recover");
-                try {
-                    android.os.Process.killProcess((int) leftoverPid);
-                } catch (RuntimeException e) {
-                    logApp("orphan termination failed for pid " + leftoverPid
-                            + ": " + e);
-                }
-                if (awaitLeftoverExit(null, leftoverPid, false)) {
-                    // The recovery is complete: it is recorded
-                    // BEFORE proceeding, so no later session of this
-                    // process can license a second kill on evidence
-                    // this process has since rewritten as its own.
-                    orphanRecoveryCompletedInProcess = true;
-                    clearPidFileIfMatches(leftoverPid);
-                    if (viaMarker) {
-                        clearSpawnMarkerIfMatches(evidenceIncarnation);
-                    }
-                    logApp("orphaned node process (pid " + leftoverPid
-                            + ") terminated; proceeding with the start");
+        // The wait / recovery below runs once for the pid-record
+        // and tracked-by-object paths. For the marker path it is a
+        // loop (versionCode 25, re-audit finding N4): after one
+        // orphan is dealt with, the scan runs again, and while
+        // orphans remain the marker and the completion flag are NOT
+        // settled — the marker is the only evidence by which the
+        // remaining orphans can be found, in this process or any
+        // later one, so settling it after the first orphan stranded
+        // the rest permanently. Each orphan gets the full treatment
+        // (bounded natural wait, then the gated kill), so a start
+        // facing several orphans takes proportionally longer; that
+        // is the price of not refusing outright, and the situation
+        // needs several interrupted spawns across incarnations to
+        // arise at all.
+        boolean killedThisCall = false;
+        for (;;) {
+            logApp("previous node process (pid " + leftoverPid
+                    + ") still exiting; waiting up to 5s");
+            if (awaitLeftoverExit(prev, leftoverPid, trackByObject)) {
+                clearPidFileIfMatches(leftoverPid);
+                if (!viaMarker) {
                     return;
                 }
-            } else {
-                logApp("orphan recovery stood down for pid " + leftoverPid
-                        + ": the asking session is no longer current, or"
-                        + " the evidence changed during the wait;"
-                        + " refusing instead of terminating a process"
-                        + " that may have a living owner");
+                List<Long> more = scanForOrphanNodeProcesses();
+                if (more.isEmpty()) {
+                    // No orphans remain: the marker has done its
+                    // job and is settled, as before. If this call
+                    // terminated an earlier orphan of the episode,
+                    // the completion flag is recorded too, exactly
+                    // as the kill path below records it.
+                    if (killedThisCall) {
+                        orphanRecoveryCompletedInProcess = true;
+                    }
+                    clearSpawnMarkerIfMatches(evidenceIncarnation);
+                    return;
+                }
+                leftoverPid = more.get(0);
+                logApp("another orphaned node process (pid " + leftoverPid
+                        + ") remains from the same interrupted spawn;"
+                        + " recovering it in this start as well");
+                continue;
             }
+            if (!trackByObject
+                    && !orphanRecoveryCompletedInProcess
+                    && (evidenceIncarnation == null
+                        || !evidenceIncarnation.equals(PROCESS_INCARNATION_ID))
+                    && isOwnNodeProcessStrict(leftoverPid)) {
+                // Orphan of a dead incarnation (see the method doc):
+                // it will never exit by itself, and refusing here
+                // would refuse every future start with it. Terminate
+                // it, wait with the same bound, and proceed only once
+                // it is verifiably gone — the strict identity is
+                // re-checked by the wait itself, so a pid recycled
+                // in the meantime is never mistaken for the orphan.
+                //
+                // First, though, the last-moment revalidation
+                // (versionCode 24, audit finding A-6; see the method
+                // doc): this worker's generation must still be the
+                // current generation, and the evidence this call has
+                // been waiting on — the pid record, or the spawn
+                // marker — must be unchanged since the wait began. A
+                // stale worker of a destroyed instance fails the
+                // generation check by construction — its session's
+                // teardown bumped the generation — and evidence
+                // written by a newer session fails the second (and,
+                // being stamped with this process's own incarnation
+                // id, the provenance check above as well). Any failure
+                // stands the recovery down: nothing is killed, and
+                // the refusal below is the outcome, exactly as before
+                // the recovery existed.
+                boolean evidenceUnchanged = viaMarker
+                        ? evidenceIncarnation.equals(readSpawnMarker())
+                        : readPidFile() == leftoverPid;
+                if (gen == sessionGen.get() && evidenceUnchanged) {
+                    logApp("node process (pid " + leftoverPid + ") was left behind"
+                            + " by a previous incarnation of this app and has no"
+                            + " living owner; terminating it to recover");
+                    // versionCode 25 (re-audit finding N2): the
+                    // revalidation above was computed from reads
+                    // taken before the wait, and the log line just
+                    // written is file I/O — nothing held a lock
+                    // across check and kill, so a STOP could
+                    // complete in between and this by-now-stale
+                    // worker would kill anyway. The target is an
+                    // old incarnation's orphan either way — never a
+                    // living session's child, which the provenance
+                    // gate and PID_LOCK exclude — but a worker whose
+                    // session has ended must not act at all.
+                    // Re-verify everything once more, immediately
+                    // before the kill: generation still current,
+                    // evidence unchanged on a fresh read, strict
+                    // identity still holding. Only the kill syscall
+                    // itself follows the re-check.
+                    boolean finalRecheck = gen == sessionGen.get()
+                            && (viaMarker
+                                ? evidenceIncarnation.equals(readSpawnMarker())
+                                : readPidFile() == leftoverPid)
+                            && isOwnNodeProcessStrict(leftoverPid);
+                    if (!finalRecheck) {
+                        logApp("orphan recovery stood down at the final"
+                                + " re-check for pid " + leftoverPid
+                                + ": the asking session is no longer"
+                                + " current, or the evidence changed;"
+                                + " refusing instead of terminating");
+                    } else {
+                        try {
+                            android.os.Process.killProcess((int) leftoverPid);
+                        } catch (RuntimeException e) {
+                            logApp("orphan termination failed for pid "
+                                    + leftoverPid + ": " + e);
+                        }
+                        if (awaitLeftoverExit(null, leftoverPid, false)) {
+                            killedThisCall = true;
+                            clearPidFileIfMatches(leftoverPid);
+                            if (viaMarker) {
+                                List<Long> more =
+                                        scanForOrphanNodeProcesses();
+                                if (!more.isEmpty()) {
+                                    // More orphans are attested by
+                                    // the same foreign marker
+                                    // (finding N4): the episode is
+                                    // not complete — neither the
+                                    // completion flag nor the
+                                    // marker is settled — and the
+                                    // loop recovers the next one
+                                    // under the same evidence.
+                                    leftoverPid = more.get(0);
+                                    logApp("orphaned node process terminated;"
+                                            + " another orphaned node process"
+                                            + " (pid " + leftoverPid + ") remains"
+                                            + " from the same interrupted spawn;"
+                                            + " recovering it in this start"
+                                            + " as well");
+                                    continue;
+                                }
+                                clearSpawnMarkerIfMatches(evidenceIncarnation);
+                            }
+                            // The recovery episode is complete: it
+                            // is recorded BEFORE proceeding, so no
+                            // later session of this process can
+                            // license a second kill on evidence this
+                            // process has since rewritten as its own.
+                            orphanRecoveryCompletedInProcess = true;
+                            logApp("orphaned node process (pid " + leftoverPid
+                                    + ") terminated; proceeding with the start");
+                            return;
+                        }
+                    }
+                } else {
+                    logApp("orphan recovery stood down for pid " + leftoverPid
+                            + ": the asking session is no longer current, or"
+                            + " the evidence changed during the wait;"
+                            + " refusing instead of terminating a process"
+                            + " that may have a living owner");
+                }
+            }
+            logApp("previous node process (pid " + leftoverPid
+                    + ") still running after 5s; not starting a second node");
+            throw new IOException("previous node process (pid " + leftoverPid
+                    + ") has not exited yet; refusing to start a second node"
+                    + " on the same database");
         }
-        logApp("previous node process (pid " + leftoverPid
-                + ") still running after 5s; not starting a second node");
-        throw new IOException("previous node process (pid " + leftoverPid
-                + ") has not exited yet; refusing to start a second node"
-                + " on the same database");
     }
 
     /**
@@ -2293,24 +2461,33 @@ public class NodeService extends Service {
     /**
      * Per-line byte cap for the drain's read side (versionCode 25,
      * audit finding L2 / F-01): one byte short of the log sink's own
-     * per-line byte cap, so a line at the cap still passes the sink
-     * (with its newline) un-truncated. The point of the cap is the
-     * READ side: however long a "line" the node emits — a megabyte
-     * without a newline, say — the drain's live memory stays within
-     * this plus one chunk, and the excess is consumed and discarded
-     * up to the newline rather than materialized.
+     * per-line byte cap. The point of the cap is the READ side:
+     * however long a "line" the node emits — a megabyte without a
+     * newline, say — the drain's live memory stays within this plus
+     * one chunk, and the excess is consumed and discarded up to the
+     * newline rather than materialized. A line cut here is flagged
+     * as truncated for the consumer, and the sink marks it as cut
+     * (re-audit finding N3) — sitting one byte under the sink's cap
+     * must not make a cut line indistinguishable from a complete
+     * one, which is what the flag is for.
      */
     private static final int DRAIN_LINE_MAX_BYTES = (int) (LOG_MAX_BYTES / 4) - 1;
 
-    /** Receives drained lines from {@link #drainLines}. */
+    /**
+     * Receives drained lines from {@link #drainLines}. The
+     * {@code truncated} flag says the line was cut at the drain's
+     * cap and its tail discarded (versionCode 25, re-audit finding
+     * N3): the sinks mark such a line, so a reader of the log or
+     * the attempt capture can tell a cut line from a complete one.
+     */
     private interface LineConsumer {
-        void onLine(String line);
+        void onLine(String line, boolean truncated);
     }
 
     private void drainOutput(Process proc, AttemptCapture capture) {
         InputStream in = proc.getInputStream();
         try {
-            drainLines(in, DRAIN_LINE_MAX_BYTES, line -> {
+            drainLines(in, DRAIN_LINE_MAX_BYTES, (line, truncated) -> {
                 // F-3: the per-line work (log encode/write, attempt
                 // capture) must never kill this thread. If it died,
                 // logging and per-attempt evidence would stop — and
@@ -2321,9 +2498,9 @@ public class NodeService extends Service {
                 // read still ends the thread, in the catch below.
                 try {
                     if (logSink != null) {
-                        logSink.write(line);
+                        logSink.write(line, truncated);
                     }
-                    capture.add(line);
+                    capture.add(line, truncated);
                 } catch (Exception e) {
                     try {
                         logApp("output drain: line dropped after error: " + e);
@@ -2361,9 +2538,14 @@ public class NodeService extends Service {
      * '\r' is stripped), and a final unterminated line at EOF is
      * delivered. Splitting at the byte level is safe for UTF-8 —
      * 0x0A never appears inside a multi-byte sequence. A line cut
-     * at the cap may end mid-sequence; the decoder's replacement
-     * character marks the cut in the log, which is the honest
-     * rendering of a truncated line. Static and stream-based, so
+     * at the cap may end mid-sequence (the decoder renders the
+     * partial sequence as a replacement character), and the cut
+     * itself travels with the line as the consumer's
+     * {@code truncated} flag, so the sinks can mark the line as
+     * cut (re-audit finding N3: an earlier version of this reader
+     * capped one byte BELOW the sink's own per-line cap, so a cut
+     * line passed the sink unmarked and a shared log showed an
+     * incomplete line as complete). Static and stream-based, so
      * the real method can be exercised on a JVM.
      */
     static void drainLines(InputStream in, int maxLineBytes,
@@ -2372,13 +2554,14 @@ public class NodeService extends Service {
         ByteArrayOutputStream lineBuf = new ByteArrayOutputStream();
         // True once the current line has crossed the cap: its prefix
         // is in lineBuf and the rest is being discarded up to the
-        // newline.
+        // newline. This doubles as the line's truncated flag.
         boolean discarding = false;
         int n;
         while ((n = in.read(chunk)) != -1) {
             int segmentStart = 0;
             for (int i = 0; i < n; i++) {
                 if (chunk[i] == (byte) '\n') {
+                    boolean truncated = discarding;
                     if (!discarding) {
                         // The cap applies to newline-terminated
                         // segments too, not just to the tail of a
@@ -2386,13 +2569,16 @@ public class NodeService extends Service {
                         // read, and appending it uncapped would
                         // defeat the bound entirely.
                         int room = maxLineBytes - lineBuf.size();
-                        int take = Math.min(i - segmentStart,
-                                Math.max(room, 0));
+                        int avail = i - segmentStart;
+                        int take = Math.min(avail, Math.max(room, 0));
                         if (take > 0) {
                             lineBuf.write(chunk, segmentStart, take);
                         }
+                        if (take < avail) {
+                            truncated = true;
+                        }
                     }
-                    emitDrainedLine(lineBuf, consumer);
+                    emitDrainedLine(lineBuf, truncated, consumer);
                     lineBuf.reset();
                     discarding = false;
                     segmentStart = i + 1;
@@ -2414,19 +2600,21 @@ public class NodeService extends Service {
         // as far as the consumer is concerned. An input that ended
         // exactly at a newline (or was empty) leaves nothing behind.
         if (lineBuf.size() > 0 || discarding) {
-            emitDrainedLine(lineBuf, consumer);
+            emitDrainedLine(lineBuf, discarding, consumer);
         }
     }
 
     /** Decode one accumulated line (stripping a trailing '\r') and deliver it. */
     private static void emitDrainedLine(ByteArrayOutputStream buf,
+                                        boolean truncated,
                                         LineConsumer consumer) {
         byte[] bytes = buf.toByteArray();
         int len = bytes.length;
         if (len > 0 && bytes[len - 1] == (byte) '\r') {
             len--;
         }
-        consumer.onLine(new String(bytes, 0, len, StandardCharsets.UTF_8));
+        consumer.onLine(new String(bytes, 0, len, StandardCharsets.UTF_8),
+                truncated);
     }
 
     /**
@@ -2454,6 +2642,18 @@ public class NodeService extends Service {
         private int total = 0;
 
         synchronized void add(String line) {
+            add(line, false);
+        }
+
+        /**
+         * @param truncated true when the drain already cut this
+         *        line at its byte cap (finding N3): the capture's
+         *        marker is owed even when the delivered prefix is
+         *        short enough to pass the character cap below, and
+         *        it is appended exactly once, whichever cut (or
+         *        both) produced it.
+         */
+        synchronized void add(String line, boolean truncated) {
             total++;
             if (line.length() > MAX_LINE_CHARS) {
                 int keep = MAX_LINE_CHARS;
@@ -2461,7 +2661,11 @@ public class NodeService extends Service {
                 if (Character.isHighSurrogate(line.charAt(keep - 1))) {
                     keep--;
                 }
-                line = line.substring(0, keep) + " …[truncated]";
+                line = line.substring(0, keep);
+                truncated = true;
+            }
+            if (truncated) {
+                line = line + " …[truncated]";
             }
             if (tail.size() >= MAX_KEPT_LINES) {
                 tail.pollFirst();
@@ -2529,7 +2733,19 @@ public class NodeService extends Service {
         }
 
         void write(String line) {
-            byte[] bytes = encodeLine(line);
+            write(line, false);
+        }
+
+        /**
+         * @param truncated true when the producer already cut this
+         *        line at its own cap (the drain, finding N3): the
+         *        line is marked as cut even though the prefix it
+         *        arrives as fits this sink's per-line cap — before
+         *        the flag existed, such a line was written unmarked
+         *        and read as complete.
+         */
+        void write(String line, boolean truncated) {
+            byte[] bytes = encodeLine(line, truncated);
             synchronized (LOCK) {
                 try (FileOutputStream out = new FileOutputStream(file, true)) {
                     out.write(bytes);
@@ -2545,13 +2761,21 @@ public class NodeService extends Service {
             }
         }
 
-        /** Encode one line, truncating an oversized line at a UTF-8 boundary. */
-        private static byte[] encodeLine(String line) {
+        /**
+         * Encode one line, truncating an oversized line at a UTF-8
+         * boundary. A line the producer already cut (finding N3)
+         * gets the truncation marker even when it fits the cap:
+         * {@code keep} then simply covers the whole line, and only
+         * the marker is appended (still within the cap, since the
+         * marker's room is reserved from the same budget).
+         */
+        private static byte[] encodeLine(String line, boolean truncated) {
             byte[] bytes = (line + "\n").getBytes(StandardCharsets.UTF_8);
-            if (bytes.length <= MAX_LINE_BYTES) {
+            if (!truncated && bytes.length <= MAX_LINE_BYTES) {
                 return bytes;
             }
-            int keep = MAX_LINE_BYTES - TRUNC_SUFFIX.length;
+            int keep = Math.min(bytes.length - 1,
+                    MAX_LINE_BYTES - TRUNC_SUFFIX.length);
             // Do not split a multi-byte UTF-8 sequence: back off while
             // the first dropped byte is a continuation byte (10xxxxxx).
             while (keep > 0 && (bytes[keep] & 0xC0) == 0x80) {
@@ -2779,7 +3003,7 @@ public class NodeService extends Service {
         // STOPPED overwritten by this poll (N-5), and the track
         // read-modify-write (prevBestBlock + delta) cannot interleave
         // with another session's poller (N-7).
-        JSONObject health = rpcCall("system_health");
+        JSONObject health = rpcCall("system_health", gen);
         if (health == null) {
             // RPC not up yet (connection refused etc.): still starting.
             synchronized (stateLock) {
@@ -2821,12 +3045,12 @@ public class NodeService extends Service {
         Boolean freshSyncing = (syncingValue instanceof Boolean)
                 ? (Boolean) syncingValue : null;
 
-        JSONObject sync = rpcCall("system_syncState");
+        JSONObject sync = rpcCall("system_syncState", gen);
         long current = -1;
         long highest = -1;
         if (sync != null) {
-            current = sync.optLong("currentBlock", -1);
-            highest = sync.optLong("highestBlock", -1);
+            current = adoptBlockHeight(sync.opt("currentBlock"));
+            highest = adoptBlockHeight(sync.opt("highestBlock"));
         }
 
         synchronized (stateLock) {
@@ -2925,9 +3149,39 @@ public class NodeService extends Service {
         updateNotificationMaybe(gen);
     }
 
+    /**
+     * Adopt a block height from a raw syncState field value, or -1
+     * ("this response did not say") when the value is not a
+     * non-negative integer number (versionCode 25, re-audit residual
+     * of finding F-02). The check runs on the RAW value, not on a
+     * converted one: {@code JSONObject.optLong} coerces through
+     * {@code Number.longValue()}, whose double-to-long conversion
+     * truncates toward zero — so a malformed height of -0.5 arrived
+     * as a perfectly valid-looking 0 and, being "a height", counted
+     * as the sync evidence finding F-02 requires (and 5.9 arrived
+     * as a plausible but wrong 5). A fractional, negative, non-finite
+     * or non-numeric value evidences nothing and adopts nothing.
+     * Static and value-based, so the real method can be exercised
+     * on a JVM.
+     */
+    static long adoptBlockHeight(Object raw) {
+        if (raw instanceof Number) {
+            double d = ((Number) raw).doubleValue();
+            if (Double.isFinite(d) && d >= 0 && d == Math.rint(d)) {
+                return ((Number) raw).longValue();
+            }
+        }
+        return -1;
+    }
+
     /** One JSON-RPC call to the loopback endpoint; null on any failure. */
-    private JSONObject rpcCall(String method) {
+    private JSONObject rpcCall(String method, int gen) {
         HttpURLConnection conn = null;
+        // This call's registration in the in-flight slot (finding
+        // N1), and its completion flag for the deadline watchdog.
+        InFlightRpc mine = null;
+        final java.util.concurrent.atomic.AtomicBoolean callDone =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
         // versionCode 25 (audit finding L3): the whole call — connect,
         // request, response — lives under one monotonic deadline.
         // The 1500/2000 ms timeouts below bound each individual wait
@@ -2936,7 +3190,11 @@ public class NodeService extends Service {
         // cap, parking the poller (and the uptime saves riding its
         // loop) for the duration. The deadline is re-checked between
         // read chunks in readBounded, which is where a trickle is
-        // actually cut off.
+        // actually cut off; the deadline watchdog armed below covers
+        // the one wait those checks cannot reach — the response
+        // header wait inside getResponseCode(), which a peer
+        // dribbling headers stays inside indefinitely (re-audit
+        // residual of finding L3).
         final long deadlineMs = SystemClock.elapsedRealtime()
                 + RPC_OVERALL_TIMEOUT_MS;
         try {
@@ -2950,10 +3208,25 @@ public class NodeService extends Service {
             conn = (HttpURLConnection) new URL(RPC_URL).openConnection();
             // Registered before any blocking call, so a teardown
             // landing anywhere in this call can abort it via
-            // disconnectInFlightRpc() (finding L3). Cleared by
-            // identity in the finally below — a newer session's
-            // connection is never cleared by this call's exit.
-            inFlightRpc = conn;
+            // disconnectInFlightRpc() (finding L3). Registration is
+            // generation-tagged CAS (re-audit finding N1): this call
+            // installs its connection only while no NEWER generation
+            // owns the slot, and the finally below deregisters by
+            // identity — a stale poller can never overwrite or clear
+            // a newer session's registration.
+            InFlightRpc reg = new InFlightRpc(conn, gen);
+            for (;;) {
+                InFlightRpc cur = inFlightRpc.get();
+                if (cur != null && cur.gen > gen) {
+                    reg = null; // a newer session owns the slot
+                    break;
+                }
+                if (inFlightRpc.compareAndSet(cur, reg)) {
+                    break;
+                }
+            }
+            mine = reg;
+            armRpcDeadlineWatchdog(conn, deadlineMs, callDone);
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setConnectTimeout(1500);
@@ -2996,13 +3269,61 @@ public class NodeService extends Service {
         } catch (Exception e) {
             return null; // connection refused while booting is normal
         } finally {
+            callDone.set(true);
+            if (mine != null) {
+                // Deregister by identity: only this call's own
+                // registration is cleared, atomically — never a
+                // newer session's (re-audit finding N1; the check-
+                // then-clear this replaces could erase a registration
+                // installed between the check and the clear).
+                inFlightRpc.compareAndSet(mine, null);
+            }
             if (conn != null) {
-                if (inFlightRpc == conn) {
-                    inFlightRpc = null;
-                }
                 conn.disconnect();
             }
         }
+    }
+
+    /**
+     * Cut {@code conn} off once the overall deadline (plus a small
+     * grace) has passed and the call is still running (versionCode
+     * 25, re-audit residual of finding L3). The in-call deadline
+     * checks sit after {@code getResponseCode()} and between body
+     * chunks, so a peer dribbling response HEADERS — every read
+     * comfortably inside the per-read timeout — never reaches a
+     * check and can park the poller (and the uptime saves riding
+     * its loop) without bound. This short-lived daemon thread
+     * closes that gap from outside the call: disconnect() aborts
+     * whatever wait the call is parked in, so the whole call —
+     * headers included — is bounded by the deadline plus the
+     * grace, and the poll loop's delay with it. It acts only on
+     * this call's own connection object and only while the call
+     * has not finished, so it can never disturb another session's
+     * traffic.
+     */
+    private void armRpcDeadlineWatchdog(final HttpURLConnection conn,
+            final long deadlineMs,
+            final java.util.concurrent.atomic.AtomicBoolean callDone) {
+        Thread t = new Thread(() -> {
+            long waitMs = deadlineMs + RPC_WATCHDOG_GRACE_MS
+                    - SystemClock.elapsedRealtime();
+            if (waitMs > 0) {
+                try {
+                    Thread.sleep(waitMs);
+                } catch (InterruptedException e) {
+                    return;
+                }
+            }
+            if (!callDone.get()) {
+                try {
+                    conn.disconnect();
+                } catch (RuntimeException ignored) {
+                    // Best-effort, like every abort of this call.
+                }
+            }
+        }, "rpc-deadline-watchdog");
+        t.setDaemon(true);
+        t.start();
     }
 
     /**
