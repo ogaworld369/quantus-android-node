@@ -141,6 +141,29 @@ public final class NodeSettings {
     }
 
     public static String sanitize(String raw) {
+        return sanitizeInternal(raw, true);
+    }
+
+    /**
+     * The sanitized result WITHOUT the {@link #MAX_NAME_CHARS} cap
+     * (versionCode 26): every other rule of {@link #sanitize} applies
+     * unchanged — control / invisible-format stripping, trim, the
+     * leading-dash rules and the default-name fallbacks. The display
+     * name editor validates against this: it counts the code points
+     * of this result and refuses an over-limit save instead of
+     * silently truncating what the user typed. When this result is
+     * within the cap it is identical to sanitize(raw).
+     */
+    public static String sanitizeUntruncated(String raw) {
+        return sanitizeInternal(raw, false);
+    }
+
+    /** The display-name cap, in Unicode code points after sanitizing. */
+    public static int nameLimitCodePoints() {
+        return MAX_NAME_CHARS;
+    }
+
+    private static String sanitizeInternal(String raw, boolean cap) {
         if (raw == null) {
             return DEFAULT_NODE_NAME;
         }
@@ -152,7 +175,7 @@ public final class NodeSettings {
             }
         }
         String s = sb.toString().trim();
-        if (s.codePointCount(0, s.length()) > MAX_NAME_CHARS) {
+        if (cap && s.codePointCount(0, s.length()) > MAX_NAME_CHARS) {
             // Cap by code points, not UTF-16 units (versionCode 21,
             // audit finding 3): a unit-wise cut could split a
             // surrogate pair and leave a lone surrogate in the name.

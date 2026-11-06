@@ -26,6 +26,30 @@ public final class NodeState {
         SYNCED
     }
 
+    /**
+     * How the current stopped episode ended, as classified by the
+     * service (versionCode 26). Display data only: the UI derives its
+     * "failed" presentation from this — never from a leftover exit
+     * code — and nothing in the node's lifecycle reads it back. The
+     * service resets it to NONE when a session is established and the
+     * path that settles the session records its kind (first writer
+     * wins: the settler is whoever ends the session first).
+     */
+    public enum StopKind {
+        /** No classification (no session yet, or still running). */
+        NONE,
+        /** Both launch attempts failed; the node never got going. */
+        START_FAILED,
+        /** The node was running and exited without a stop request. */
+        UNEXPECTED,
+        /** The system's foreground-service time limit stopped it. */
+        TIME_LIMIT,
+        /** The user asked for the stop. */
+        USER,
+        /** The node binary was not found at launch time. */
+        BINARY_MISSING
+    }
+
     private static final NodeState INSTANCE = new NodeState();
 
     public static NodeState get() {
@@ -34,6 +58,29 @@ public final class NodeState {
 
     public volatile Status status = Status.STOPPED;
     public volatile boolean serviceRunning = false;
+    /** Classification of the current stopped episode; see {@link StopKind}. */
+    public volatile StopKind lastStopKind = StopKind.NONE;
+    /**
+     * elapsedRealtime at which the service accepted the current
+     * session's start (session establishment), -1 while no session
+     * has been accepted. The UI's "current uptime" counts from here
+     * (redesign spec H). Display only: the cumulative uptime accrual
+     * keeps its own anchor at the accepted spawn (finding F-05) —
+     * the two are deliberately different values.
+     */
+    public volatile long sessionAcceptedElapsedMs = -1;
+    /**
+     * Best block height at the most recent observation: the first
+     * poll that saw the best height increase while the node was
+     * already SYNCED (versionCode 26). -1 until the first such
+     * observation of the session. The home screen's ripple and its
+     * "last observed" line key off this pair, which the service —
+     * not the UI — maintains, so an activity rebuild can neither
+     * fabricate nor lose an observation.
+     */
+    public volatile long lastObservedBestBlock = -1;
+    /** elapsedRealtime of the observation {@link #lastObservedBestBlock} names. */
+    public volatile long lastObservedElapsedMs = -1;
     /** Best (locally synced) block number, -1 while unknown. */
     public volatile long bestBlock = -1;
     /** Highest block seen on the network, -1 while unknown. */

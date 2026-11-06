@@ -2,9 +2,9 @@ package app.quantusnode.node;
 
 import android.content.Context;
 import android.graphics.Canvas;
-import android.graphics.Color;
 import android.graphics.Paint;
 import android.os.SystemClock;
+import android.provider.Settings;
 import android.view.View;
 
 import java.util.ArrayList;
@@ -12,99 +12,177 @@ import java.util.Iterator;
 import java.util.List;
 
 /**
- * "気配" — the pulse. Almost nothing moves here.
+ * The node's pulse (versionCode 26 redesign): a small state-coloured
+ * core in a wide quiet field — a filled dot of 8 dp inside a ring of
+ * radius 22 dp — and, only while the node is SYNCED, one ripple per
+ * poll that first observed a higher best block (the service records
+ * the observation; this view only renders the event it is handed).
  *
- * A faint still ring and a small dim centre dot are always present.
- * When (and only when) a new best block is observed, one quiet ripple
- * expands from the centre and fades out over ~1.6 s. No looping
- * animation, no colours shouting: if the chain is quiet, so is this view.
- *
- * The colour is the app's accent green (#30D158) desaturated and kept
- * at low alpha, so the pulse stays a presence, not an alert.
+ * A ripple runs 1,400 ms, radius 22 → 68 dp with ease-out cubic
+ * easing, alpha 0.42 → 0 following (1 − t)². At most four run at
+ * once; a fifth ends the oldest. Each ripple keeps the core colour
+ * of the moment it was fired: a state change mid-flight never
+ * recolours a ripple already on screen (audit finding L-4).
+ * Nothing else moves: no breathing, no rotation, no glow. When the
+ * system animator scale is 0 (animations disabled) ripples are
+ * omitted entirely. The stopped state draws a grey ring with a
+ * HOLLOW dot; every other state a filled dot. Decorative: not a
+ * TalkBack target of its own.
  */
 public class PulseView extends View {
 
-    private static final long RIPPLE_MS = 1600;
+    /** Ripple lifetime, ms. */
+    private static final long RIPPLE_MS = 1400L;
+    /** At most this many ripples are on screen at once. */
     private static final int MAX_RIPPLES = 4;
-    // #30D158 with its saturation taken down: rgb(105, 199, 128).
-    private static final int PULSE_R = 105;
-    private static final int PULSE_G = 199;
-    private static final int PULSE_B = 128;
 
-    private final List<Long> rippleStarts = new ArrayList<>();
-    private final Paint ringPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint dotPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint ripplePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    /** One live ripple: when it was fired, and in which colour. */
+    private static final class Ripple {
+        final long startMs;
+        final int color;
+
+        Ripple(long startMs, int color) {
+            this.startMs = startMs;
+            this.color = color;
+        }
+    }
+
+    private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    /** The live ripples, oldest first. */
+    private final List<Ripple> ripples = new ArrayList<>();
+    /** Core colour of the current state. */
+    private int coreColor = 0xFF656462;
+    /** True for the stopped state: hollow dot instead of filled. */
+    private boolean hollowCore = true;
 
     public PulseView(Context context) {
         super(context);
-        ringPaint.setStyle(Paint.Style.STROKE);
-        ringPaint.setStrokeWidth(dp(1));
-        ringPaint.setColor(Color.argb(30, PULSE_R, PULSE_G, PULSE_B));
-        dotPaint.setStyle(Paint.Style.FILL);
-        dotPaint.setColor(Color.argb(96, PULSE_R, PULSE_G, PULSE_B));
-        ripplePaint.setStyle(Paint.Style.STROKE);
-        ripplePaint.setStrokeWidth(dp(1.5f));
+        setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
     }
 
-    /** One new block was observed: emit exactly one ripple. */
-    public void pulse() {
-        long now = SystemClock.uptimeMillis();
-        synchronized (rippleStarts) {
-            rippleStarts.add(now);
-            while (rippleStarts.size() > MAX_RIPPLES) {
-                rippleStarts.remove(0);
+    /**
+     * Set the core for a state: its colour, and whether the dot is
+     * hollow (stopped) or filled. Leaving the filled states for the
+     * hollow (stopped) one ends any live ripples — a ripple never
+     * outlives the state that made it meaningful, and a stop in
+     * flight kills them at once.
+     */
+    public void setState(int color, boolean hollow) {
+        if (color != coreColor || hollow != hollowCore) {
+            coreColor = color;
+            hollowCore = hollow;
+            if (hollow) {
+                ripples.clear();
             }
+            invalidate();
+        }
+    }
+
+    /** End all live ripples now (e.g. a stop was just requested). */
+    public void clearRipples() {
+        if (!ripples.isEmpty()) {
+            ripples.clear();
+            invalidate();
+        }
+    }
+
+    /**
+     * Fire one ripple — called by the activity when the service's
+     * observation record advances while SYNCED. A no-op when the
+     * system animator scale is 0 (animations off) or the core is the
+     * stopped one.
+     */
+    public void pulse() {
+        if (hollowCore || !animationsEnabled()) {
+            return;
+        }
+        long now = SystemClock.uptimeMillis();
+        ripples.add(new Ripple(now, coreColor));
+        while (ripples.size() > MAX_RIPPLES) {
+            ripples.remove(0);
         }
         invalidate();
+    }
+
+    private boolean animationsEnabled() {
+        try {
+            float scale = Settings.Global.getFloat(
+                    getContext().getContentResolver(),
+                    Settings.Global.ANIMATOR_DURATION_SCALE, 1f);
+            return scale != 0f;
+        } catch (RuntimeException e) {
+            return true;
+        }
+    }
+
+    @Override
+    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+        float d = getResources().getDisplayMetrics().density;
+        int want = (int) (160 * d);
+        int w = resolveSize(want, widthMeasureSpec);
+        int h = resolveSize(want, heightMeasureSpec);
+        setMeasuredDimension(w, h);
     }
 
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
+        float d = getResources().getDisplayMetrics().density;
         float cx = getWidth() / 2f;
         float cy = getHeight() / 2f;
-        float maxR = Math.min(cx, cy) * 0.92f;
-        if (maxR <= 0) {
-            return;
-        }
-
-        // Still elements: one faint ring, one dim dot. That is the idle state.
-        canvas.drawCircle(cx, cy, maxR * 0.30f, ringPaint);
-        canvas.drawCircle(cx, cy, dp(3), dotPaint);
-
         long now = SystemClock.uptimeMillis();
-        boolean animating = false;
-        synchronized (rippleStarts) {
-            Iterator<Long> it = rippleStarts.iterator();
-            while (it.hasNext()) {
-                long t = now - it.next();
-                if (t < 0) {
-                    animating = true;
-                    continue;
-                }
-                if (t >= RIPPLE_MS) {
-                    it.remove();
-                    continue;
-                }
-                animating = true;
-                float f = t / (float) RIPPLE_MS;
-                // Ease-out: quick to leave the centre, slow to disappear.
-                float eased = 1f - (1f - f) * (1f - f);
-                float r = maxR * (0.08f + 0.92f * eased);
-                int alpha = (int) (64 * (1f - f));
-                ripplePaint.setColor(Color.argb(alpha, PULSE_R, PULSE_G, PULSE_B));
-                canvas.drawCircle(cx, cy, r, ripplePaint);
-            }
-        }
-        if (animating) {
-            // Only while a ripple is alive; otherwise the view is static
-            // and costs nothing.
-            postInvalidateDelayed(50);
-        }
-    }
 
-    private float dp(float v) {
-        return v * getResources().getDisplayMetrics().density;
+        // Ripples first (they expand around the core; all strokes
+        // are thin, so nothing visually covers anything else).
+        boolean live = false;
+        Iterator<Ripple> it = ripples.iterator();
+        while (it.hasNext()) {
+            Ripple ripple = it.next();
+            float t = (now - ripple.startMs) / (float) RIPPLE_MS;
+            if (t >= 1f) {
+                it.remove();
+                continue;
+            }
+            if (t < 0f) {
+                t = 0f;
+            }
+            live = true;
+            float eased = 1f - (1f - t) * (1f - t) * (1f - t);
+            float radius = (22f + (68f - 22f) * eased) * d;
+            int alpha = (int) (0.42f * (1f - t) * (1f - t) * 255f);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(1.5f * d);
+            paint.setColor(ripple.color);
+            paint.setAlpha(alpha);
+            canvas.drawCircle(cx, cy, radius, paint);
+        }
+
+        // Centre ring: state colour at 50%.
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(1.5f * d);
+        paint.setColor(coreColor);
+        paint.setAlpha(128);
+        canvas.drawCircle(cx, cy, 22f * d, paint);
+
+        // Centre dot: 8 dp across. Filled, or hollow when stopped.
+        if (hollowCore) {
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(1.5f * d);
+            paint.setColor(coreColor);
+            paint.setAlpha(255);
+            canvas.drawCircle(cx, cy, 4f * d, paint);
+        } else {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(coreColor);
+            paint.setAlpha(255);
+            canvas.drawCircle(cx, cy, 4f * d, paint);
+        }
+        paint.setAlpha(255);
+
+        if (live) {
+            // ~60 fps while a ripple is alive; the view is otherwise
+            // completely still and costs nothing.
+            postInvalidateDelayed(16);
+        }
     }
 }
