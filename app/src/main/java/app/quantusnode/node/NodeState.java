@@ -61,6 +61,19 @@ public final class NodeState {
     /** Classification of the current stopped episode; see {@link StopKind}. */
     public volatile StopKind lastStopKind = StopKind.NONE;
     /**
+     * How the session before the current one ended: a snapshot of
+     * {@link #lastStopKind} / {@link #lastExitCode} taken when the
+     * current session was established, before those live fields
+     * were reset for it (versionCode 28). Display data only, read
+     * solely by the diagnostic summary — the live fields keep
+     * their per-episode reset and first-writer semantics, and the
+     * UI's stopped presentation is derived from them alone,
+     * exactly as before.
+     */
+    public volatile StopKind prevStopKind = StopKind.NONE;
+    /** Exit code paired with {@link #prevStopKind}. */
+    public volatile Integer prevExitCode = null;
+    /**
      * elapsedRealtime at which the service accepted the current
      * session's start (session establishment), -1 while no session
      * has been accepted. The UI's "current uptime" counts from here
@@ -81,6 +94,17 @@ public final class NodeState {
     public volatile long lastObservedBestBlock = -1;
     /** elapsedRealtime of the observation {@link #lastObservedBestBlock} names. */
     public volatile long lastObservedElapsedMs = -1;
+    /**
+     * Wall-clock time (System.currentTimeMillis) of the most recent
+     * successful local-RPC response, -1 while no call has succeeded
+     * (versionCode 28). The poller stamps the moment a response
+     * actually arrives and applies that stamp inside its
+     * generation-checked batch, so a call that times out never
+     * freshens it. Display data only — the diagnostic summary's
+     * "last RPC response" line reads it as the state's freshness;
+     * nothing in the lifecycle judges from it.
+     */
+    public volatile long lastRpcOkWallMs = -1;
     /** Best (locally synced) block number, -1 while unknown. */
     public volatile long bestBlock = -1;
     /** Highest block seen on the network, -1 while unknown. */

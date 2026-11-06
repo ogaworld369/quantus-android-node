@@ -10,8 +10,14 @@
            services at 6 cumulative hours per 24 h, which would kill the
            long-running node; a resident full node is the specialUse case.
          POST_NOTIFICATIONS: the quiet status notification (Android 13+).
+         ACCESS_NETWORK_STATE (versionCode 28): read-only — the service
+           notes the default network's type (Wi-Fi / cellular / none) into
+           the app log when it changes, so a shared diagnostic log shows
+           the connection a peer drop rode on. Nothing is transmitted
+           for this; the stamps stay in the on-device log.
          Nothing else. No storage, no location, no contacts. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

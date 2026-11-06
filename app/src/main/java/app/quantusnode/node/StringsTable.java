@@ -100,6 +100,10 @@ public final class StringsTable {
     public static final String SHARE_LOG_SUBJECT = "share_log_subject";
     /** Toast shown when there is no log file (or it is empty) to share. */
     public static final String LOG_MISSING_NOTE = "log_missing_note";
+    /** Share-dialog toggle: mask identifying values in the shared text (versionCode 28). */
+    public static final String SHARE_MASK_LABEL = "share_mask_label";
+    /** Share-dialog note under the mask toggle (versionCode 28). */
+    public static final String SHARE_MASK_NOTE = "share_mask_note";
     public static final String STATUS_START_FAILED = "status_start_failed";
     public static final String STATUS_UNEXPECTED_STOP = "status_unexpected_stop";
     public static final String MESSAGE_START_FAILED = "message_start_failed";
@@ -373,6 +377,8 @@ public final class StringsTable {
                 BUTTON_SHARE_LOG, "ログを共有",
                 SHARE_LOG_SUBJECT, "Quantus Node log",
                 LOG_MISSING_NOTE, "ログはまだありません",
+                SHARE_MASK_LABEL, "ノード名・IPアドレス・パスを隠す",
+                SHARE_MASK_NOTE, "共有するテキストから、あなたのノード名、この端末のIPアドレス、アプリの内部パスを隠します。診断のために完全なログが必要なときだけオフにしてください。",
                 STATUS_START_FAILED, "起動できませんでした",
                 STATUS_UNEXPECTED_STOP, "予期せず停止しました",
                 MESSAGE_START_FAILED, "起動時の記録を確認できます。",
@@ -533,6 +539,8 @@ public final class StringsTable {
                 BUTTON_SHARE_LOG, "Share log",
                 SHARE_LOG_SUBJECT, "Quantus Node log",
                 LOG_MISSING_NOTE, "No log yet",
+                SHARE_MASK_LABEL, "Hide node name, IP addresses and paths",
+                SHARE_MASK_NOTE, "The shared text hides your node name, this device's IP addresses and the app's internal paths. Turn this off only when a complete log is needed for diagnosis.",
                 STATUS_START_FAILED, "Couldn't start the node",
                 STATUS_UNEXPECTED_STOP, "Node stopped unexpectedly",
                 MESSAGE_START_FAILED, "You can review the startup details.",
@@ -693,6 +701,8 @@ public final class StringsTable {
                 BUTTON_SHARE_LOG, "分享日志",
                 SHARE_LOG_SUBJECT, "Quantus Node log",
                 LOG_MISSING_NOTE, "尚无日志",
+                SHARE_MASK_LABEL, "隐藏节点名称、IP 地址和路径",
+                SHARE_MASK_NOTE, "共享文本会隐藏您的节点名称、本设备的 IP 地址和应用的内部路径。仅当诊断需要完整日志时才关闭此项。",
                 STATUS_START_FAILED, "无法启动节点",
                 STATUS_UNEXPECTED_STOP, "节点意外停止",
                 MESSAGE_START_FAILED, "您可以查看启动记录。",
@@ -853,6 +863,8 @@ public final class StringsTable {
                 BUTTON_SHARE_LOG, "Compartir registro",
                 SHARE_LOG_SUBJECT, "Quantus Node log",
                 LOG_MISSING_NOTE, "Aún no hay registro",
+                SHARE_MASK_LABEL, "Ocultar el nombre del nodo, las direcciones IP y las rutas",
+                SHARE_MASK_NOTE, "El texto compartido oculta el nombre de su nodo, las direcciones IP de este dispositivo y las rutas internas de la aplicación. Desactívelo solo cuando se necesite un registro completo para el diagnóstico.",
                 STATUS_START_FAILED, "No se pudo iniciar el nodo",
                 STATUS_UNEXPECTED_STOP, "El nodo se detuvo inesperadamente",
                 MESSAGE_START_FAILED, "Puedes revisar los detalles del inicio.",
@@ -1013,6 +1025,8 @@ public final class StringsTable {
                 BUTTON_SHARE_LOG, "लॉग साझा करें",
                 SHARE_LOG_SUBJECT, "Quantus Node log",
                 LOG_MISSING_NOTE, "अभी कोई लॉग नहीं है",
+                SHARE_MASK_LABEL, "नोड का नाम, IP पते और पथ छिपाएँ",
+                SHARE_MASK_NOTE, "साझा किया गया टेक्स्ट आपके नोड का नाम, इस डिवाइस के IP पते और ऐप के आंतरिक पथ छिपाता है। इसे केवल तभी बंद करें जब निदान के लिए पूरा लॉग चाहिए हो।",
                 STATUS_START_FAILED, "नोड शुरू नहीं हो सका",
                 STATUS_UNEXPECTED_STOP, "नोड अप्रत्याशित रूप से बंद हो गया",
                 MESSAGE_START_FAILED, "आप शुरुआत का विवरण देख सकते हैं।",
@@ -1173,6 +1187,8 @@ public final class StringsTable {
                 BUTTON_SHARE_LOG, "مشاركة السجل",
                 SHARE_LOG_SUBJECT, "Quantus Node log",
                 LOG_MISSING_NOTE, "لا يوجد سجل بعد",
+                SHARE_MASK_LABEL, "إخفاء اسم العقدة وعناوين IP والمسارات",
+                SHARE_MASK_NOTE, "يخفي النص الذي تتم مشاركته اسم العقدة وعناوين IP الخاصة بهذا الجهاز والمسارات الداخلية للتطبيق. أوقف هذا الخيار فقط عندما يلزم سجل كامل للتشخيص.",
                 STATUS_START_FAILED, "تعذّر بدء العقدة",
                 STATUS_UNEXPECTED_STOP, "توقفت العقدة بشكل غير متوقع",
                 MESSAGE_START_FAILED, "يمكنك مراجعة تفاصيل بدء التشغيل.",
@@ -1333,6 +1349,8 @@ public final class StringsTable {
                 BUTTON_SHARE_LOG, "로그 공유",
                 SHARE_LOG_SUBJECT, "Quantus Node log",
                 LOG_MISSING_NOTE, "아직 로그가 없습니다",
+                SHARE_MASK_LABEL, "노드 이름, IP 주소, 경로 숨기기",
+                SHARE_MASK_NOTE, "공유되는 텍스트에서 노드 이름, 이 기기의 IP 주소, 앱의 내부 경로를 숨깁니다. 진단을 위해 전체 로그가 필요할 때만 이 옵션을 끄세요.",
                 STATUS_START_FAILED, "노드를 시작할 수 없었습니다",
                 STATUS_UNEXPECTED_STOP, "노드가 예기치 않게 중지되었습니다",
                 MESSAGE_START_FAILED, "시작 기록을 확인할 수 있습니다.",
@@ -1493,6 +1511,8 @@ public final class StringsTable {
                 BUTTON_SHARE_LOG, "Поделиться журналом",
                 SHARE_LOG_SUBJECT, "Quantus Node log",
                 LOG_MISSING_NOTE, "Журнала пока нет",
+                SHARE_MASK_LABEL, "Скрывать имя узла, IP-адреса и пути",
+                SHARE_MASK_NOTE, "В отправляемом тексте скрываются имя вашего узла, IP-адреса этого устройства и внутренние пути приложения. Отключайте только если для диагностики нужен полный журнал.",
                 STATUS_START_FAILED, "Не удалось запустить узел",
                 STATUS_UNEXPECTED_STOP, "Узел неожиданно остановился",
                 MESSAGE_START_FAILED, "Вы можете посмотреть записи запуска.",
@@ -1653,6 +1673,8 @@ public final class StringsTable {
                 BUTTON_SHARE_LOG, "Partager le journal",
                 SHARE_LOG_SUBJECT, "Quantus Node log",
                 LOG_MISSING_NOTE, "Aucun journal pour le moment",
+                SHARE_MASK_LABEL, "Masquer le nom du nœud, les adresses IP et les chemins",
+                SHARE_MASK_NOTE, "Le texte partagé masque le nom de votre nœud, les adresses IP de cet appareil et les chemins internes de l'application. Ne désactivez cette option que lorsqu'un journal complet est nécessaire au diagnostic.",
                 STATUS_START_FAILED, "Impossible de démarrer le nœud",
                 STATUS_UNEXPECTED_STOP, "Le nœud s'est arrêté de façon inattendue",
                 MESSAGE_START_FAILED, "Vous pouvez consulter les détails du démarrage.",

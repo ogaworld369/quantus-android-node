@@ -41,6 +41,19 @@ public final class NodeSettings {
     private static final String KEY_NODE_NAME = "node_name";
     private static final String KEY_LANGUAGE = "language";
     private static final String KEY_SETTINGS_LOCKED = "settings_locked";
+    /**
+     * Last-change stamps (versionCode 28): when the telemetry
+     * opt-in, the display name and the language pick were last
+     * changed through their setters — epoch millis, 0 while never
+     * changed (including everything set before this version, whose
+     * change dates simply were not kept). Only the diagnostic
+     * summary reads them: a setting changed just before a problem
+     * appeared is a first-class diagnostic fact, and keeping just
+     * the latest change per setting is all that takes.
+     */
+    private static final String KEY_TELEMETRY_CHANGED_MS = "telemetry_changed_ms";
+    private static final String KEY_NODE_NAME_CHANGED_MS = "node_name_changed_ms";
+    private static final String KEY_LANGUAGE_CHANGED_MS = "language_changed_ms";
 
     /**
      * Display-name limit so names stay sane in lists and logs: the
@@ -84,7 +97,10 @@ public final class NodeSettings {
     }
 
     public static void setTelemetryEnabled(Context ctx, boolean enabled) {
-        prefs(ctx).edit().putBoolean(KEY_TELEMETRY, enabled).apply();
+        prefs(ctx).edit().putBoolean(KEY_TELEMETRY, enabled)
+                .putLong(KEY_TELEMETRY_CHANGED_MS,
+                        System.currentTimeMillis())
+                .apply();
     }
 
     /**
@@ -109,7 +125,10 @@ public final class NodeSettings {
             // value never ends in a lone surrogate.
             v = v.substring(0, v.offsetByCodePoints(0, MAX_STORED_NAME_CHARS));
         }
-        prefs(ctx).edit().putString(KEY_NODE_NAME, v).apply();
+        prefs(ctx).edit().putString(KEY_NODE_NAME, v)
+                .putLong(KEY_NODE_NAME_CHANGED_MS,
+                        System.currentTimeMillis())
+                .apply();
     }
 
     /**
@@ -125,7 +144,37 @@ public final class NodeSettings {
     }
 
     public static void setLanguageRaw(Context ctx, String tag) {
-        prefs(ctx).edit().putString(KEY_LANGUAGE, tag == null ? "" : tag).apply();
+        prefs(ctx).edit().putString(KEY_LANGUAGE, tag == null ? "" : tag)
+                .putLong(KEY_LANGUAGE_CHANGED_MS,
+                        System.currentTimeMillis())
+                .apply();
+    }
+
+    /** When the telemetry opt-in last changed (0 = never / not kept). */
+    public static long telemetryChangedMs(Context ctx) {
+        try {
+            return prefs(ctx).getLong(KEY_TELEMETRY_CHANGED_MS, 0L);
+        } catch (ClassCastException e) {
+            return 0L;
+        }
+    }
+
+    /** When the display name last changed (0 = never / not kept). */
+    public static long nodeNameChangedMs(Context ctx) {
+        try {
+            return prefs(ctx).getLong(KEY_NODE_NAME_CHANGED_MS, 0L);
+        } catch (ClassCastException e) {
+            return 0L;
+        }
+    }
+
+    /** When the language pick last changed (0 = never / not kept). */
+    public static long languageChangedMs(Context ctx) {
+        try {
+            return prefs(ctx).getLong(KEY_LANGUAGE_CHANGED_MS, 0L);
+        } catch (ClassCastException e) {
+            return 0L;
+        }
     }
 
     /** Whether the settings UI is locked against accidental changes. */

@@ -5,8 +5,12 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.SystemClock;
@@ -56,6 +60,8 @@ public class NodeService extends Service {
     public static final String ACTION_STOP = "app.quantusnode.node.action.STOP";
 
     private static final String NODE_LIB = "libquantus_node.so";
+    /** The one chain this app runs; also read by the share summary. */
+    static final String CHAIN_NAME = "mainnet";
     private static final String CHANNEL_ID = "node_status";
     private static final int NOTIF_ID = 1;
 
@@ -404,6 +410,18 @@ public class NodeService extends Service {
     private Thread workerThread;
     private Thread pollerThread;
 
+    /**
+     * The network-type watch (versionCode 28, spec B): the
+     * registered default-network callback and the last label it
+     * stamped, guarded by its own lock. Deliberately separate from
+     * {@link #stateLock} and every session field — the watch only
+     * ever writes log lines, so it can neither disturb nor be
+     * disturbed by the lifecycle.
+     */
+    private ConnectivityManager.NetworkCallback netCallback;
+    private final Object netLabelLock = new Object();
+    private String lastNetLabel;
+
     // ------------------------------------------------------------------
     // Lifecycle
     // ------------------------------------------------------------------
@@ -414,6 +432,117 @@ public class NodeService extends Service {
         NodeState.get().serviceRunning = true;
         createNotificationChannel();
         logSink = new LogSink(new File(getFilesDir(), "logs"));
+        startNetworkWatch();
+    }
+
+    /**
+     * versionCode 28 (spec B): stamp the default network's type
+     * into the app log — once when the watch starts and again
+     * whenever it changes — so a peer drop or a stall in a shared
+     * log can be read against the connection it rode on (Wi-Fi,
+     * cellular, a switch between them, a drop to none). The watch
+     * lives exactly as long as the service and touches nothing but
+     * the log; every failure to register or to read the network is
+     * swallowed, because a missing stamp must never cost the node
+     * its service.
+     */
+    private void startNetworkWatch() {
+        try {
+            ConnectivityManager cm = (ConnectivityManager)
+                    getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm == null) {
+                return;
+            }
+            ConnectivityManager.NetworkCallback cb =
+                    new ConnectivityManager.NetworkCallback() {
+                        @Override
+                        public void onAvailable(Network network) {
+                            noteCurrentNetwork();
+                        }
+
+                        @Override
+                        public void onCapabilitiesChanged(
+                                Network network,
+                                NetworkCapabilities caps) {
+                            noteCurrentNetwork();
+                        }
+
+                        @Override
+                        public void onLost(Network network) {
+                            noteCurrentNetwork();
+                        }
+                    };
+            cm.registerDefaultNetworkCallback(cb);
+            netCallback = cb;
+            noteCurrentNetwork();
+        } catch (Throwable ignored) {
+            // See the method doc: never take the service down.
+        }
+    }
+
+    private void stopNetworkWatch() {
+        try {
+            if (netCallback != null) {
+                ConnectivityManager cm = (ConnectivityManager)
+                        getSystemService(Context.CONNECTIVITY_SERVICE);
+                if (cm != null) {
+                    cm.unregisterNetworkCallback(netCallback);
+                }
+                netCallback = null;
+            }
+        } catch (Throwable ignored) {
+            // Same rule as registration.
+        }
+    }
+
+    /**
+     * Recompute the default network's label and stamp a change.
+     * Read, compare and stamp all run under {@link #netLabelLock}:
+     * callbacks arrive on binder threads and can race each other,
+     * and a label computed outside the lock could be applied
+     * after a newer one, stamping a transition that never
+     * happened. A network whose capabilities cannot be read is
+     * unknown, not "other": it leaves no stamp until a later
+     * callback can read it.
+     */
+    private void noteCurrentNetwork() {
+        synchronized (netLabelLock) {
+            String label;
+            try {
+                ConnectivityManager cm = (ConnectivityManager)
+                        getSystemService(Context.CONNECTIVITY_SERVICE);
+                if (cm == null) {
+                    return;
+                }
+                Network active = cm.getActiveNetwork();
+                if (active == null) {
+                    label = DiagShare.networkLabel(false, false, false, false);
+                } else {
+                    NetworkCapabilities caps =
+                            cm.getNetworkCapabilities(active);
+                    if (caps == null) {
+                        return; // unknown for now: no stamp
+                    }
+                    label = DiagShare.networkLabel(true,
+                            caps.hasTransport(
+                                    NetworkCapabilities.TRANSPORT_WIFI),
+                            caps.hasTransport(
+                                    NetworkCapabilities.TRANSPORT_ETHERNET),
+                            caps.hasTransport(
+                                    NetworkCapabilities.TRANSPORT_CELLULAR));
+                }
+            } catch (Throwable t) {
+                return; // an unreadable network leaves no stamp
+            }
+            if (lastNetLabel == null) {
+                lastNetLabel = label;
+                logApp("network: " + label);
+            } else if (!lastNetLabel.equals(label)) {
+                String prev = lastNetLabel;
+                lastNetLabel = label;
+                logApp("network: " + prev + " -> " + label);
+            }
+        }
     }
 
     @Override
@@ -507,6 +636,17 @@ public class NodeService extends Service {
             st.bestBlock = -1;
             st.highestBlock = -1;
             st.peers = -1;
+            // versionCode 28 (post-review): before the live fields
+            // below are reset for this session, snapshot how the
+            // PREVIOUS session ended into the prev* pair. The
+            // diagnostic summary reads the snapshot once this
+            // session is running (the live pair then describes the
+            // new, still-open episode), so a restart no longer
+            // erases the last ending from the record. Nothing else
+            // reads the snapshot; the live classification's reset
+            // and first-writer semantics are untouched.
+            st.prevStopKind = st.lastStopKind;
+            st.prevExitCode = st.lastExitCode;
             st.lastExitCode = null;
             st.lastNote = null;
             st.lastAttempts = java.util.Collections.emptyList();
@@ -521,6 +661,13 @@ public class NodeService extends Service {
             st.sessionAcceptedElapsedMs = SystemClock.elapsedRealtime();
             st.lastObservedBestBlock = -1;
             st.lastObservedElapsedMs = -1;
+            // versionCode 28: no response yet in this session, and
+            // the durable start stamp behind the share summary's
+            // "starts in the last 24 h" line — one per accepted
+            // session (a crash-loop tell), recorded with the other
+            // establishment facts.
+            st.lastRpcOkWallMs = -1;
+            TrackStore.recordStart(this, System.currentTimeMillis());
             // No launch snapshot yet for this session: the worker fills
             // it in when the process is actually launched. Until then
             // the UI must not claim a settings/restart mismatch against
@@ -577,6 +724,10 @@ public class NodeService extends Service {
 
     @Override
     public void onDestroy() {
+        // The network watch (versionCode 28) ends with the service;
+        // it holds no lifecycle state, so it stops first, outside
+        // the teardown lock below.
+        stopNetworkWatch();
         // The whole teardown runs under the lifecycle lock, in B-2
         // order: clear `started` FIRST, then bump the generation, then
         // destroy the process. The worker is blocked in waitFor() and
@@ -1288,7 +1439,7 @@ public class NodeService extends Service {
         // --no-telemetry: present unless the user opted into telemetry,
         // in which case the node reports to the chain spec's built-in
         // official endpoint — the app never sets a telemetry URL itself.
-        cmd.add("--chain");         cmd.add("mainnet");
+        cmd.add("--chain");         cmd.add(CHAIN_NAME);
         cmd.add("--base-path");     cmd.add(basePath);
         cmd.add("--name");          cmd.add(nodeName);
         cmd.add("--state-pruning"); cmd.add("256");
@@ -3212,6 +3363,15 @@ public class NodeService extends Service {
             updateNotificationMaybe(gen);
             return;
         }
+        // versionCode 28 (post-review): the "last RPC response"
+        // stamp is taken HERE, at the moment the health response
+        // has actually arrived — and refreshed below if the
+        // syncState call also answers — then applied inside the
+        // locked batch. It used to be stamped with the batch's own
+        // completion time, so a syncState call that hung until its
+        // timeout still left the summary claiming a response as of
+        // "now".
+        long rpcResponseWallMs = System.currentTimeMillis();
         // versionCode 23 (audit finding B-1): a field ABSENT from a
         // response is not a value. optInt's default would have
         // turned a missing "peers" into a real 0 and overwritten the
@@ -3243,6 +3403,9 @@ public class NodeService extends Service {
         long current = -1;
         long highest = -1;
         if (sync != null) {
+            // A second response arrived; the freshest success is
+            // this one's arrival time.
+            rpcResponseWallMs = System.currentTimeMillis();
             current = adoptBlockHeight(sync.opt("currentBlock"));
             highest = adoptBlockHeight(sync.opt("highestBlock"));
         }
@@ -3252,6 +3415,11 @@ public class NodeService extends Service {
                 return; // stopped / finished while the calls were in flight
             }
             NodeState st = NodeState.get();
+            // versionCode 28: the response-arrival stamp captured
+            // above (never this batch's completion time — see the
+            // note at the capture). Display data only; nothing
+            // judges from it.
+            st.lastRpcOkWallMs = rpcResponseWallMs;
             // versionCode 26: the batch's "before" picture, for the
             // observation record at the end of the batch.
             long bestBeforeBatch = st.bestBlock;

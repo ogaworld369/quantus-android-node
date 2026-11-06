@@ -2,8 +2,13 @@ package app.quantusnode.node;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.app.AlertDialog;
+import android.app.NotificationManager;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
@@ -11,10 +16,12 @@ import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.text.Editable;
 import android.text.InputType;
@@ -33,6 +40,11 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.Locale;
 
@@ -1112,9 +1124,12 @@ public class MainActivity extends Activity {
 
     /**
      * Share the node's log file as plain text through the system
-     * share sheet — unchanged from the pre-redesign UI: the read
-     * runs off the UI thread through NodeService's coordinated
-     * bounded reader, and only ever fires on the user's own tap.
+     * share sheet: the read runs off the UI thread through
+     * NodeService's coordinated bounded reader, and only ever fires
+     * on the user's own tap. versionCode 28 adds, on the same
+     * background thread, the diagnostic summary's facts and the
+     * masking inputs (see {@link DiagShare}); the UI half shows the
+     * mask dialog in front of the sheet.
      */
     private void onShareLogClicked() {
         final File logDir = new File(getFilesDir(), "logs");
@@ -1125,29 +1140,359 @@ public class MainActivity extends Activity {
                     logDir, shareMaxChars, truncated);
             final String logText = read;
             final boolean wasTruncated = truncated[0];
-            runOnUiThread(() -> shareLog(logText, wasTruncated));
+            final DiagShare.Facts facts =
+                    logText == null ? null : gatherDiagFacts();
+            final boolean[] ipEnumFailed = new boolean[1];
+            final List<String> ownIps =
+                    logText == null ? null : ownIpAddresses(ipEnumFailed);
+            final List<String> pathPrefixes =
+                    logText == null ? null : appPathPrefixes();
+            runOnUiThread(() -> shareLog(logText, wasTruncated,
+                    facts, ownIps, ipEnumFailed[0], pathPrefixes));
         }, "share-log-read").start();
     }
 
-    /** UI-thread half of share-log: the "no log" toast, or the sheet. */
-    private void shareLog(String logText, boolean wasTruncated) {
+    /**
+     * UI-thread half of share-log: the "no log" toast, or the mask
+     * dialog (versionCode 28). Masking is ON by default: the shared
+     * text then hides the display name, this device's IP addresses
+     * and the app-private paths, so a log pasted into a public
+     * issue keeps its diagnostic structure without the identifying
+     * values. The user can turn it off for the shares where a
+     * complete log is what the diagnosis needs — except when the
+     * own-address enumeration failed, in which case the app's
+     * picture of what masking must hide is known to be incomplete
+     * and the toggle is locked on for that share.
+     */
+    private void shareLog(String logText, boolean wasTruncated,
+                          DiagShare.Facts facts, List<String> ownIps,
+                          boolean ipEnumFailed,
+                          List<String> pathPrefixes) {
+        if (isFinishing() || isDestroyed()) {
+            // The background read finished into an activity that
+            // is already going away: showing the dialog (or the
+            // toast) on it can throw, and there is nobody left to
+            // share for. The tap simply ends here.
+            return;
+        }
         if (logText == null || logText.trim().isEmpty()) {
             Toast.makeText(this, I18n.get(this, StringsTable.LOG_MISSING_NOTE),
                     Toast.LENGTH_LONG).show();
             return;
         }
-        if (wasTruncated) {
-            logText = "[... earlier log omitted for sharing; "
-                    + "showing the last part ...]\n"
-                    + logText;
+        final String excerpt = logText;
+        final boolean truncated = wasTruncated;
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(24), dp(8), dp(24), dp(8));
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(dp(56));
+        row.setPadding(0, dp(12), 0, dp(12));
+        row.setBackground(ripple(null));
+        row.setClickable(true);
+        row.setFocusable(true);
+        TextView maskLabel = text(I18n.get(this, StringsTable.SHARE_MASK_LABEL),
+                16, LABEL1, false);
+        row.addView(maskLabel, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        final ToggleView maskToggle = new ToggleView(this);
+        maskToggle.setContentDescription(
+                I18n.get(this, StringsTable.SHARE_MASK_LABEL));
+        maskToggle.setChecked(true);
+        if (ipEnumFailed) {
+            // Locked on (see the method doc): the row's tap checks
+            // the toggle's enabled state, so disabling it is
+            // enough to hold the choice.
+            maskToggle.setEnabled(false);
         }
+        row.addView(maskToggle, new LinearLayout.LayoutParams(dp(52), dp(48)));
+        row.setOnClickListener(v -> {
+            if (maskToggle.isEnabled()) {
+                maskToggle.toggle();
+            }
+        });
+        box.addView(row, matchLp());
+
+        TextView maskNote = text(I18n.get(this, StringsTable.SHARE_MASK_NOTE),
+                14, LABEL3, false);
+        box.addView(maskNote, matchLpTop(4));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(I18n.get(this, StringsTable.BUTTON_SHARE_LOG))
+                .setView(box)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(
+                        I18n.get(this, StringsTable.BUTTON_SHARE_LOG),
+                        (d, which) -> doShareLog(excerpt, truncated, facts,
+                                maskToggle.isChecked(), ownIps, pathPrefixes))
+                .create();
+        dialog.show();
+        styleDialog(dialog);
+    }
+
+    /**
+     * Assemble the share text and open the sheet: the summary
+     * block first (outside the excerpt's character cap), then the
+     * truncation note and the excerpt exactly as before. Masking,
+     * when on, is applied to the body only: the summary carries
+     * none of the masked values by construction, and running the
+     * replacement over it could only damage its fixed labels and
+     * values (a display name of "off" against "Telemetry: off").
+     */
+    private void doShareLog(String excerpt, boolean truncated,
+                            DiagShare.Facts facts, boolean maskOn,
+                            List<String> ownIps, List<String> pathPrefixes) {
+        String body = excerpt;
+        if (truncated) {
+            body = "[... earlier log omitted for sharing; "
+                    + "showing the last part ...]\n"
+                    + body;
+        }
+        if (maskOn) {
+            body = DiagShare.maskSensitive(body, shareMaskNames(),
+                    ownIps, pathPrefixes);
+        }
+        String full = DiagShare.buildSummary(facts, excerpt, truncated)
+                + "\n" + body;
         Intent send = new Intent(Intent.ACTION_SEND);
         send.setType("text/plain");
         send.putExtra(Intent.EXTRA_SUBJECT,
                 I18n.get(this, StringsTable.SHARE_LOG_SUBJECT));
-        send.putExtra(Intent.EXTRA_TEXT, logText);
+        send.putExtra(Intent.EXTRA_TEXT, full);
         startActivity(Intent.createChooser(send,
                 I18n.get(this, StringsTable.BUTTON_SHARE_LOG)));
+    }
+
+    /**
+     * Every display name the shared log can carry: the running
+     * session's launched name — the one this session's lines
+     * actually bear, which can differ from the setting after an
+     * edit — and the current setting's name, which is what a
+     * stopped log's lines bear and what the next start will use.
+     * The built-in default is omitted: it identifies the app, not
+     * the person, and appears throughout the log as ordinary text.
+     */
+    private List<String> shareMaskNames() {
+        List<String> names = new ArrayList<>();
+        String launched = NodeState.get().launchedNodeName;
+        if (launched != null && !launched.isEmpty()
+                && !NodeSettings.DEFAULT_NODE_NAME.equals(launched)) {
+            names.add(launched);
+        }
+        String current = NodeSettings.effectiveNodeName(this);
+        if (current != null && !current.isEmpty()
+                && !NodeSettings.DEFAULT_NODE_NAME.equals(current)
+                && !names.contains(current)) {
+            names.add(current);
+        }
+        return names;
+    }
+
+    /**
+     * The diagnostic summary's inputs (versionCode 28): package
+     * facts, the service's state snapshot, device resources and
+     * the durable records. A source that fails leaves its sentinel
+     * in the Facts and the summary prints "n/a" for it, so nothing
+     * here throws.
+     */
+    private DiagShare.Facts gatherDiagFacts() {
+        DiagShare.Facts f = new DiagShare.Facts();
+        try {
+            PackageInfo pi = getPackageManager()
+                    .getPackageInfo(getPackageName(), 0);
+            f.appVersionName = pi.versionName;
+            f.appVersionCode = (int) pi.getLongVersionCode();
+            f.installMs = pi.firstInstallTime;
+            f.updateMs = pi.lastUpdateTime;
+        } catch (Exception ignored) {
+            // The sentinels stand.
+        }
+        f.androidRelease = Build.VERSION.RELEASE;
+        f.androidApi = Build.VERSION.SDK_INT;
+        f.deviceModel = Build.MODEL;
+        f.deviceMaker = Build.MANUFACTURER;
+        f.chainName = NodeService.CHAIN_NAME;
+        // nodeBinaryVersion and genesisShort stay unset on purpose:
+        // the app cannot know either (see DiagShare), and the
+        // summary says "n/a" instead of guessing.
+        NodeState st = NodeState.get();
+        f.status = st.status;
+        if (st.serviceRunning && st.sessionAcceptedElapsedMs >= 0) {
+            f.sessionUptimeMs = SystemClock.elapsedRealtime()
+                    - st.sessionAcceptedElapsedMs;
+        }
+        f.bestBlock = st.bestBlock;
+        f.highestBlock = st.highestBlock;
+        f.peers = st.peers;
+        f.lastRpcOkWallMs = st.lastRpcOkWallMs;
+        DiagShare.fillPreviousEnd(f, st.lastStopKind, st.lastExitCode,
+                st.prevStopKind, st.prevExitCode);
+        // The telemetry line reports what the node is actually
+        // running with when there is a launched value; the saved
+        // setting stands in only when there is none, and the
+        // summary marks it as a setting so the two are never
+        // confused (a settings edit mid-session must not rewrite
+        // what the running node was launched with).
+        if (st.serviceRunning && st.launchedTelemetry != null) {
+            f.telemetryOn = st.launchedTelemetry;
+            f.telemetryIsSetting = false;
+        } else {
+            f.telemetryOn = NodeSettings.telemetryEnabled(this);
+            f.telemetryIsSetting = true;
+        }
+        f.nodeDataBytes = dirSizeBytes(new File(getFilesDir(), "node"));
+        try {
+            f.freeStorageBytes = getFilesDir().getUsableSpace();
+        } catch (Throwable ignored) {
+            // Sentinel stands.
+        }
+        Intent battery = registerReceiver(null,
+                new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        if (battery != null) {
+            int level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+            int scale = battery.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+            if (level >= 0 && scale > 0) {
+                f.batteryPercent = (int) (100L * level / scale);
+            }
+            if (battery.hasExtra(BatteryManager.EXTRA_TEMPERATURE)) {
+                f.batteryTempTenths = battery.getIntExtra(
+                        BatteryManager.EXTRA_TEMPERATURE, 0);
+            }
+        }
+        try {
+            ActivityManager am = (ActivityManager)
+                    getSystemService(Context.ACTIVITY_SERVICE);
+            if (am != null) {
+                ActivityManager.MemoryInfo mi =
+                        new ActivityManager.MemoryInfo();
+                am.getMemoryInfo(mi);
+                f.freeMemBytes = mi.availMem;
+            }
+        } catch (Throwable ignored) {
+            // Sentinel stands.
+        }
+        try {
+            PowerManager pm = (PowerManager)
+                    getSystemService(Context.POWER_SERVICE);
+            if (pm != null) {
+                f.batteryOptExempt =
+                        pm.isIgnoringBatteryOptimizations(getPackageName());
+            }
+        } catch (Throwable ignored) {
+            // Sentinel stands.
+        }
+        NotificationManager nm = (NotificationManager)
+                getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null) {
+            f.notificationsGranted = nm.areNotificationsEnabled();
+        }
+        long now = System.currentTimeMillis();
+        f.startsLast24h = TrackStore.startsSince(
+                this, now - 24L * 3600 * 1000);
+        f.startsCapped = TrackStore.startRingAtCap(this);
+        f.trackUptimeMs = TrackStore.uptimeMs(this);
+        f.trackBlocks = TrackStore.blockUpdates(this);
+        f.trackMaxPeers = TrackStore.maxPeers(this);
+        f.telemetryChangedMs = NodeSettings.telemetryChangedMs(this);
+        f.nameChangedMs = NodeSettings.nodeNameChangedMs(this);
+        f.languageChangedMs = NodeSettings.languageChangedMs(this);
+        return f;
+    }
+
+    /**
+     * Recursive size of a directory tree, -1 when it cannot be
+     * read. The walk is capped: the node database is a few
+     * thousand files, and past the cap a partial total would be a
+     * wrong answer rather than a smaller one — the sentinel is
+     * the honest result there. The same goes for a directory
+     * whose listing fails mid-walk: its subtree's size is
+     * unknowable, so the whole measurement is "not known" (the
+     * summary prints n/a), never a partial total dressed as a
+     * measurement.
+     */
+    private static long dirSizeBytes(File dir) {
+        if (dir == null || !dir.isDirectory()) {
+            return -1;
+        }
+        long total = 0;
+        ArrayDeque<File> stack = new ArrayDeque<>();
+        stack.push(dir);
+        int seen = 0;
+        while (!stack.isEmpty()) {
+            File cur = stack.pop();
+            File[] kids = cur.listFiles();
+            if (kids == null) {
+                return -1;
+            }
+            for (File k : kids) {
+                if (++seen > 200_000) {
+                    return -1;
+                }
+                if (k.isDirectory()) {
+                    stack.push(k);
+                } else {
+                    total += k.length();
+                }
+            }
+        }
+        return total;
+    }
+
+    /**
+     * This device's own non-loopback IP addresses (masking
+     * input). When the enumeration itself fails — outright or
+     * partway — {@code failed[0]} is set and the caller locks
+     * masking on for that share: the list is then known to be
+     * incomplete, and proceeding as if it were whole would
+     * silently share addresses the app meant to hide. What was
+     * collected before the failure is still returned and still
+     * masked.
+     */
+    private static List<String> ownIpAddresses(boolean[] failed) {
+        List<String> out = new ArrayList<>();
+        try {
+            Enumeration<NetworkInterface> ifs =
+                    NetworkInterface.getNetworkInterfaces();
+            while (ifs != null && ifs.hasMoreElements()) {
+                Enumeration<InetAddress> addrs =
+                        ifs.nextElement().getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    InetAddress a = addrs.nextElement();
+                    if (!a.isLoopbackAddress()) {
+                        String host = a.getHostAddress();
+                        if (host != null && !host.isEmpty()) {
+                            // Strip an IPv6 zone id ("%wlan0"): the
+                            // log lines carry the bare address.
+                            int zone = host.indexOf('%');
+                            out.add(zone >= 0
+                                    ? host.substring(0, zone) : host);
+                        }
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            failed[0] = true;
+        }
+        return out;
+    }
+
+    /** The app-private path prefixes the log can carry (masking input). */
+    private List<String> appPathPrefixes() {
+        List<String> out = new ArrayList<>();
+        try {
+            out.add(getFilesDir().getAbsolutePath());
+            out.add(getCacheDir().getAbsolutePath());
+            out.add(getApplicationInfo().dataDir);
+            out.add(getApplicationInfo().nativeLibraryDir);
+            out.add("/data/data/" + getPackageName());
+        } catch (Throwable ignored) {
+            // Fewer prefixes: masking still covers what it has.
+        }
+        return out;
     }
 
     // ------------------------------------------------------------------

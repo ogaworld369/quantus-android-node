@@ -8,7 +8,7 @@ We will acknowledge reports as soon as we reasonably can and will credit reporte
 
 ## Scope notes
 - This app holds no wallet secrets by design; its only secret is the node P2P identity key.
-- Public releases began on 2026-11-04 (v0.1.0); the current release is v0.2.1. Signed release APKs and their SHA-256 checksums are published on the Releases page. Builds from other sources should not be trusted.
+- Public releases began on 2026-11-04 (v0.1.0); the current release is v0.2.2. Signed release APKs and their SHA-256 checksums are published on the Releases page. Builds from other sources should not be trusted.
 
 ## Security notes
 

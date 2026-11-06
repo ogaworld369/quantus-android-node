@@ -8,6 +8,58 @@ the first public release (published 2026-11-04).
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 28 / v0.2.2 — 2026-11-06
+- **Diagnostic update: the shared log now explains the phone it
+  came from.** The node launch arguments, the database, the UI and
+  the bundled node binary are unchanged (still the versionCode 10
+  build). One permission is added: ACCESS_NETWORK_STATE (read-only,
+  see below).
+  - **A summary block heads every shared log.** App and device
+    (app version, Android version and API level, device model and
+    maker, chain, install and update times), the state at share
+    time (status, session uptime, best / highest / peer counts,
+    when the last RPC response arrived, telemetry on/off — the
+    running session's launched value, or the saved setting,
+    marked as such, when stopped), device
+    resources (node data size, free storage, battery level and
+    temperature, free memory, battery-optimization exemption,
+    notification permission), session history (how the previous
+    session ended and its exit code — kept across a restart, so
+    it survives into the next session —, starts in the last 24
+    hours, the cumulative track record, when each setting last
+    changed)
+    and facts about the log itself (the shared excerpt's time
+    range, whether it was truncated, WARN / ERROR line counts).
+    Labels are fixed English; a value the app cannot know is
+    printed as "n/a", never guessed — the finalized height, the
+    bundled binary's own version and the genesis hash are the
+    standing examples. The block sits outside the excerpt's
+    existing 100,000-character cap.
+  - **Network changes are stamped into the log.** When the
+    default network's type changes (wifi / cellular / none /
+    other), the service writes an "[app] network: …" line, so a
+    peer drop in a shared log can be read against the connection
+    it rode on. This is what ACCESS_NETWORK_STATE is for; the
+    stamps stay in the on-device log and nothing is transmitted.
+  - **Sharing can mask identifying values, on by default.** The
+    share dialog gains a toggle (on unless the user turns it
+    off): the display name — both the running session's launched
+    name and the current setting's —, the IP addresses of this
+    device's current network interfaces and the app-private
+    paths are replaced in the shared log text, as whole tokens
+    only (a peer's similar address, e.g. 10.0.0.10 next to this
+    device's 10.0.0.1, is left untouched), so a log pasted into
+    a public issue keeps its diagnostic structure without them.
+    The summary block carries none of those values either way.
+    If the device's addresses cannot be enumerated, masking
+    stays on for that share.
+  - **Two small records feed the summary.** Accepted session
+    starts are stamped (kept for 7 days, at most 100 entries; a
+    full record marks the 24-hour count as a lower bound) for
+    the 24-hour start count, and each setting setter now keeps
+    its last-change time. Both live only in the app's private
+    preferences.
+
 ## versionCode 27 / v0.2.1 — 2026-11-06
 - **Maintenance update: the two verified findings of an external
   audit of v0.2.0 (one medium, one low).** No changes to the node
