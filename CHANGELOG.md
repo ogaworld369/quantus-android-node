@@ -8,6 +8,63 @@ the first public release (published 2026-11-04).
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 26 / v0.2.0 — 2026-11-06
+- **The dashboard is redesigned from scratch — same node, same data,
+  a new face.** No changes to the node launch arguments, the
+  database, the permissions, the settings' stored values, or the
+  bundled node binary (still the versionCode 10 build).
+  - **Four screens instead of one long page.** Home carries only
+    the pulse, the state, the one primary action and — while the
+    node runs — the connected peer count and this session's uptime.
+    Node details, the track record and settings each have their own
+    screen, reached from home; switching is instant, and each
+    screen keeps its scroll position.
+  - **The pulse means one thing.** A ripple is drawn only while
+    the node is synced, once per poll that first observes a higher
+    best block. The service records the observation moment itself,
+    so the home screen's "last observed" line and the ripple agree,
+    and neither can be fabricated by a screen rebuild.
+  - **Failures are classified by the service, not guessed from an
+    exit code.** A start whose two launch attempts both failed, a
+    node that stopped unexpectedly, and a missing node binary are
+    shown as failures (with a "Failure details" path into the
+    diagnostics); a stop caused by the system's time limit is shown
+    as a stop with its reason, and a user stop is a plain stop —
+    even when the destroyed process exits non-zero.
+  - **Node details** show the best / highest block heights, the
+    sync gap (shown only when it is meaningful, and a gap of zero
+    is never dressed up as "synced"), and expandable Diagnostics —
+    exit code, service notes, the per-attempt start records and log
+    sharing. While the node is stopped,
+    the details screen shows the cumulative track record instead of
+    dressing up the previous session's values as current.
+  - **Settings** distinguish saved values from the values the
+    running node actually launched with: a telemetry or display-name
+    change that has not taken effect yet is marked per item, and
+    home shows a "review pending settings" link only while such a
+    difference really exists. The display name is now edited in a
+    dialog that validates the sanitized name against the 64
+    code-point limit — over the limit is refused, never silently
+    truncated — with a live counter and a preview of the name as it
+    will be saved. The language picker keeps applying immediately.
+  - **Quantities are grammatical in all 9 languages.** Durations,
+    remaining-block estimates and "last observed" ages pick their
+    plural form per language (including the few/many forms of
+    Russian and the full category set of Arabic) from the actual
+    long count; displayed numbers use 3-digit grouping. The string
+    table grows from 49 to 151 keys; docs/I18N.md is regenerated.
+  - The version line now lives at the bottom of Settings; the RPC
+    note moved to node details and the log location into
+    Diagnostics, replacing the old combined footer line.
+  - The palette now follows the Quantus brand colours from
+    quantus.com: void #0E0E0E background, #181818 surfaces, flare
+    #FF6B35 accents, #E8E6E0 text, and the synced state in the
+    brand's green #4ADE80. Layout and behaviour are unchanged;
+    only the colours moved.
+  - The placeholder Quantum watch section was removed from node
+    details before release (it only ever showed a "not available
+    yet" note); its three strings left the table with it.
+
 ## versionCode 25 / v0.1.5 — 2026-11-06
 - **Maintenance release: all eleven verified findings of the
   three external audits of v0.1.4 (the first audit, the
