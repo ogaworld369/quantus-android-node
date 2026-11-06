@@ -39,8 +39,10 @@ node binary is unchanged unless a build says otherwise).
     no longer consumes the right forever. A leftover stamped by
     THIS process is never orphan-killed, the versionCode 24
     last-moment revalidation (generation still current, record
-    unchanged) is kept, and at most one recovery completes per
-    process.
+    unchanged) is kept, and at most one recovery EPISODE
+    completes per process (an episode may recover several
+    orphans attested by the same evidence — see the re-audit
+    residuals below).
   - **An interrupted spawn leaves a findable trace (medium,
     M3).** launch() stamps a spawn-intent marker (its incarnation
     id) immediately before ProcessBuilder.start() and removes it
@@ -108,6 +110,54 @@ node binary is unchanged unless a build says otherwise).
     the accrual at the moment it observes the exit, so a session
     refused or failed before any spawn accrues nothing and the
     post-exit bookkeeping no longer inflates the total.
+  - **A re-audit of this build (Codex/Astra, against the
+    repository at the versionCode 25 commit) confirmed seven of
+    the eleven closed, returned four as partially closed, and
+    added four new observations — eight residuals in total, all
+    low severity, all verified against the code and all fixed
+    in this same build before release. Nothing is deferred.**
+    - F-02 residual: org.json's optLong also COERCED malformed
+      heights (-0.5 became a valid 0, 5.9 became 5). Heights are
+      now adopted only when the raw JSON value is a finite,
+      non-negative, integral number; anything else is "not
+      said", exactly like an absent field.
+    - L3 residual: the 5 s deadline did not cover the wait for
+      response headers (a header-drip could stall a poll — and
+      with it the poll loop's periodic uptime save — past every
+      bound). A per-call watchdog now disconnects the call's own
+      connection at the deadline plus a small grace, whatever
+      phase the call is in.
+    - M4 residual: a second started/generation re-check now
+      stands between the spawn-marker write and the spawn
+      itself, so a stop landing during the marker write no
+      longer spawns; the acceptance refusal remains the backstop
+      for a stop landing inside ProcessBuilder.start().
+    - M5 residual: build-manual.sh serializes the final-path
+      sections (the previous-APK set-aside and the publish) per
+      signing mode with flock, so parallel runs can no longer
+      pair one run's APK with another's .idsig; the failure
+      behaviour (no APK at the final path, P-5/F10) is
+      unchanged.
+    - N1: the in-flight RPC reference is an atomic, generation-
+      tagged slot: a stale poller can neither overwrite nor
+      clear a newer session's registration, and a teardown
+      disconnects only a connection of its own or an older
+      generation.
+    - N2: the orphan gate's conditions are re-verified once
+      more immediately before the kill, after the last file I/O
+      — a teardown completing in that gap stands the kill down.
+    - N3: the log drain's truncation flag travels with each
+      line again (the drain cap sits one byte under the sinks'
+      caps, which had made their "...[line truncated]" marker
+      unreachable for drain-cut lines); the attempt capture's
+      marker still appears exactly once.
+    - N4: a marker-path recovery no longer settles the spawn
+      marker or the completion flag after the first orphan
+      while a re-scan still finds more — the episode recovers
+      every orphan attested by the same evidence, and only a
+      scan that finds none left settles either. (This also
+      retires the last "one recovery per start" wording, which
+      the episode loop superseded.)
   - All nine FOOTER_INFO strings read v0.1.5, and the generated
     table in docs/I18N.md is regenerated to match (49 keys × 9
     languages, all cells compared).
