@@ -1,146 +1,146 @@
-# quantus-node を Android (aarch64-linux-android) 向けにビルドする
+# Building quantus-node for Android (aarch64-linux-android)
 
-Quantus-Network/chain のノード本体 `quantus-node`（v1.0.5）を Android ARM64 向けにクロスビルドする手順。
-2026-11-03 にこの手順で検証した結果を記録する。推測ではなく、実際に踏んだエラーと回避策だけを書く。
+How to cross-build the `quantus-node` node binary (v1.0.5) from Quantus-Network/chain for Android ARM64.
+This records the results verified with this procedure on 2026-11-03. It documents only errors actually hit and their workarounds, not speculation.
 
-## 検証結果サマリ
+## Verification summary
 
-| 段階 | 結果 |
+| Stage | Result |
 |---|---|
-| `cargo check -p quantus-node --target aarch64-linux-android`（Wasm ビルド無効） | ✅ EXIT 0（Phase 0、2026-11-03） |
-| `cargo check -p quantus-node --target aarch64-linux-android`（Wasm ビルド有効、quantus_runtime.wasm 約3.1MB 生成） | ✅ EXIT 0（Phase 0、2026-11-03） |
-| `cargo build -p quantus-node --target aarch64-linux-android`（最終リンク） | ✅ **成功**（2026-11-03）。未定義シンボル等のリンクエラーなし。成果物は後述 |
+| `cargo check -p quantus-node --target aarch64-linux-android` (Wasm build disabled) | ✅ EXIT 0 (Phase 0, 2026-11-03) |
+| `cargo check -p quantus-node --target aarch64-linux-android` (Wasm build enabled, quantus_runtime.wasm of about 3.1 MB generated) | ✅ EXIT 0 (Phase 0, 2026-11-03) |
+| `cargo build -p quantus-node --target aarch64-linux-android` (final link) | ✅ **Succeeded** (2026-11-03). No link errors such as undefined symbols. The artifact is described below |
 
-## 前提
+## Prerequisites
 
-- ホスト: Linux x86_64（検証環境: 4コア / RAM 7GB / ディスク空き 140GB 級）
-- 対象ソース: Quantus-Network/chain（node v1.0.5 時点の main、depth 1 clone で取得）
-- 所要時間の目安（検証環境）: 初回 `cargo check` は実質1時間超。ランタイム Wasm ビルド有効の check は追加で約22分。`cargo build`（最終リンクまで）は、check 済みの `target/` を再利用した条件で **10分46秒**（2026-11-03 実測、`-j2`）。クリーンビルドの所要時間は未計測で、これより大幅に長くなる見込み（CI ではキャッシュ前提で設計すること）。
+- Host: Linux x86_64 (verification environment: 4 cores / 7 GB RAM / about 140 GB free disk)
+- Target source: Quantus-Network/chain (main at node v1.0.5, fetched with a depth-1 clone)
+- Rough time required (verification environment): the first `cargo check` took over an hour in practice. The check with the runtime Wasm build enabled took about 22 additional minutes. `cargo build` (through the final link) took **10 minutes 46 seconds** (measured 2026-11-03, `-j2`), reusing the already-checked `target/`. A clean build has not been timed and is expected to take substantially longer (design CI around caching).
 
-## 1. ツールチェーンの用意
+## 1. Preparing the toolchain
 
-すべて任意のディレクトリ配下に閉じてよい。検証では `~/workspace/toolchain/` に置いた。
+Everything can live under an arbitrary directory. The verification used `~/workspace/toolchain/`.
 
-| 項目 | バージョン | 入手先・備考 |
+| Item | Version | Source / notes |
 |---|---|---|
-| Rust | **1.93.0** | リポジトリの `rust-toolchain` が指定。rustup で入れ、`aarch64-linux-android` と `wasm32v1-none` の target を追加 |
-| Android NDK | **r27d**（Pkg.Revision 27.3.13750724、clang 18.0.4） | 公式 `https://dl.google.com/android/repository/android-ndk-r27d-linux.zip`（663,956,036 bytes）。ダウンロードが途中で切れると zip が壊れるので、サイズを必ず確認してから展開する |
-| protoc | **29.3** | protobuf 公式 GitHub Releases の linux-x86_64 zip。`PATH` 上の任意の場所に置き、後述の `PROTOC` で指す |
+| Rust | **1.93.0** | Specified by the repository's `rust-toolchain`. Install with rustup and add the `aarch64-linux-android` and `wasm32v1-none` targets |
+| Android NDK | **r27d** (Pkg.Revision 27.3.13750724, clang 18.0.4) | Official `https://dl.google.com/android/repository/android-ndk-r27d-linux.zip` (663,956,036 bytes). An interrupted download corrupts the zip, so always verify the size before extracting |
+| protoc | **29.3** | The linux-x86_64 zip from the official protobuf GitHub Releases. Place it anywhere on `PATH` and point `PROTOC` below at it |
 
 ```sh
 rustup toolchain install 1.93.0
 rustup target add --toolchain 1.93.0 aarch64-linux-android wasm32v1-none
 ```
 
-## 2. 依存ロックの更新（必須・これをしないと必ず止まる）
+## 2. Updating the dependency lock (required; the build always stops without this)
 
-公式 `Cargo.lock` の **rustix 1.1.2 は Android でコンパイルできない**（libc バックエンドの thread モジュールが未リンクの `linux_raw_sys` を参照し、E0433 が大量に出る。sc-network / sc-executor-wasmtime / sc-client-db がすべてこれで止まる）。
-
-```sh
-cd chain
-cargo update -p rustix   # 1.1.2 -> 1.1.6（linux-raw-sys 0.11.0->0.12.1、libc 0.2.175->0.2.191 も連動）
-```
-
-変更は `Cargo.lock` のみ（11行）。**コンパイル検証（Phase 0）の時点では**、ソースコードのパッチは不要だった。ただし実機で動かす現行ビルドでは、次節の2パッチが必須になる。
-
-## 3. ソースコードのパッチ（出荷ビルドでは必須・2点）
-
-コンパイル検証だけなら不要だが、実機で動くバイナリを作るには、リポジトリの `patches/` にある2点をビルド前に適用すること。**どちらか一方でも欠けたままビルドすると、実機では使い物にならない**（§5 の手順どおりに作っても、プルーニングが効かずアーカイブ保存を強制される／ネットワーク開始直後に panic して即死する。いずれも実機で踏んだ実績がある）。
-
-### 3.1 プルーニングパッチ
-
-上流は全ノードにアーカイブ保存を強制する作りで、CLI の `--state-pruning` / `--blocks-pruning` 指定がコード側で無効化される。`patches/pruning-patch.diff`（`node/src/command.rs` への1ファイルの差分）を適用すると、数値を指定したときだけその指定が尊重されるようになる（未指定・`archive` 等を指定した場合は従来どおりの強制が維持される）。
+The **rustix 1.1.2 in the official `Cargo.lock` does not compile on Android** (the libc backend's thread module references an unlinked `linux_raw_sys`, producing a flood of E0433 errors. sc-network / sc-executor-wasmtime / sc-client-db all stop on this).
 
 ```sh
 cd chain
-patch -p1 < ../patches/pruning-patch.diff   # patches/ へのパスは配置に合わせて読み替える
+cargo update -p rustix   # 1.1.2 -> 1.1.6 (linux-raw-sys 0.11.0->0.12.1, libc 0.2.175->0.2.191 follow along)
 ```
 
-### 3.2 DNS フォールバック（ベンダーパッチ）
+The change is limited to `Cargo.lock` (11 lines). **At the compile-verification (Phase 0) stage**, no source code patches were needed. However, the current build that runs on a real device requires the two patches in the next section.
 
-ノードをアプリから素のプロセスとして実行すると、litep2p の DNS 解決（hickory-resolver）が未初期化の ndk-context を呼んで `android context was not initialized` で panic する（ブートノードが全て /dns/ アドレスのため、ネットワーク開始直後に必ず踏む）。`patches/hickory-ndk-fallback-patch.diff` の冒頭に書かれた再現手順どおりに適用すること。要点は次の3つ:
+## 3. Source code patches (required for the shipping build; two of them)
 
-1. crates.io の ndk-context 0.1.1 と hickory-resolver 0.26.1 を `chain/vendor/` へコピーする
-2. パッチ内の3ファイル分の差分を vendor 側へ適用する
-3. `chain/Cargo.toml` に `[patch.crates-io]` エントリ（パッチ末尾のハンク）を追加し、この2クレートを vendor 版へ差し替える（`Cargo.lock` は cargo が更新する）
+Not needed for compile verification alone, but to produce a binary that works on a real device, apply the two patches in the repository's `patches/` before building. **If either one is missing, the result is unusable on a real device** (even when built exactly per the procedure in §5, pruning does not take effect and archive storage is forced / the binary panics and dies immediately right after networking starts. Both were actually hit on a real device).
 
-適用後の DNS 解決は、JNI（Android コンテキストがある場合のみ）→ システムプロパティ `net.dns1`〜`net.dns4` → 公開 DNS（1.1.1.1 / 8.8.8.8）の順にフォールバックし、どの経路でも panic しない。
+### 3.1 Pruning patch
 
-## 4. 環境変数（必須の一式）
-
-以下の内容を `android-env.sh` として保存し、ビルド前に `source` するのが確実。
-NDK のパスは自分の配置に合わせて読み替えること。
+Upstream is built to force archive storage on all nodes, and the CLI's `--state-pruning` / `--blocks-pruning` options are disabled in code. Applying `patches/pruning-patch.diff` (a one-file diff to `node/src/command.rs`) makes the setting respected only when a numeric value is given (when unspecified, or when `archive` etc. is specified, the existing forced behavior is kept).
 
 ```sh
-export RUSTUP_HOME="$HOME/workspace/toolchain/rustup"   # rustup を閉じた場所に置いた場合
+cd chain
+patch -p1 < ../patches/pruning-patch.diff   # adjust the path to patches/ to match your layout
+```
+
+### 3.2 DNS fallback (vendor patch)
+
+When the node is run from the app as a plain process, litep2p's DNS resolution (hickory-resolver) calls an uninitialized ndk-context and panics with `android context was not initialized` (all bootnodes use /dns/ addresses, so this is always hit right after networking starts). Apply the patch following the reproduction steps written at the top of `patches/hickory-ndk-fallback-patch.diff`. The three key points:
+
+1. Copy crates.io's ndk-context 0.1.1 and hickory-resolver 0.26.1 into `chain/vendor/`
+2. Apply the diffs for the three files in the patch to the vendor copies
+3. Add a `[patch.crates-io]` entry to `chain/Cargo.toml` (the hunk at the end of the patch) to replace these two crates with the vendored versions (`Cargo.lock` is updated by cargo)
+
+After the patch, DNS resolution falls back in the order JNI (only when an Android context exists) → system properties `net.dns1` through `net.dns4` → public DNS (1.1.1.1 / 8.8.8.8), and never panics on any path.
+
+## 4. Environment variables (the required set)
+
+Save the following as `android-env.sh` and `source` it before building to be safe.
+Adjust the NDK path to your own layout.
+
+```sh
+export RUSTUP_HOME="$HOME/workspace/toolchain/rustup"   # when rustup is kept in a self-contained location
 export CARGO_HOME="$HOME/workspace/toolchain/cargo"
 export PATH="$HOME/workspace/toolchain/cargo/bin:$HOME/workspace/toolchain/bin:$PATH"
 
 NDK="$HOME/workspace/toolchain/android-ndk"
 LLVM="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
 
-# リンカ / C ツールチェーン（API レベル 35 で検証）
+# Linker / C toolchain (verified at API level 35)
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$LLVM/bin/aarch64-linux-android35-clang"
 export CC_aarch64_linux_android="$LLVM/bin/aarch64-linux-android35-clang"
 export CXX_aarch64_linux_android="$LLVM/bin/aarch64-linux-android35-clang++"
 export AR_aarch64_linux_android="$LLVM/bin/llvm-ar"
 
-# litep2p の build.rs（prost-build）がホストの protoc を要求する
+# litep2p's build.rs (prost-build) requires the host protoc
 export PROTOC="$HOME/workspace/toolchain/bin/protoc"
 
-# bindgen（librocksdb-sys）が libclang を要求する。NDK 同梱のものを使う。
-# LIBCLANG_PATH だけでは不十分で、ビルドスクリプト実行時のロード用に LD_LIBRARY_PATH も要る
+# bindgen (librocksdb-sys) requires libclang. Use the one bundled with the NDK.
+# LIBCLANG_PATH alone is not enough; LD_LIBRARY_PATH is also needed for loading when build scripts run
 export LIBCLANG_PATH="$LLVM/musl/lib"
 export LD_LIBRARY_PATH="$LLVM/musl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-# bindgen に Android のヘッダを見せる（無いと rocksdb/c.h の解析で 'stdbool.h' file not found）
+# Show bindgen the Android headers (without this, parsing rocksdb/c.h fails with 'stdbool.h' file not found)
 export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--target=aarch64-linux-android35 --sysroot=$LLVM/sysroot -resource-dir $LLVM/lib/clang/18"
 ```
 
-## 5. ビルド
+## 5. Building
 
 ```sh
 cd chain
 source ../android-env.sh
 
-# 型チェックだけなら（リンクはしない）
+# For a type check only (no linking)
 cargo check -p quantus-node --target aarch64-linux-android
 
-# 実バイナリ（最終リンクまで）
+# The real binary (through the final link)
 cargo build -p quantus-node --target aarch64-linux-android
-# 成果物: target/aarch64-linux-android/debug/quantus-node
+# Artifact: target/aarch64-linux-android/debug/quantus-node
 ```
 
-### ビルド結果（2026-11-03 実測）
+### Build result (measured 2026-11-03)
 
-- コマンドは上記の通りで、並列数のみ `-j2` に絞った（RAM 7GB・スワップなし環境のため）。debuginfo 削減やプロファイル変更は不要だった。リンク直前のメモリ使用は約6.1GB / 7.9GB。
-- 成果物: `target/aarch64-linux-android/debug/quantus-node`、**1,072,804,072 bytes**。
-  `file` の結果: `ELF 64-bit LSB pie executable, ARM aarch64, dynamically linked, interpreter /system/bin/linker64, with debug_info, not stripped`。
-  サイズの大半は debug 情報で、`llvm-strip` したコピーは 122,601,984 bytes（約117MB）だった。
-- NEEDED ライブラリ: `libstdc++.so` / `libc++_shared.so` / `libdl.so` / `libm.so` / `libc.so`。
-  **注意: `libc++_shared.so` はアプリ側で同梱が必要**（NDK の `toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so` を使う）。リンク自体のブロッカーではないが、実機で動かす段階で必須になる。
+- The commands are as above, with parallelism limited to `-j2` only (because the environment has 7 GB RAM and no swap). No debuginfo reduction or profile changes were needed. Memory use just before linking was about 6.1 GB / 7.9 GB.
+- Artifact: `target/aarch64-linux-android/debug/quantus-node`, **1,072,804,072 bytes**.
+  `file` output: `ELF 64-bit LSB pie executable, ARM aarch64, dynamically linked, interpreter /system/bin/linker64, with debug_info, not stripped`.
+  Most of the size is debug information; an `llvm-strip`ped copy was 122,601,984 bytes (about 117 MB).
+- NEEDED libraries: `libstdc++.so` / `libc++_shared.so` / `libdl.so` / `libm.so` / `libc.so`.
+  **Note: `libc++_shared.so` must be bundled on the app side** (use the NDK's `toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so`). It is not a blocker for linking itself, but is required when running on a real device.
 
-## 6. 既知の注意点
+## 6. Known notes
 
-- **ホスト側ビルドが重い。** ランタイムの build 依存として `wasm-opt-sys`（Binaryen の C++ 全体）をホストでビルドする。さらに pallet-wormhole の build.rs が ZK 回路バイナリ生成（plonky2）をホスト・release プロファイルで回し、検証環境（4コア）では1回あたり約20分かかった。これはビルドのたび（ホスト向けと Wasm 向け）に繰り返し走るため、CI では成果物キャッシュの設計が重要になる。
-- **RAM の少ないマシンでは並列数を絞る。** 検証環境は RAM 7GB・スワップなしで、`cargo build` は `-j2` で実施しリンクまで完走した（ピーク約6.1GB使用）。スワップの追加は環境によっては権限で弾かれる（この VM では swapon 自体が Operation not permitted だった）。
-- **RocksDB と ring のネイティブコードは NDK clang で実コンパイルされる**（`librocksdb.a` / `libsnappy.a` / `libring_core_*.a` の生成を確認済み）。jemalloc（tikv-jemalloc-sys）はノードの既定依存グラフに含まれないので、Android での jemalloc 問題は既定ビルドでは発生しない。
-- **wasmtime / cranelift はコンパイル段階では素通りした**が、実行時のメモリ確保（pooling allocator 等）の挙動はコンパイルとは別問題。実機実行は未検証（次節）。
+- **The host-side build is heavy.** As a build dependency of the runtime, `wasm-opt-sys` (all of Binaryen's C++) is built on the host. In addition, pallet-wormhole's build.rs runs ZK circuit binary generation (plonky2) on the host in the release profile, which took about 20 minutes per run in the verification environment (4 cores). This runs repeatedly on every build (for the host and for Wasm), so artifact cache design matters in CI.
+- **Limit parallelism on machines with little RAM.** The verification environment had 7 GB RAM and no swap, and `cargo build` completed through linking with `-j2` (peak use about 6.1 GB). Adding swap may be rejected by permissions depending on the environment (on this VM, swapon itself was Operation not permitted).
+- **The native code for RocksDB and ring is actually compiled with the NDK clang** (generation of `librocksdb.a` / `libsnappy.a` / `libring_core_*.a` confirmed). jemalloc (tikv-jemalloc-sys) is not in the node's default dependency graph, so Android jemalloc problems do not occur in the default build.
+- **wasmtime / cranelift passed through at the compile stage**, but runtime memory allocation behavior (pooling allocator etc.) is a separate question from compilation. Real-device execution is unverified (next section).
 
-## 7. 未検証（ここから先は「動く」ことの証明にはならない）
+## 7. Unverified (beyond this point is not proof that it "works")
 
-リンクは通ったが、以下は依然として未検証。**リンク成功は「実機で動く」ことの証明ではない。**
+Linking passed, but the following remain unverified. **Link success is not proof that it works on a real device.**
 
-- 実機（bionic）での起動: `libc++_shared.so` の同梱ロード、wasmtime のメモリ確保、RocksDB の mmap・ファイルロック、SELinux / W^X、バックグラウンド制限は実行してみるまで分からない。
-- クリーンビルド（`target/` なし）での所要時間。
-- `[profile.production]`（LTO を含む別プロファイル）のビルド可否。
+- Startup on a real device (bionic): bundled loading of `libc++_shared.so`, wasmtime memory allocation, RocksDB mmap and file locks, SELinux / W^X, and background restrictions are unknown until actually run.
+- Clean-build time (without `target/`).
+- Whether `[profile.production]` (a separate profile including LTO) builds.
 
-### release プロファイルの検証結果（2026-11-03 追記）
+### Release profile verification result (appended 2026-11-03)
 
-`cargo build --release -p quantus-node --target aarch64-linux-android -j2`（android-env.sh、Wasm 有効）が**初回試行のまま完走**した。プロファイル変更・追加パッチは不要で、OOM もなし。
+`cargo build --release -p quantus-node --target aarch64-linux-android -j2` (android-env.sh, Wasm enabled) **ran to completion on the first attempt as-is**. No profile changes or additional patches were needed, and there was no OOM.
 
-- 所要時間: 約96分（debug の `target/` キャッシュがある状態での計測）
-- 成果物: 未 strip 77,885,328 bytes → strip 後 **53,403,896 bytes**（debug 版の 43.6%）。NEEDED は debug 版と同一で、`libc++_shared.so` の同梱が必要な点も不変
-- なお上記は §3.2 のベンダーパッチ適用前の初回 release ビルドの数値。パッチ適用後の再ビルド版が strip 後 53,408,792 bytes で出荷され（versionCode 9 まで）、**現在同梱中のバイナリは依存関係のセキュリティ更新を反映した再ビルド版で、未 strip 77,892,888 bytes → strip 後 53,411,080 bytes**（versionCode 10）
-- 前提の訂正: 上流の `[profile.release]` は opt-level=3 のみで **LTO を含まない**（LTO は別プロファイル `[profile.production]` 側）。「release は LTO でリンクメモリが溢れる」という当初の懸念は、このプロファイルでは発生しなかった
-- メモリの実態: ビルド中の MemAvailable は最小約49MB まで落ちたが枯渇には至らなかった。最大の消費者は最終リンクではなく、Wasm ビルド内の pallet-wormhole ビルドスクリプト（ZK 回路生成、RSS 約4.96GB）
+- Time required: about 96 minutes (measured with the debug `target/` cache present)
+- Artifact: 77,885,328 bytes unstripped → **53,403,896 bytes** after strip (43.6% of the debug build). NEEDED is identical to the debug build, and the need to bundle `libc++_shared.so` is unchanged
+- Note that the above figures are from the first release build before the §3.2 vendor patch was applied. The rebuild with the patch applied shipped at 53,408,792 bytes after strip (through versionCode 9), and **the binary currently bundled is a rebuild reflecting dependency security updates, at 77,892,888 bytes unstripped → 53,411,080 bytes after strip** (versionCode 10)
+- Correction of a premise: upstream's `[profile.release]` is opt-level=3 only and **does not include LTO** (LTO is in the separate `[profile.production]` profile). The initial concern that "release overflows link memory with LTO" did not occur with this profile
+- Memory reality: MemAvailable during the build dropped to a minimum of about 49 MB but was not exhausted. The largest consumer was not the final link but pallet-wormhole's build script inside the Wasm build (ZK circuit generation, RSS about 4.96 GB)
