@@ -38,6 +38,42 @@ OUT_DIR="$APP_DIR/build/outputs/apk/debug"
 OUT_APK="$OUT_DIR/quantus-node-debug.apk"
 DEBUG_KS="$HOME/.android/debug.keystore"
 
+# versionCode 25, re-audit residual of finding M5: a run touches the
+# FINAL paths ($OUT_APK and its .idsig) twice — the set-aside at
+# startup and the publish at the end — and the final path is shared
+# per signing mode by design (the private work directory cannot
+# change that). Two runs in the SAME mode interleaving those
+# sections could leave a MIXED pair behind: run A publishes its
+# APK, run B overwrites it with its own, run A publishes its
+# .idsig — B's APK paired with A's .idsig, both runs reporting
+# success. The two sections are therefore serialized per signing
+# mode with flock(1): a run holds the mode's lock only for the
+# set-aside and for the publish, never for the build in between,
+# so runs still build in parallel in their private work
+# directories and the last publisher wins with a CONSISTENT
+# APK/.idsig pair. On a system without flock(1) the script warns
+# once per section and proceeds unserialized, as it always has.
+FINAL_LOCKED=0
+lock_final_paths() {
+  # $1 = signing mode whose final paths are about to be touched.
+  if command -v flock >/dev/null 2>&1; then
+    mkdir -p "$APP_DIR/build"
+    exec 9>"$APP_DIR/build/.manual-$1.lock"
+    flock 9
+    FINAL_LOCKED=1
+  else
+    echo "WARNING: flock(1) not found; final-path updates for signing mode '$1' are not serialized" >&2
+    FINAL_LOCKED=0
+  fi
+}
+unlock_final_paths() {
+  if [ "$FINAL_LOCKED" = "1" ]; then
+    flock -u 9
+    exec 9>&-
+    FINAL_LOCKED=0
+  fi
+}
+
 # Signing mode (see header). Default stays the debug key so day-to-day
 # development builds are unchanged; release builds must opt in.
 SIGNING="${QUANTUS_SIGNING:-debug}"
@@ -52,14 +88,22 @@ elif [ "$SIGNING" != "debug" ]; then
   # P-5 — a failed build must never leave a stale APK at a final
   # path. The invalid mode does not say WHICH output the user
   # meant, so both candidate outputs are set aside before exiting.
-  for cand in "$APP_DIR/build/outputs/apk/debug/quantus-node-debug.apk" \
-              "$APP_DIR/build/outputs/apk/release/quantus-node-release.apk"; do
+  # Each mode's set-aside runs under that mode's final-path lock,
+  # like every other touch of the final paths (finding M5).
+  for mode in debug release; do
+    if [ "$mode" = "debug" ]; then
+      cand="$APP_DIR/build/outputs/apk/debug/quantus-node-debug.apk"
+    else
+      cand="$APP_DIR/build/outputs/apk/release/quantus-node-release.apk"
+    fi
+    lock_final_paths "$mode"
     if [ -f "$cand" ]; then
       mv -f "$cand" "$cand.prev"
     fi
     if [ -f "$cand.idsig" ]; then
       mv -f "$cand.idsig" "$cand.idsig.prev"
     fi
+    unlock_final_paths
   done
   echo "ERROR: QUANTUS_SIGNING must be 'debug' or 'release' (got: $SIGNING)" >&2
   exit 1
@@ -75,7 +119,10 @@ fi
 # a parallel debug run, and then move a DEBUG-signed APK onto the
 # release path. With a private work directory, the file a run moves
 # to the final path is always the very file that same run signed
-# and verified (the final move itself is atomic — same filesystem).
+# and verified (the final move itself is atomic — same filesystem;
+# the set-aside and publish sections that touch the shared final
+# path are additionally serialized per signing mode, see
+# lock_final_paths above).
 # The directory is removed on success; a failed build leaves its
 # own directory behind for diagnosis, never another run's. Defined
 # here, after SIGNING and OUT_APK are final.
@@ -90,12 +137,17 @@ WORK="$APP_DIR/build/manual-$SIGNING-$$"
 # failed in one of those checks left the previous APK at the final
 # path after all. $OUT_APK is final at this point, so the set-aside
 # happens here — before every check that can fail the build.
+# Serialized per signing mode (finding M5): another same-mode run
+# may be publishing at this very moment, and the pair must move
+# together.
+lock_final_paths "$SIGNING"
 if [ -f "$OUT_APK" ]; then
   mv -f "$OUT_APK" "$OUT_APK.prev"
 fi
 if [ -f "$OUT_APK.idsig" ]; then
   mv -f "$OUT_APK.idsig" "$OUT_APK.idsig.prev"
 fi
+unlock_final_paths
 
 if [ "$SIGNING" = "release" ]; then
   if [ ! -f "$REL_KS" ]; then
@@ -196,10 +248,15 @@ echo "Signature verified: $WORK/signed.apk"
 # Success-only placement (P-5): only now does the new APK take the
 # final path. On any earlier failure the path stays empty and the
 # previous build remains available as *.prev for comparison.
+# Serialized per signing mode (finding M5): the APK and its .idsig
+# change hands as one pair, never interleaved with another
+# same-mode run's publish or set-aside.
+lock_final_paths "$SIGNING"
 mv -f "$WORK/signed.apk" "$OUT_APK"
 if [ -f "$WORK/signed.apk.idsig" ]; then
   mv -f "$WORK/signed.apk.idsig" "$OUT_APK.idsig"
 fi
+unlock_final_paths
 
 echo "Built: $OUT_APK"
 ls -lh "$OUT_APK"
