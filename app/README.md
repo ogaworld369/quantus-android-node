@@ -7,7 +7,7 @@ it has synced.
 
 - applicationId: `app.quantusnode.node`
 - minSdk 31 / targetSdk 35 / arm64-v8a only
-- versionName `0.1.5` (versionCode 25; public releases began at v0.1.0)
+- versionName `0.2.0` (versionCode 26; public releases began at v0.1.0)
 - Permissions (only these): `INTERNET`, `FOREGROUND_SERVICE`,
   `FOREGROUND_SERVICE_SPECIAL_USE`, `POST_NOTIFICATIONS`
 - `android:allowBackup="false"`
@@ -50,27 +50,42 @@ it has synced.
 
 ## MainActivity (dashboard)
 
-Dark, minimal, quiet — the "気配" (presence) design:
+Dark, minimal, quiet — the "気配" (presence) design. Since
+versionCode 26 the dashboard is four screens in one activity —
+**home**, **node details**, **track record** and **settings** —
+reached from home with instant switching; each screen keeps its
+scroll position. The palette follows the Quantus brand colours from
+quantus.com (background #0E0E0E, surfaces #181818, accent #FF6B35,
+text #E8E6E0, the synced state in the brand green #4ADE80).
 
-- **PulseView** (custom Canvas view): a faint still ring and dot. When a
-  new best block is observed, exactly one soft ripple expands and fades.
-  No perpetual animation.
-- Status （停止 / 起動中 / 同期中 / 同期完了）, best block, highest block,
-  peer count, and a start/stop button.
-- **航跡 (track)**: kept only on this device (SharedPreferences) —
-  cumulative uptime (saved every ~10 s while running, so most of it
-  survives a kill), the number of new-block updates observed, and the
-  maximum peer count observed. Never transmitted; no monetary value,
-  no ranking.
-- **量子ウォッチ (quantum watch)**: a frame showing this node's and the
-  network's health (sync state, peers, best/highest block). The external
-  threat-intelligence half is an explicit stub — "未実装（設計メモ参照）"
-  (not implemented; see the design memo, `../docs/DESIGN.md`). Nothing
-  is fetched from outside.
+- **PulseView** (custom Canvas view, on home): a faint still ring and
+  dot. Only while the node is synced, a poll that first observes a
+  higher best block draws exactly one soft ripple, which expands and
+  fades. No perpetual animation.
+- The state shown is one of 停止 / 起動中 / 同期中 / 同期完了 / 失敗
+  (stopped / starting / syncing / synced / failed). The failure
+  classification is the service's, not a guess from the exit code: a
+  start whose two launch attempts both failed, an unexpected exit,
+  and a missing node binary are failures (shown with a retry and a
+  path into diagnostics); a system time-limit stop is a stop with its
+  reason; a user stop is a plain stop even if the process exits
+  non-zero. Home carries the state, the one primary action and —
+  while running — the peer count and this session's uptime.
+- **Node details**: best block, highest block, the sync gap (shown
+  only when meaningful; zero is never dressed up as "synced"), peers,
+  uptime, and an expandable **Diagnostics** section (exit code,
+  service notes, the per-attempt start records, log sharing). While
+  the node is stopped, the screen shows the cumulative track record
+  instead of the previous session's values.
+- **航跡 (track record)**: kept only on this device
+  (SharedPreferences) — cumulative uptime (saved every ~10 s while
+  running, so most of it survives a kill), the number of new-block
+  updates observed, and the maximum peer count observed. Never
+  transmitted; no monetary value, no ranking.
 - **設定 (settings)**: four user settings, all stored only on the
   device (`NodeSettings`, SharedPreferences). The telemetry,
   display name and language are read at node launch; the settings
-  lock is a UI-side guard:
+  lock is a UI-side guard. The app version is shown at the bottom:
   - **テレメトリに表示する (telemetry opt-in)** — default **off**.
     Off: the node is launched with `--no-telemetry`, exactly as before.
     On: `--no-telemetry` is omitted and the node announces itself to
@@ -81,23 +96,28 @@ Dark, minimal, quiet — the "気配" (presence) design:
     information — the user asked for this opt-in (2026-11-03) because
     seeing their own node in the list is reassuring.
   - **表示名 (display name)** — the `--name` value; empty means the
-    generic default `quantus-android-node`. It is sanitized (control
-    characters stripped, trimmed, 64-char cap) and passed as a single
-    argv element — never through a shell.
+    generic default `quantus-android-node`. It is edited in a dialog:
+    the value is sanitized (control characters stripped, trimmed)
+    and the dialog validates the sanitized form against the 64
+    code-point limit — over the limit is refused, never silently
+    truncated — with a live counter and a preview of the name as it
+    will be saved. The saved name is passed as a single argv element
+    — never through a shell.
   - Changing either setting while the node is running does **not**
-    restart it. The dashboard compares the settings with the snapshot
-    the running node was launched with and, when they differ, shows
-    "設定を変更しました。反映するにはノードの再起動（停止 → 開始）が
-    必要です。自動では再起動しません。" — applying the change is the
-    user's own stop → start.
+    restart it. The dashboard compares the saved settings with the
+    snapshot the running node was launched with; while they differ,
+    the changed items are marked as not yet applied in settings and
+    home shows a "review pending settings" link. Applying the change
+    is the user's own stop → start.
   - **言語 (language)** — the UI language: 日本語 / English /
     简体中文 / Español / हिन्दी / العربية / 한국어 / Русский /
     Français, or "follow device settings" (the default). Applies to
     the dashboard immediately (activity recreate) and to the service
     notification the next time it is rebuilt. All strings live in
-    `StringsTable.java` (49 keys × 9 languages, mechanically checked
-    for completeness); the full table and contribution guide are in
-    `../docs/I18N.md`. Numbers always render with ASCII digits in
+    `StringsTable.java` (151 keys × 9 languages, mechanically checked
+    for completeness, including a check that no value has decayed
+    into "?" placeholders); the full table and contribution guide are
+    in `../docs/I18N.md`. Numbers always render with ASCII digits in
     every language, and Arabic mirrors the layout (RTL).
   - **設定ロック (settings lock)** — a mis-tap guard for the three
     settings above: while it is on, their controls are disabled in
@@ -290,4 +310,3 @@ Still not verified:
   the 2026-11-04 audit are fixed in versionCode 8/9, verified by
   code inspection, not yet by an on-device soak.
 - The Gradle route (expected fine on a normal network, unproven here).
-- Quantum-watch external threat information: stub by design (above).
