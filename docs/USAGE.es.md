@@ -4,7 +4,7 @@
 
 Esta aplicación ejecuta un **nodo completo no validador** de Quantus Network (red principal de QTC) en un teléfono Android. Sincroniza la cadena, verifica cada bloque por sí mismo y retransmite datos a sus pares. **No** mina y **no** tiene billetera: nunca toca frases semilla ni claves de recompensa.
 
-> Estado: v0.1.5 publicada (2026-11-06), la versión actual. El APK firmado está disponible en [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) con suma de verificación SHA-256. Las compilaciones de prueba anteriores las compartía directamente el mantenedor.
+> Estado: v0.2.0 publicada (2026-11-06), la versión actual. El APK firmado está disponible en [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) con suma de verificación SHA-256. Las compilaciones de prueba anteriores las compartía directamente el mantenedor.
 
 ## Requisitos
 
@@ -29,23 +29,25 @@ Verificado hasta ahora: **Pixel 9a con GrapheneOS**. Se espera que otros disposi
 
 No necesitas mantener la aplicación abierta. El nodo funciona como un servicio en primer plano: sigue ejecutándose con la pantalla apagada o mientras usas otras aplicaciones, y muestra una notificación permanente mientras funciona. Si lo detienes y lo vuelves a iniciar, la sincronización continúa donde iba: la cadena descargada se conserva en el dispositivo.
 
-## Qué muestra la pantalla
+## Qué muestran las pantallas
 
-- **Estado** — Sincronizando / sincronizado, con una onda tranquila en la vista de pulso cada vez que llega un nuevo mejor bloque
-- **Mejor bloque / Bloque más alto** — dónde está tu nodo frente a la punta de la red que conoce
-- **Pares** — a cuántos nodos estás conectado
+La aplicación tiene cuatro pantallas. Inicio es el punto de partida; a las demás se llega desde allí.
+
+- **Inicio** — el pulso, el estado del nodo (Detenido / Iniciando / Sincronizando / Sincronizado / Error) y el botón principal. Mientras el nodo funciona, también muestra el número de pares conectados y el tiempo de funcionamiento de esta sesión. El pulso dibuja una sola onda tranquila solo mientras el nodo está sincronizado, en el momento en que se observa por primera vez un nuevo mejor bloque. Si un inicio falla, Inicio lo muestra como un error con un botón de reintento, en lugar de una detención normal; si un ajuste que cambiaste aún no ha entrado en vigor, Inicio muestra un enlace para revisarlo
+- **Detalles del nodo** — mejor bloque / bloque más alto (dónde está tu nodo frente a la punta de la red que conoce), la brecha de sincronización, los pares y el tiempo de funcionamiento, y la sección **Diagnóstico**: código de salida, notas del servicio, el registro de cada intento de inicio y **Compartir registro** (ver más abajo). Mientras el nodo está detenido, esta pantalla muestra tu trayectoria acumulada en lugar de los valores de la sesión anterior
 - **Trayectoria** — tu registro local: tiempo total de funcionamiento, nuevos bloques observados y el máximo de pares observados. Se guarda solo en este dispositivo; nunca se sube y no vale dinero: es simplemente tu propia huella de contribución
-- **Quantum Watch** — el estado de sincronización de tu nodo y la salud de su conexión a la red (la información externa sobre amenazas aún no está implementada)
+- **Ajustes** — los cuatro ajustes siguientes; la versión de la aplicación se muestra al final
 
 ## Ajustes
 
 - **Aparecer en la telemetría** (desactivado por defecto): cuando está activado, el nombre de tu nodo y su estado en vivo son visibles públicamente en la telemetría oficial en telemetry.quantus.com. Actívalo solo si quieres aparecer en la lista. Se aplica desde el siguiente inicio del nodo (Detener → Iniciar).
-- **Nombre visible** — el nombre que usa tu nodo (también se muestra en la telemetría si está activada). Déjalo vacío para usar el nombre por defecto `quantus-android-node`. Se aplica desde el siguiente inicio del nodo.
-- **Idioma** — sigue el ajuste del dispositivo o elige uno de 9 idiomas (japonés, inglés, chino simplificado, español, hindi, árabe, coreano, ruso, francés).
-- **Compartir registro** — comparte el registro del nodo como texto. Es lo que debes adjuntar al informar de un problema. Antes de pegar un registro en un lugar público, revisa su contenido: puede incluir la dirección IP pública de tu nodo e información de los pares.
+- **Nombre visible** — el nombre que usa tu nodo (también se muestra en la telemetría si está activada), que se edita en un diálogo. Déjalo vacío para usar el nombre por defecto `quantus-android-node`. Se aplica desde el siguiente inicio del nodo.
+- **Idioma** — sigue el ajuste del dispositivo o elige uno de 9 idiomas (japonés, inglés, chino simplificado, español, hindi, árabe, coreano, ruso, francés). Se aplica de inmediato.
 - **Bloquear ajustes** — bloquea los tres ajustes anteriores (telemetría, nombre visible e idioma) para que no se cambien por accidente mientras el teléfono queda ejecutando el nodo. Es solo una protección contra toques involuntarios: no hay PIN, y el inicio y la detención del nodo nunca se bloquean. Desactiva **Bloquear ajustes** cuando quieras volver a cambiarlos.
 
-Los ajustes nunca reinician el nodo por sí solos. Si cambias algo con el nodo en marcha, la pantalla te avisará de que es necesario reiniciar (Detener → Iniciar).
+Los ajustes nunca reinician el nodo por sí solos. Si cambias la telemetría o el nombre visible con el nodo en marcha, el elemento cambiado se marca en Ajustes como aún no aplicado, e Inicio muestra un enlace para revisar los ajustes pendientes; el cambio entra en vigor en el siguiente inicio del nodo (Detener → Iniciar).
+
+**Compartir registro** está en **Detalles del nodo → Diagnóstico**: comparte el registro del nodo como texto, y es lo que debes adjuntar al informar de un problema. Antes de pegar un registro en un lugar público, revisa su contenido: puede incluir la dirección IP pública de tu nodo e información de los pares.
 
 ## Uso diario
 
@@ -56,7 +58,7 @@ Los ajustes nunca reinician el nodo por sí solos. Si cambias algo con el nodo e
 
 ## Si algo sale mal
 
-- **El nodo se cierra enseguida** — toca **Compartir registro** en Ajustes y envía el registro con un Issue de GitHub (plantilla de informe de error). El registro muestra cada intento de inicio y por qué terminó.
+- **El nodo se cierra enseguida** — abre **Detalles del nodo → Diagnóstico → Compartir registro** y envía el registro con un Issue de GitHub (plantilla de informe de error). El registro muestra cada intento de inicio y por qué terminó.
 - **Los pares se quedan en 0** — revisa la conexión y luego Detener → Iniciar una vez.
 - **Tu nodo no aparece en la telemetría** — asegúrate de que la opción de telemetría está activada y de que reiniciaste el nodo después de activarla. (El listado está verificado: el nodo del propio mantenedor aparece en la lista oficial).
 - **Dudas de almacenamiento** — la base de datos está podada a los últimos 256 bloques por diseño. Desinstalar la aplicación borra la base de datos y la clave de identidad del nodo; una reinstalación empieza una sincronización nueva con una identidad nueva.
