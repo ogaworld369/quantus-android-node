@@ -8,6 +8,39 @@ the first public release (published 2026-11-04).
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 27 / v0.2.1 — 2026-11-06
+- **Maintenance update: the two verified findings of an external
+  audit of v0.2.0 (one medium, one low).** No changes to the node
+  launch arguments, the database, the permissions, the UI, or the
+  bundled node binary (still the versionCode 10 build).
+  - **A node process can no longer be lost inside the app process
+    (medium).** When the on-disk pid record for a freshly spawned
+    node could not be written, the spawn-intent marker was the only
+    trace of the child; a service destroyed and recreated within
+    the same app process then held neither the process object nor
+    a usable record, and a restart could spawn a second node onto
+    the same database and RPC port while the first was still
+    exiting. Spawned children are now also tracked in a
+    process-wide registry: the launch registers the child before
+    the pid record is attempted, the worker unregisters it when it
+    observes the exit, and the leftover wait consults the registry
+    before the pid file and the marker — so the child is found by
+    object, waited on as before, and never spawned over. A failed
+    pid record still does not fail the launch, and the
+    cross-process recovery (pid record, marker, orphan scan) is
+    unchanged.
+  - **The display name the user confirms is the name the node
+    receives (low).** The editor validated and previewed one
+    normalization of the name while the launch applied another
+    whose steps ran in a different order (the length cap before
+    the leading-dash strip), so for inputs such as "--" followed
+    by 64 letters the confirmed name and the launched name
+    differed. There is now a single normalization, in the
+    editor's order; the editor stores the normalized value, the
+    64-code-point limit is checked against the normalized result
+    (over the limit is still refused, never truncated), and the
+    launch applies no second transformation of its own.
+
 ## versionCode 26 / v0.2.0 — 2026-11-06
 - **The dashboard is redesigned from scratch — same node, same data,
   a new face.** No changes to the node launch arguments, the

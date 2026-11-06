@@ -4,7 +4,7 @@
 
 이 앱은 Android 스마트폰에서 Quantus Network(QTC 메인넷)의 **비검증자 풀 노드**를 실행합니다. 체인을 동기화하고, 모든 블록을 스스로 검증하며, 피어에게 데이터를 중계합니다. **마이닝은 하지 않고, 지갑도 없습니다** — 시드 구절이나 보상 키를 다루는 일은 전혀 없습니다.
 
-> 상태: v0.2.0 공개됨(2026-11-06), 현재 버전. 서명된 APK는 SHA-256 체크섬과 함께 [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases)에 게시되어 있습니다. 이전 테스트 빌드는 유지관리자가 직접 공유했습니다.
+> 상태: v0.2.1 공개됨(2026-11-06), 현재 버전. 서명된 APK는 SHA-256 체크섬과 함께 [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases)에 게시되어 있습니다. 이전 테스트 빌드는 유지관리자가 직접 공유했습니다.
 
 ## 동작 요구 사항
 

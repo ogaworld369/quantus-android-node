@@ -191,6 +191,67 @@ public class NodeService extends Service {
      */
     private static volatile boolean orphanRecoveryCompletedInProcess = false;
 
+    /**
+     * Every node child this app process has spawned and not yet seen
+     * exit (versionCode 27, external audit of v0.2.0): a process-wide
+     * registry, static for the same reason {@link #PID_LOCK} is — it
+     * must work across service instances. launch() registers the
+     * child inside {@link #PID_LOCK} the moment the spawn succeeds,
+     * and the worker removes it when it observes the exit (the
+     * waitFor() finally, or the not-accepted teardown once the exit
+     * is confirmed); entries found dead are pruned by the lookup.
+     *
+     * Why it exists: the cross-instance handles below it — the pid
+     * record and the spawn-intent marker — both live on disk, and
+     * the pid record is allowed to fail (a failed record does NOT
+     * fail the launch, by design). When it did fail, the marker was
+     * the only trace of the child, and the marker path of
+     * {@link #awaitLeftoverNodeProcess} judges a marker stamped with
+     * THIS process's incarnation id as "owned by the paths above" —
+     * which was true only while the spawning instance lived. A
+     * service destroyed and recreated inside the same app process
+     * (stop, then start) held neither the Process object nor a pid
+     * record, stood the marker scan down, and could spawn a second
+     * node onto the same database and RPC port while the first was
+     * still exiting. The registry closes exactly that in-process
+     * hole: a recreated instance finds the child here, by object,
+     * before any on-disk evidence is consulted.
+     *
+     * The registry never licenses a kill — a child found here has a
+     * living owner (this app process, or its destroying instance's
+     * F-03 escalation behind it) and is only ever waited on, exactly
+     * like the tracked-by-object path it feeds. It also never
+     * replaces the on-disk evidence: across an app-process death the
+     * registry dies with the process, and the pid record and the
+     * marker remain the only traces, as before.
+     */
+    private static final java.util.Set<Process> LIVE_CHILD_PROCESSES =
+            java.util.Collections.newSetFromMap(
+                    new java.util.concurrent.ConcurrentHashMap<>());
+
+    /**
+     * A live node child from {@link #LIVE_CHILD_PROCESSES}, or null
+     * when the registry holds none. Entries whose process has exited
+     * without the worker's removal having run yet (the removal is
+     * prompt, but a lookup can win the race) are pruned on sight, so
+     * the set cannot accumulate dead processes. At most one child
+     * can be alive in practice — a launch is refused while a
+     * leftover lives — so the first live entry found is the answer.
+     */
+    private static Process liveRegisteredChild() {
+        Process found = null;
+        for (Process p : LIVE_CHILD_PROCESSES) {
+            if (p.isAlive()) {
+                if (found == null) {
+                    found = p;
+                }
+            } else {
+                LIVE_CHILD_PROCESSES.remove(p);
+            }
+        }
+        return found;
+    }
+
     private static String newIncarnationId() {
         byte[] bytes = new byte[8];
         new SecureRandom().nextBytes(bytes);
@@ -995,6 +1056,18 @@ public class NodeService extends Service {
                     exited = waitForExitBounded(proc, DESTROY_EXIT_WAIT_MS);
                 }
                 if (exited) {
+                    // versionCode 27 (external audit of v0.2.0): the
+                    // exit is confirmed, so the child leaves the
+                    // process-wide registry here, as it does in the
+                    // accepted path's waitFor() finally. When the
+                    // exit is NOT confirmed (the else below) the
+                    // registration deliberately STAYS: nobody is
+                    // watching this child any more, and the registry
+                    // entry — like the pid record left in place
+                    // there — is what a later launch of this process
+                    // waits on instead of spawning over it. A later
+                    // lookup prunes the entry once the child is gone.
+                    LIVE_CHILD_PROCESSES.remove(proc);
                     // Clear the pid record by the pid launch()
                     // resolved for THIS attempt (versionCode 18) —
                     // never by re-probing pid(), which is exactly
@@ -1044,6 +1117,14 @@ public class NodeService extends Service {
                     }
                 }
             } finally {
+                // versionCode 27 (external audit of v0.2.0): the
+                // exit has been observed — this is the moment the
+                // worker unregisters the child from the process-wide
+                // registry (see LIVE_CHILD_PROCESSES). What remains
+                // below is unchanged: the instance reference and the
+                // pid record are cross-instance courtesies on top of
+                // the registry, not replacements for it.
+                LIVE_CHILD_PROCESSES.remove(running);
                 // F-1 + third-audit ownership race: clear the
                 // reference only if it still points at THIS session's
                 // process, with the check-and-clear indivisible under
@@ -1256,7 +1337,8 @@ public class NodeService extends Service {
         // fresh service) lost that reference while the child could
         // still be exiting. The wait is now unified on
         // awaitLeftoverNodeProcess(), which finds the leftover either
-        // via the field or via the pid file. launch() runs on this
+        // via the field, via the process-wide registry, or via the
+        // pid file. launch() runs on this
         // session's worker thread, so the wait never blocks the UI.
         //
         // The whole sequence — wait, spawn, pid record — runs inside
@@ -1336,6 +1418,15 @@ public class NodeService extends Service {
                 }
                 throw e;
             }
+            // versionCode 27 (external audit of v0.2.0): register
+            // the child in the process-wide registry HERE, inside
+            // PID_LOCK and before the pid record is attempted, so
+            // no later launch of this app process can miss it —
+            // not even in the window before the record lands, and
+            // not when the record fails outright (see
+            // LIVE_CHILD_PROCESSES). The worker removes it when it
+            // observes the exit.
+            LIVE_CHILD_PROCESSES.add(proc);
             // Finding 7: the lifetime clock starts HERE, at the actual
             // spawn — not before launch(), whose wait above could
             // otherwise eat the quick-exit window and mask a failed
@@ -1405,9 +1496,15 @@ public class NodeService extends Service {
      * finish exiting before a new one is spawned on the same database.
      * Three ways the leftover can be known:
      *
-     *   (a) same service instance: {@link #nodeProcess} still holds
-     *       the Process object, so identity is certain and isAlive()
-     *       is the exit test (this is the old F-2 wait, unified here);
+     *   (a) tracked by object: this instance's {@link #nodeProcess}
+     *       still holds the Process object — or the process-wide
+     *       registry {@link #LIVE_CHILD_PROCESSES} does (versionCode
+     *       27, external audit of v0.2.0): a child spawned by an
+     *       earlier instance of this same app process whose pid
+     *       record failed, found by object before any on-disk
+     *       evidence is consulted. Identity is certain either way
+     *       and isAlive() is the exit test (this is the old F-2
+     *       wait, unified here);
      *   (b) recreated instance: the pid file survives. A recorded pid
      *       is trusted ONLY after /proc/&lt;pid&gt;/cmdline shows it
      *       still belongs to a quantus process — pids are reused,
@@ -1487,7 +1584,23 @@ public class NodeService extends Service {
      * indivisible from the spawn that follows it.
      */
     private void awaitLeftoverNodeProcess(int gen) throws IOException {
-        final Process prev = nodeProcess;
+        // versionCode 27 (external audit of v0.2.0): the tracked
+        // object is this instance's field when it names a live
+        // process; otherwise the process-wide registry is consulted
+        // BEFORE the pid file and the marker scan below — it is the
+        // only handle on a child whose spawning instance is gone
+        // but whose app process (this one) lives on, when the pid
+        // record failed (see LIVE_CHILD_PROCESSES). `prev` is not
+        // final for this reason; when the registry supplies it, the
+        // tracked-by-object path below runs exactly as it does for
+        // this instance's own field — waited on, never killed.
+        Process prev = nodeProcess;
+        if (prev == null || !prev.isAlive()) {
+            Process registered = liveRegisteredChild();
+            if (registered != null) {
+                prev = registered;
+            }
+        }
         // Not final: the marker path's recovery loop below moves on
         // to the next orphan after each recovery (finding N4).
         long leftoverPid;

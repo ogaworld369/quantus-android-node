@@ -4,7 +4,7 @@
 
 このアプリは、Quantus Network（QTC メインネット）の**通常フルノード**（ブロック生成はしない）を Android スマホで動かすものです。チェーンを同期し、すべてのブロックを自分で検証し、ピアへデータを中継します。**マイニングはしません。ウォレットもありません**（フレーズや報酬キーを扱うことは一切ありません）。
 
-> 現在の状態: v0.2.0 を公開済み（2026-11-06、最新版）。署名付き APK は [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) で SHA-256 チェックサム付きで配布しています。それ以前のテスト版は開発者から直接お渡ししていました。
+> 現在の状態: v0.2.1 を公開済み（2026-11-06、最新版）。署名付き APK は [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) で SHA-256 チェックサム付きで配布しています。それ以前のテスト版は開発者から直接お渡ししていました。
 
 ## 動作要件
 

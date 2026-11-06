@@ -23,9 +23,10 @@ import java.util.Locale;
  *  - the pending-settings predicate (condition P): a saved setting
  *    counts as pending only while the node is running AND its value
  *    actually differs from the value this launch is using;
- *  - display-name validation: the untruncated sanitized result's
- *    code-point count decides, and an over-limit name is refused,
- *    never cut;
+ *  - display-name validation: the normalized name's code-point
+ *    count decides (the one normalization in
+ *    {@link NodeSettings#normalizeNodeName}, shared with the save
+ *    and the launch), and an over-limit name is refused, never cut;
  *  - when a home pulse ripple may fire for a newly observed block:
  *    only against a baseline the UI adopted at display start, so
  *    the first increase after a cold start counts and a rebuild
@@ -307,18 +308,28 @@ public final class UiLogic {
     // Display-name validation (spec C)
     // ------------------------------------------------------------------
 
-    /** Code points of the name as it would be saved (untruncated sanitize). */
+    /**
+     * Code points of the effective name for this input — the one
+     * normalization's result (or the default name for an unusable
+     * input), which is also what gets saved and launched with.
+     */
     public static int nameCodePoints(String raw) {
-        String s = NodeSettings.sanitizeUntruncated(raw);
+        String s = NodeSettings.effectiveNodeNameForRaw(raw);
         return s.codePointCount(0, s.length());
     }
 
-    /** The name as it would be saved, before any cap: the preview text. */
+    /**
+     * The name as it will be saved, and as the node will receive
+     * it: the preview text. Identical to the launch's effective
+     * name by construction (versionCode 27, external audit of
+     * v0.2.0) — the editor stores the normalized value, and no
+     * second transformation happens at launch.
+     */
     public static String nameSavedPreview(String raw) {
-        return NodeSettings.sanitizeUntruncated(raw);
+        return NodeSettings.effectiveNodeNameForRaw(raw);
     }
 
-    /** True when the sanitized result fits the cap and may be saved. */
+    /** True when the normalized result fits the limit and may be saved. */
     public static boolean nameSaveable(String raw) {
         return nameCodePoints(raw) <= NodeSettings.nameLimitCodePoints();
     }

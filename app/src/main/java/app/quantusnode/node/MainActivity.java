@@ -1052,7 +1052,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** The name as the settings row shows it: raw value, or "default". */
+    /** The name as the settings row shows it: stored value, or "default". */
     private String shownName() {
         String raw = NodeSettings.nodeNameRaw(this);
         return (raw == null || raw.isEmpty())
@@ -1237,9 +1237,19 @@ public class MainActivity extends Activity {
                     update.run();
                     return; // stay open with the error showing
                 }
+                // versionCode 27 (external audit of v0.2.0): store
+                // the NORMALIZED name, not the typed text — the one
+                // normalization the preview showed and the launch
+                // will use, so what was previewed is byte-for-byte
+                // what gets saved and passed to the node. (Before,
+                // the raw text was stored and the launch re-derived
+                // the name with a differently ordered sanitizer,
+                // which could hand the node a shorter name than the
+                // one the user had confirmed.)
+                String normalized = NodeSettings.normalizeNodeName(value);
                 String current = NodeSettings.nodeNameRaw(this);
-                if (!value.equals(current == null ? "" : current)) {
-                    NodeSettings.setNodeNameRaw(this, value);
+                if (!normalized.equals(current == null ? "" : current)) {
+                    NodeSettings.setNodeNameRaw(this, normalized);
                 }
                 nameDialog.dismiss();
                 refresh();

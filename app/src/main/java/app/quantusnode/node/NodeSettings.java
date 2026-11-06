@@ -42,15 +42,21 @@ public final class NodeSettings {
     private static final String KEY_LANGUAGE = "language";
     private static final String KEY_SETTINGS_LOCKED = "settings_locked";
 
-    /** Display names are capped so they stay sane in lists and logs. */
+    /**
+     * Display-name limit so names stay sane in lists and logs: the
+     * editor refuses a save whose normalized name exceeds it (it
+     * never truncates). It is a validation limit, not a step of the
+     * normalization itself (versionCode 27, external audit of
+     * v0.2.0).
+     */
     private static final int MAX_NAME_CHARS = 64;
 
     /**
-     * Cap for the raw name as stored (versionCode 21, audit
-     * finding 10): the effective name is capped at 64 code points by
-     * {@link #sanitize} anyway, so nothing legitimate needs a longer
-     * stored value; the cap only keeps a huge pasted text out of the
-     * preferences file.
+     * Cap for the name as stored (versionCode 21, audit
+     * finding 10): the editor stores the normalized name, which the
+     * 64-code-point limit already bounds, so nothing legitimate
+     * needs a longer stored value; the cap only keeps a huge pasted
+     * text out of the preferences file.
      */
     private static final int MAX_STORED_NAME_CHARS = 256;
 
@@ -81,7 +87,13 @@ public final class NodeSettings {
         prefs(ctx).edit().putBoolean(KEY_TELEMETRY, enabled).apply();
     }
 
-    /** The display name exactly as the user typed it ("" when unset). */
+    /**
+     * The stored display name ("" when unset). Since versionCode 27
+     * the editor stores the value already normalized by
+     * {@link #normalizeNodeName}; a value stored by an older version
+     * can still be the raw typed text, and every reader normalizes
+     * through that same function, so the two behave identically.
+     */
     public static String nodeNameRaw(Context ctx) {
         try {
             return prefs(ctx).getString(KEY_NODE_NAME, "");
@@ -93,8 +105,8 @@ public final class NodeSettings {
     public static void setNodeNameRaw(Context ctx, String raw) {
         String v = raw == null ? "" : raw;
         if (v.codePointCount(0, v.length()) > MAX_STORED_NAME_CHARS) {
-            // Truncate on a code-point boundary, like sanitize(), so
-            // the stored value never ends in a lone surrogate.
+            // Truncate on a code-point boundary, so the stored
+            // value never ends in a lone surrogate.
             v = v.substring(0, v.offsetByCodePoints(0, MAX_STORED_NAME_CHARS));
         }
         prefs(ctx).edit().putString(KEY_NODE_NAME, v).apply();
@@ -130,42 +142,61 @@ public final class NodeSettings {
     }
 
     /**
-     * The name to actually pass as --name: the user's display name,
-     * sanitized (control and invisible format characters stripped,
-     * trimmed, capped at {@link #MAX_NAME_CHARS} code points), or the
-     * generic default when nothing usable was entered. It is handed
-     * to the node as a single argv element — never via a shell.
+     * The name to actually pass as --name: the stored display name,
+     * normalized by {@link #normalizeNodeName} (the editor stores
+     * the normalized form already, so for anything it saved this
+     * changes nothing; a value stored by an older version is
+     * normalized by the same single function, so it behaves
+     * identically), or the generic default when nothing usable is
+     * stored. It is handed to the node as a single argv element —
+     * never via a shell.
      */
     public static String effectiveNodeName(Context ctx) {
-        return sanitize(nodeNameRaw(ctx));
-    }
-
-    public static String sanitize(String raw) {
-        return sanitizeInternal(raw, true);
+        return effectiveNodeNameForRaw(nodeNameRaw(ctx));
     }
 
     /**
-     * The sanitized result WITHOUT the {@link #MAX_NAME_CHARS} cap
-     * (versionCode 26): every other rule of {@link #sanitize} applies
-     * unchanged — control / invisible-format stripping, trim, the
-     * leading-dash rules and the default-name fallbacks. The display
-     * name editor validates against this: it counts the code points
-     * of this result and refuses an over-limit save instead of
-     * silently truncating what the user typed. When this result is
-     * within the cap it is identical to sanitize(raw).
+     * The effective name for a raw input value: its normalization,
+     * or the generic default when the normalization is empty.
+     * This — via {@link #normalizeNodeName} — is the ONE result the
+     * editor's validation and preview, the stored value and the
+     * launch all share (versionCode 27, external audit of v0.2.0;
+     * see normalizeNodeName for why they used to diverge).
      */
-    public static String sanitizeUntruncated(String raw) {
-        return sanitizeInternal(raw, false);
+    public static String effectiveNodeNameForRaw(String raw) {
+        String n = normalizeNodeName(raw);
+        return n.isEmpty() ? DEFAULT_NODE_NAME : n;
     }
 
-    /** The display-name cap, in Unicode code points after sanitizing. */
-    public static int nameLimitCodePoints() {
-        return MAX_NAME_CHARS;
-    }
-
-    private static String sanitizeInternal(String raw, boolean cap) {
+    /**
+     * THE display-name normalization (versionCode 27, external
+     * audit of v0.2.0): control and invisible-format characters
+     * stripped, trimmed, leading '-' runs stripped (see the F-6 /
+     * F11 rules below). Returns "" when nothing usable remains —
+     * the unset case, and the smuggled-dash case — and the caller
+     * (the editor's preview, {@link #effectiveNodeNameForRaw})
+     * presents that as the generic default name.
+     *
+     * Until versionCode 26 there were two sanitizers whose step
+     * order differed: the editor validated against an uncapped
+     * result (strip, trim, dash-strip, then count), while the
+     * launch path capped the raw value at {@link #MAX_NAME_CHARS}
+     * code points BEFORE the dash strip. For "--" followed by 64
+     * letters the editor therefore accepted — and previewed — a
+     * 64-letter name that the node then received as 62 letters;
+     * for a long run of spaces in front of a short name, the raw
+     * value's stored-length cut could remove the name before the
+     * trim ever saw it. The normalization is now defined once,
+     * here, in the editor's order; the length limit is a check ON
+     * this result (the editor refuses an over-limit save, it never
+     * truncates), the editor stores THIS result, and the launch
+     * applies no second transformation of its own — this function
+     * is idempotent, so applying it to a stored value returns that
+     * value unchanged.
+     */
+    public static String normalizeNodeName(String raw) {
         if (raw == null) {
-            return DEFAULT_NODE_NAME;
+            return "";
         }
         StringBuilder sb = new StringBuilder(raw.length());
         for (int i = 0; i < raw.length(); i++) {
@@ -175,18 +206,13 @@ public final class NodeSettings {
             }
         }
         String s = sb.toString().trim();
-        if (cap && s.codePointCount(0, s.length()) > MAX_NAME_CHARS) {
-            // Cap by code points, not UTF-16 units (versionCode 21,
-            // audit finding 3): a unit-wise cut could split a
-            // surrogate pair and leave a lone surrogate in the name.
-            s = s.substring(0, s.offsetByCodePoints(0, MAX_NAME_CHARS)).trim();
-        }
         // F-6: strip leading '-' characters. The name is passed as a
         // single argv element (no shell), so there is no injection
         // risk — but a value starting with '-' can be misread by the
         // node's CLI parser as another option instead of the --name
         // value, failing the start. If nothing usable remains, the
-        // check below falls back to the default name.
+        // result is empty and the effective name falls back to the
+        // default.
         //
         // External audit round 2 (F11): one strip-then-trim pass is
         // not enough — in "- --help" the space hides the second dash
@@ -194,9 +220,10 @@ public final class NodeSettings {
         // again. Strip-and-trim now repeats until the value is
         // stable. A value that needs more than one stripping pass
         // was a dash run smuggled past whitespace ("- --help"):
-        // rather than keep whatever it reduces to, fall back to the
-        // default name. A single contiguous run is an ordinary typo
-        // and is simply removed ("--abc" -> "abc", "-" -> default).
+        // rather than keep whatever it reduces to, the result is
+        // empty (the default name). A single contiguous run is an
+        // ordinary typo and is simply removed ("--abc" -> "abc",
+        // "-" -> empty).
         int stripPasses = 0;
         while (true) {
             int lead = 0;
@@ -213,9 +240,14 @@ public final class NodeSettings {
             }
         }
         if (stripPasses > 1) {
-            return DEFAULT_NODE_NAME;
+            return "";
         }
-        return s.isEmpty() ? DEFAULT_NODE_NAME : s;
+        return s;
+    }
+
+    /** The display-name cap, in Unicode code points after normalizing. */
+    public static int nameLimitCodePoints() {
+        return MAX_NAME_CHARS;
     }
 
     /**
