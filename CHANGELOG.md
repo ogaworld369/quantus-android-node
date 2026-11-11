@@ -57,6 +57,11 @@ node binary is unchanged unless a build says otherwise).
     `StringsTable.java` (329 keys × 9 languages; the previous
     table had decayed into "?" placeholders for non-ASCII text).
 
+  - **Release record.** APK: 55,995,644 bytes, SHA-256
+    `8df4591a9c966ab098cde4f1425191e1496adc501b20b8f3bde2e5595ff6684a`.
+    Installed over v0.2.2 on the reference device, keeping
+    settings and synced data — verified in place.
+
 ## versionCode 28 / v0.2.2 — 2026-11-06
 - **Diagnostic update: the shared log now explains the phone it
   came from.** The node launch arguments, the database, the UI and
@@ -113,6 +118,12 @@ node binary is unchanged unless a build says otherwise).
     its last-change time. Both live only in the app's private
     preferences.
 
+  - **Release record.** APK: 55,733,030 bytes, SHA-256
+    `e1b8fef1f4cde966b5bfe40fdc135c380fd6d555d82d96d06dc5d685ad72b701`.
+    Installed over v0.2.1 — verified in place on the reference
+    device, where the summary block and the masking were
+    confirmed in an actual share.
+
 ## versionCode 27 / v0.2.1 — 2026-11-06
 - **Maintenance update: the two verified findings of an external
   audit of v0.2.0 (one medium, one low).** No changes to the node
@@ -145,6 +156,9 @@ node binary is unchanged unless a build says otherwise).
     64-code-point limit is checked against the normalized result
     (over the limit is still refused, never truncated), and the
     launch applies no second transformation of its own.
+
+  - **Release record.** APK: 55,733,030 bytes, SHA-256
+    `9f1ce2da422a11d2355572ffa113e18bf02bb18a6b8f743d1c28bea96e6db46c`.
 
 ## versionCode 26 / v0.2.0 — 2026-11-06
 - **The dashboard is redesigned from scratch — same node, same data,
@@ -202,6 +216,19 @@ node binary is unchanged unless a build says otherwise).
   - The placeholder Quantum watch section was removed from node
     details before release (it only ever showed a "not available
     yet" note); its three strings left the table with it.
+
+  - **Restored strings.** The non-English UI strings that had
+    been corrupted into "?" characters in the shipped builds
+    are restored — recovered verbatim from the audited
+    versionCode 24 string table, with a regression check added
+    so the corruption cannot silently return.
+  - **Pre-release audit.** A full-section audit of this build
+    before release found no critical, high or medium findings;
+    its seven low findings were all addressed before release.
+  - **Release record.** APK: 55,733,030 bytes, SHA-256
+    `ec13212cf4e4a6e9597b7779591966e094eff30fc12454030a08535442e218ee`.
+    Installed over v0.1.5 on the reference device, keeping
+    settings and synced data — verified in place.
 
 ## versionCode 25 / v0.1.5 — 2026-11-06
 - **Maintenance release: all eleven verified findings of the
@@ -358,6 +385,14 @@ node binary is unchanged unless a build says otherwise).
     table in docs/I18N.md is regenerated to match (49 keys × 9
     languages, all cells compared).
 
+  - **Release record.** Tag target: main commit c27959ec.
+    APK: 55,700,262 bytes, SHA-256
+    `22ab1fe1faa9e07598a3b13f24dd7a299c8bef403af655239a7fe25029e9ec2e`,
+    confirmed against the digest shown on the release page.
+    Installed over v0.1.4 on the reference device — verified
+    in place; the overwrite install preserved the existing
+    user data (1.21 GB).
+
 ## versionCode 24 / v0.1.4 — 2026-11-05
 - **Maintenance release: all five findings of the full-section
   audit of v0.1.3 (three new lows — A-6, B23-B1, C23-1 — and two
@@ -462,6 +497,16 @@ node binary is unchanged unless a build says otherwise).
     the permissions are the usual four. Not verified on a
     device or an emulator; a full Gradle build remains not
     runnable in the maintainer's build VM.
+
+  - **Release record.** Published 2026-11-05 at 23:59 JST.
+    Tag target: main commit 67e39b4c. APK: 55,700,181 bytes,
+    SHA-256
+    `f662112bc213b0ae5f9be724b5421badf39730652381ca0ae3dc22e8b1ec74b2`,
+    confirmed against the digest shown on the release page.
+    Installed over v0.1.3 on the reference device, keeping
+    settings and synced data — verified in place: the node
+    resumed at the chain tip, a stop → immediate start worked
+    cleanly, and the in-app footer correctly showed v0.1.4.
 
 ## versionCode 23 / v0.1.3 — 2026-11-05
 - **Maintenance release: the findings of the full-section audit
@@ -610,6 +655,12 @@ node binary is unchanged unless a build says otherwise).
     emulator; a full Gradle build remains not runnable in the
     maintainer's build VM.
 
+  - **Release record.** Installed over v0.1.2 on the reference
+    device, keeping settings and synced data — verified in
+    place: the node resumed at the chain tip, a stop →
+    immediate start worked cleanly, and the in-app footer
+    correctly showed v0.1.3.
+
 ## versionCode 22 / v0.1.2 — 2026-11-05
 - **Maintenance release: the findings of the external (ChatGPT)
   audit of v0.1.1 — eleven in total, delivered in two rounds
@@ -735,6 +786,12 @@ node binary is unchanged unless a build says otherwise).
     single contiguous run is still just removed
     ("--abc" -> "abc").
 
+  - **Release record.** Installed over v0.1.1 on the reference
+    device, keeping settings and synced data — verified in
+    place: the node resumed at the chain tip without
+    re-syncing, and a stop → immediate start right after
+    launch (the audited start/cancel race) worked cleanly.
+
 ## versionCode 21 / v0.1.1 — 2026-11-05
 - **Maintenance release: the low-severity findings of the
   2026-11-05 full audit of the published v0.1.0, fixed.** A full
@@ -791,6 +848,10 @@ node binary is unchanged unless a build says otherwise).
     the implementation (the two deliberate "[app]" evidence notes
     are the documented exception to "the process's own lines").
 
+  - **Release record.** Installed over v0.1.0 on the reference
+    device, keeping settings and synced data — verified in
+    place.
+
 ## versionCode 20 / v0.1.0 — 2026-11-04
 - **Pre-release fix: the dashboard no longer loses the scroll
   position.** On the device, swiping up to read the lower cards
@@ -816,6 +877,11 @@ node binary is unchanged unless a build says otherwise).
   Still v0.1.0 — versionCode 19 was never published — and still
   signed with the release key. No service or node changes; the
   node binary is the versionCode 10 build.
+
+  - **Release record.** The published build repeated a full
+    sync from a fresh install on 2026-11-05, reaching the
+    chain tip (#349,518), and the node was confirmed on the
+    public telemetry list (opt-in) the same day.
 
 ## versionCode 19 / v0.1.0 — 2026-11-04
 - **First build signed with the release key** (itself never
