@@ -8,7 +8,7 @@ the first public release (published 2026-11-04).
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
-## versionCode 58 / v0.3.0 — 2026-11-11
+## versionCode 58 / v3.0 — 2026-11-11
 - **The DePIN integration release.** The node launch arguments, the
   database and the bundled node binary are unchanged (still the
   versionCode 10 build). No permission is added (still five).
@@ -52,7 +52,7 @@ node binary is unchanged unless a build says otherwise).
     bounded by the existing log rotation, so this class of stall
     leaves evidence in the log.
   - **Bookkeeping.** The version defaults in `build.gradle` now
-    carry the shipped version (versionCode 58 / 0.3.0), and
+    carry the shipped version (versionCode 58 / 3.0), and
     `docs/I18N.md`'s string table is regenerated from the current
     `StringsTable.java` (329 keys × 9 languages; the previous
     table had decayed into "?" placeholders for non-ASCII text).

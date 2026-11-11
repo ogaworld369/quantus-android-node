@@ -7,7 +7,7 @@ it has synced.
 
 - applicationId: `app.quantusnode.node`
 - minSdk 31 / targetSdk 35 / arm64-v8a only
-- versionName `0.3.0` (versionCode 58; public releases began at v0.1.0)
+- versionName `3.0` (versionCode 58; public releases began at v0.1.0)
 - Permissions (only these): `INTERNET`, `ACCESS_NETWORK_STATE`,
   `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE`,
   `POST_NOTIFICATIONS`
@@ -59,7 +59,7 @@ it has synced.
   polled every ~3 s). Connection refused while booting is shown as
   "起動中" (starting), never as an error. No external endpoint is contacted.
 
-## DePIN activity recording (versionCode 58 / v0.3.0)
+## DePIN activity recording (versionCode 58 / v3.0)
 
 - Recording runs in a separate `:depin` process. The pure-Java
   core lives in `app/src/main/java/app/quantusnode/node/depin/`
@@ -93,7 +93,7 @@ reached from home with instant switching; each screen keeps its
 scroll position. The palette follows the Quantus brand colours from
 quantus.com (background #0E0E0E, surfaces #181818, accent #FF6B35,
 text #E8E6E0, the synced state in the brand green #4ADE80). Since
-versionCode 58 (v0.3.0) the top level is a bottom navigation with
+versionCode 58 (v3.0) the top level is a bottom navigation with
 three tabs — **home**, **connection** (the network-field
 visualization) and **membership card** — with node details and
 settings reached from home; the DePIN recording screens (identity,
@@ -221,7 +221,7 @@ strictly higher, so a fixed versionCode would silently strand testers
 on old builds. `versionName` stayed `0.1-mvp` through the
 pre-release builds; the first public release (versionCode 20)
 shipped as `0.1.0`, and the versionName in `build-manual.sh` and
-`build.gradle` moves with each release since (currently `0.3.0`).
+`build.gradle` moves with each release since (currently `3.0`).
 versionCode 3 is the
 evidence build: per-attempt start records on the dashboard and a
 share-log button, for diagnosing the on-device instant-exit failure
