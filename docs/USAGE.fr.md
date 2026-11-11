@@ -4,7 +4,7 @@
 
 Cette application fait tourner un **nœud complet non validateur** du Quantus Network (réseau principal QTC) sur un téléphone Android. Il synchronise la chaîne, vérifie lui-même chaque bloc et relaie les données aux pairs. Il **ne** mine pas, et il n'a **pas de portefeuille** — il ne touche jamais aux phrases de récupération ni aux clés de récompense.
 
-> État : v0.2.2 publiée (2026-11-06), la version actuelle. L'APK signé est disponible sur [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) avec sa somme de contrôle SHA-256. Les versions de test précédentes étaient partagées directement par le mainteneur.
+> État : v0.3.0 publiée (2026-11-11), la version actuelle — la version avec intégration DePIN. L'APK signé est disponible sur [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) avec sa somme de contrôle SHA-256. Les versions de test précédentes étaient partagées directement par le mainteneur.
 
 ## Prérequis
 
@@ -31,23 +31,25 @@ Pas besoin de garder l'application ouverte. Le nœud fonctionne comme un service
 
 ## Ce que montrent les écrans
 
-L'application compte quatre écrans. L'accueil est le point de départ ; les autres s'ouvrent depuis celui-ci.
+L'application compte trois onglets en bas : Accueil, Connexion et Carte de membre. Les Détails du nœud et les Réglages s'ouvrent depuis l'accueil.
 
-- **Accueil** — le pouls, l'état du nœud (Arrêté / Démarrage / Synchronisation / Synchronisé / Échec) et le bouton principal. Pendant que le nœud tourne, l'écran affiche aussi le nombre de pairs connectés et la durée de fonctionnement de cette session. Le pouls ne dessine une ondulation discrète qu'une seule fois, et seulement pendant que le nœud est synchronisé, au moment où un nouveau meilleur bloc est observé pour la première fois. Si un démarrage échoue, l'accueil l'affiche comme un échec avec un bouton de nouvel essai, plutôt que comme un arrêt ordinaire ; si un réglage que vous avez modifié n'est pas encore en vigueur, l'accueil affiche un lien pour le vérifier
+- **Accueil** — le pouls, l'état du nœud (Arrêté / Démarrage / Synchronisation / Synchronisé / Échec) et le bouton principal. Pendant que le nœud tourne, l'écran affiche aussi le nombre de pairs connectés, la durée de fonctionnement de cette session, ainsi que le prix actuel du QTC. Le pouls ne dessine une ondulation discrète qu'une seule fois, et seulement pendant que le nœud est synchronisé, au moment où un nouveau meilleur bloc est observé pour la première fois. Si un démarrage échoue, l'accueil l'affiche comme un échec avec un bouton de nouvel essai, plutôt que comme un arrêt ordinaire ; si un réglage que vous avez modifié n'est pas encore en vigueur, l'accueil affiche un lien pour le vérifier
+- **Connexion** — une image vivante du champ réseau de votre nœud : les pairs auxquels il est connecté et les échos de ses propres points de contrôle enregistrés. Elle montre des relations, pas des chiffres pour se comparer — il n'y a aucun classement
 - **Détails du nœud** — meilleur bloc / bloc le plus haut (où en est votre nœud par rapport à la pointe du réseau qu'il connaît), l'écart de synchronisation, les pairs et la durée de fonctionnement, ainsi que la section **Diagnostics** : code de sortie, notes du service, l'historique de chaque tentative de démarrage et **Partager le journal** (voir ci-dessous). Pendant que le nœud est arrêté, cet écran affiche votre trace cumulée plutôt que les valeurs de la session précédente
-- **Traces** — votre journal local : temps de fonctionnement total, nouveaux blocs observés et maximum de pairs observés. Stocké uniquement sur cet appareil ; jamais envoyé, et sans aucune valeur monétaire — c'est simplement la trace de votre contribution
-- **Réglages** — les quatre réglages ci-dessous ; la version de l'application est affichée tout en bas
+- **Carte de membre** — votre carte de membre : votre numéro de membre (l'identifiant de votre appareil) et les chiffres principaux de votre journal local — temps de fonctionnement total, nouveaux blocs observés et maximum de pairs observés. Le journal est stocké uniquement sur cet appareil ; il n'est jamais envoyé et n'a aucune valeur monétaire — c'est simplement la trace de votre contribution, et la montrer ou non vous appartient
+- **Réglages** — les réglages ci-dessous ; la version de l'application est affichée tout en bas
 
 ## Réglages
 
 - **Apparaître dans la télémétrie** (désactivé par défaut) — quand c'est activé, le nom de votre nœud et son état en direct deviennent publiquement visibles dans la télémétrie officielle sur telemetry.quantus.com. Ne l'activez que si vous voulez figurer dans la liste. S'applique au prochain démarrage du nœud (Arrêter → Démarrer).
 - **Nom d'affichage** — le nom qu'utilise votre nœud (également affiché dans la télémétrie si elle est activée), qui se modifie dans une boîte de dialogue. Laissez vide pour utiliser le nom par défaut `quantus-android-node`. S'applique au prochain démarrage du nœud.
 - **Langue** — suivre le réglage de l'appareil, ou choisir parmi 9 langues (japonais, anglais, chinois simplifié, espagnol, hindi, arabe, coréen, russe, français). S'applique immédiatement.
-- **Verrouiller les réglages** — verrouille les trois réglages ci-dessus (télémétrie, nom d'affichage, langue) pour qu'ils ne changent pas par accident pendant que le téléphone reste à faire tourner le nœud. C'est uniquement une protection contre les manipulations involontaires : il n'y a pas de code PIN, et le démarrage ou l'arrêt du nœud ne sont jamais verrouillés. Désactivez **Verrouiller les réglages** pour pouvoir les modifier à nouveau.
+- **Enregistrer mon activité (DePIN)** (désactivé par défaut) — quand c'est activé, l'application conserve sur cet appareil un journal signé du temps de fonctionnement et du travail de relais du nœud (un point de contrôle toutes les 10 minutes). Rien n'est envoyé nulle part de lui-même ; depuis les Réglages, vous pouvez exporter le journal sous forme de fichier de preuves et le partager vous-même. La désactivation arrête l'enregistrement ; le journal reste sur l'appareil
+- **Verrouiller les réglages** — verrouille les réglages ci-dessus (télémétrie, nom d'affichage, langue et enregistrement d'activité) pour qu'ils ne changent pas par accident pendant que le téléphone reste à faire tourner le nœud. C'est uniquement une protection contre les manipulations involontaires : il n'y a pas de code PIN, et le démarrage ou l'arrêt du nœud ne sont jamais verrouillés. Désactivez **Verrouiller les réglages** pour pouvoir les modifier à nouveau.
 
 Les réglages ne redémarrent jamais le nœud d'eux-mêmes. Si vous changez la télémétrie ou le nom d'affichage pendant que le nœud tourne, l'élément modifié est marqué dans les Réglages comme pas encore appliqué, et l'accueil affiche un lien pour vérifier les réglages en attente ; le changement prend effet au prochain démarrage du nœud (Arrêter → Démarrer).
 
-**Partager le journal** se trouve dans **Détails du nœud → Diagnostics** : il partage le journal du nœud en texte, et c'est ce qu'il faut joindre quand vous signalez un problème. Avant de coller un journal dans un lieu public, vérifiez d'abord son contenu : il peut inclure l'adresse IP publique de votre nœud et des informations sur les pairs.
+**Partager le journal** se trouve dans **Détails du nœud → Diagnostics** : il partage le journal du nœud en texte, et c'est ce qu'il faut joindre quand vous signalez un problème. Avant de coller un journal dans un lieu public, vérifiez d'abord son contenu : il peut inclure l'adresse IP publique de votre nœud et des informations sur les pairs. La boîte de dialogue de partage peut masquer le nom d'affichage, les adresses des interfaces de cet appareil et les chemins privés de l'application (activé par défaut) ; l'adresse extérieure que le nœud apprend par ses pairs n'est pas masquée.
 
 ## Au quotidien
 
@@ -60,6 +62,7 @@ Les réglages ne redémarrent jamais le nœud d'eux-mêmes. Si vous changez la t
 
 - **Le nœud se ferme tout de suite** — ouvrez **Détails du nœud → Diagnostics → Partager le journal** et envoyez le journal avec une Issue GitHub (modèle de rapport de bug). Le journal montre chaque tentative de démarrage et la raison de sa fin.
 - **Les pairs restent à 0** — vérifiez la connexion, puis Arrêter → Démarrer une fois.
+- **La synchronisation se bloque (votre meilleur bloc s'arrête pendant que le réseau avance)** — l'application détecte cette situation et redémarre le nœud d'elle-même (au maximum 3 fois par 24 heures). Si cela se répète, une connexion Wi-Fi stable aide ; puis Arrêter → Démarrer une fois
 - **Votre nœud n'apparaît pas dans la télémétrie** — vérifiez que l'option de télémétrie est activée et que le nœud a été redémarré après l'activation. (L'apparition dans la liste est vérifiée : le nœud du mainteneur lui-même figure dans la liste officielle.)
 - **Questions de stockage** — la base de données est élaguée aux 256 derniers blocs par conception. Désinstaller l'application supprime la base de données et la clé d'identité du nœud ; une réinstallation repart pour une nouvelle synchronisation avec une nouvelle identité.
 

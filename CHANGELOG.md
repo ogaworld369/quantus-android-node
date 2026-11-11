@@ -8,6 +8,55 @@ the first public release (published 2026-11-04).
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 58 / v0.3.0 — 2026-11-11
+- **The DePIN integration release.** The node launch arguments, the
+  database and the bundled node binary are unchanged (still the
+  versionCode 10 build). No permission is added (still five).
+  - **Activity recording (DePIN) is built into the node app —
+    opt-in, off by default.** The standalone companion app's role
+    is complete. With recording on, the app writes a signed
+    checkpoint of the node's uptime and relay work every 10
+    minutes to an on-device journal; the identity seed is kept in
+    an encrypted vault (Android Keystore). Nothing is transmitted
+    by the app: a proof bundle leaves the phone only as a file the
+    user exports and shares. An existing identity — key and full
+    history — moves from another install in a single one-file
+    exchange; the strict multi-step transfer remains available.
+  - **The main screens are redesigned.** A bottom navigation with
+    three tabs — home, connection, membership card. Home shows
+    the live QTC price next to the pulse and the node state; the
+    connection tab draws the node's network field (peers and
+    checkpoint echoes) in place of the previous radar-style
+    figure; the membership card carries the member number (device
+    ID) and three headline figures from the local record. No
+    rankings, and the record is never converted into money.
+  - **Three rounds of pre-release final check, all findings
+    addressed.** No critical findings in any round: round 1 (two
+    high, seven medium, sixteen low), round 2 (one high, three
+    medium, nine low) and round 3 (no high, two medium, eleven
+    low) were all re-verified against the code before fixing —
+    no finding was dismissed — and are fixed across versionCodes
+    53–58, together with the remaining migration-recovery items.
+    Among them: a journal-cache defect that could truncate
+    participation history after a migration, a staging path that
+    wrote a transferred identity seed to disk in plaintext
+    (removed — imports now decrypt in memory), quadratic
+    re-verification cost when importing recorded history, and a
+    corrupted RPC attempt log that had no in-app recovery path.
+  - **Sync stall recovery.** A node whose best block stops
+    advancing while the network tip keeps rising (seen in the
+    field with few peers on a mobile connection) is now detected
+    — syncing, tip ahead, best block unchanged for 30 minutes —
+    and the node restarts automatically (at most 3 times in 24
+    hours). Node startup now also carries sync debug logging,
+    bounded by the existing log rotation, so this class of stall
+    leaves evidence in the log.
+  - **Bookkeeping.** The version defaults in `build.gradle` now
+    carry the shipped version (versionCode 58 / 0.3.0), and
+    `docs/I18N.md`'s string table is regenerated from the current
+    `StringsTable.java` (329 keys × 9 languages; the previous
+    table had decayed into "?" placeholders for non-ASCII text).
+
 ## versionCode 28 / v0.2.2 — 2026-11-06
 - **Diagnostic update: the shared log now explains the phone it
   came from.** The node launch arguments, the database, the UI and

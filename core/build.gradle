@@ -1,0 +1,33 @@
+// :depin-core — the device-independent DePIN core (integration
+// design section 2.1). A plain Java library module on purpose: no
+// Android plugin, so android.jar is not on this module's compile
+// classpath at all and an android.* reference cannot compile.
+// The package is app.quantusnode.node.depin.core.
+//
+// The sources are the companion app's core, moved with logic
+// unchanged (visibility and file placement only, per section 2.1's
+// promotion rule); the companion keeps its own copy and harness.
+// The plain-JVM harness + crosscheck live in core/tests/ and are
+// run by core/tests/run-tests.sh, not by Gradle.
+plugins {
+    id 'java-library'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+// Dependency-direction check (design section 2.1). The same script
+// runs in the app module's build, in app/build-manual.sh and in
+// the core harness; a check on only one route is not enforcement.
+tasks.register('verifyDepinDeps', Exec) {
+    group = 'verification'
+    description = 'Fails the build if the DePIN core references android.* or the app package outside its own package.'
+    workingDir = rootDir
+    commandLine 'bash', "${rootDir}/core/check-depin-deps.sh", 'core'
+}
+
+tasks.named('compileJava') {
+    dependsOn 'verifyDepinDeps'
+}

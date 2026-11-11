@@ -333,4 +333,122 @@ public final class UiLogic {
     public static boolean nameSaveable(String raw) {
         return nameCodePoints(raw) <= NodeSettings.nameLimitCodePoints();
     }
+
+    // ------------------------------------------------------------------
+    // Network page state (vision UI stage 1, spec S1-06)
+    // ------------------------------------------------------------------
+
+    /** The seven presentations of the network page's hero. */
+    public enum NetState {
+        OFFLINE,
+        STOPPED,
+        RPC_FAIL,
+        SYNCING,
+        SEARCHING,
+        STALLED,
+        NORMAL
+    }
+
+    /** Seconds without an RPC success before "fetch failed". */
+    public static final long RPC_FAIL_AFTER_SEC = 15;
+    /** Seconds without the best block advancing before
+     *  "stalled" (three missed checkpoint cadences). */
+    public static final long STALLED_AFTER_SEC = 180;
+
+    /**
+     * Classify the network page's presentation from plain facts,
+     * in the spec's priority order: offline, stopped, fetch
+     * failed, syncing, searching, stalled, normal. The caller
+     * supplies ages it measured itself; an age of -1 means "never
+     * observed", which can never trip the failed / stalled
+     * thresholds (a fresh start is not a failure).
+     *
+     * @param online          the device reports connectivity
+     * @param running         the node counts as running
+     * @param failed          the presentation is a failure state
+     * @param syncing         the node is still syncing
+     * @param peers           connected peers; -1 while unknown
+     *                        (unknown reads as "still looking",
+     *                        never as a measured zero)
+     * @param lastRpcOkAgeSec seconds since the last successful
+     *                        RPC observation; -1 if none yet
+     * @param lastAdvanceAgeSec seconds since the best block last
+     *                        advanced; -1 if never observed
+     */
+    public static NetState classifyNetState(boolean online,
+                                            boolean running,
+                                            boolean failed,
+                                            boolean syncing,
+                                            int peers,
+                                            long lastRpcOkAgeSec,
+                                            long lastAdvanceAgeSec) {
+        if (!online) {
+            return NetState.OFFLINE;
+        }
+        if (!running || failed) {
+            return NetState.STOPPED;
+        }
+        if (lastRpcOkAgeSec > RPC_FAIL_AFTER_SEC) {
+            return NetState.RPC_FAIL;
+        }
+        if (syncing) {
+            return NetState.SYNCING;
+        }
+        if (peers <= 0) {
+            return NetState.SEARCHING;
+        }
+        if (lastAdvanceAgeSec > STALLED_AFTER_SEC) {
+            return NetState.STALLED;
+        }
+        return NetState.NORMAL;
+    }
+
+    // ------------------------------------------------------------------
+    // Ghost layer geometry (vision UI stage 2, spec S2-01)
+    // ------------------------------------------------------------------
+
+    /**
+     * A ghost's angle: the local time of day of its checkpoint,
+     * on a 24-hour clock with 00:00 at the top, clockwise.
+     * Returns radians for canvas drawing (0 = up).
+     */
+    public static double ghostAngleRad(long secondsOfDay) {
+        long s = Math.floorMod(secondsOfDay, 86_400L);
+        return s * (Math.PI * 2.0 / 86_400.0) - Math.PI / 2.0;
+    }
+
+    /**
+     * A ghost's radius, as a multiple of the field radius: a
+     * fresh checkpoint sits at 0.90, a 24-hour-old one at 1.15 —
+     * the older a record is, the farther out it rests.
+     */
+    public static float ghostRadiusFactor(long ageSec) {
+        double t = ageSec <= 0 ? 0.0
+                : ageSec >= 86_400L ? 1.0 : ageSec / 86_400.0;
+        return (float) (0.90 + 0.25 * t);
+    }
+
+    /**
+     * A ghost's opacity (0-255): brightness encodes how many
+     * peers were connected when the checkpoint was recorded,
+     * normalised by the window's maximum.
+     */
+    public static int ghostAlpha(int peers, int maxPeers) {
+        if (maxPeers <= 0) {
+            return 30;
+        }
+        double ratio = peers <= 0 ? 0.0
+                : peers >= maxPeers ? 1.0 : (double) peers / maxPeers;
+        return 30 + (int) Math.round(100.0 * ratio);
+    }
+
+    /** A ghost's radius in dp: 2.0 to 3.5 by the same ratio. */
+    public static float ghostRadiusDp(int peers, int maxPeers) {
+        if (maxPeers <= 0) {
+            return 2.0f;
+        }
+        double ratio = peers <= 0 ? 0.0
+                : peers >= maxPeers ? 1.0 : (double) peers / maxPeers;
+        return (float) (2.0 + 1.5 * ratio);
+    }
 }

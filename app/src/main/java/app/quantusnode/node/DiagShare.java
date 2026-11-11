@@ -119,6 +119,21 @@ public final class DiagShare {
         public long telemetryChangedMs = 0;
         public long nameChangedMs = 0;
         public long languageChangedMs = 0;
+        // A5: QTC price fetch (internal.23). Until this record
+        // existed, a stopped price was undiagnosable: the fetch
+        // loop kept its failures in memory only and discarded
+        // the exception itself.
+        /** Wall time of the last successful price fetch; 0 =
+         *  never (renders as n/a). */
+        public long priceFetchedMs = 0;
+        /** Kind of the last failed price fetch — an exception
+         *  class name, never a message (null when the last
+         *  attempt succeeded or none ran). Rendered through
+         *  {@link DiagShare#errorKind} regardless, so a legacy
+         *  "ClassName: message" value is reduced at render. */
+        public String priceError;
+        /** Wall time of that failure; 0 when none. */
+        public long priceErrorMs = 0;
     }
 
     // ------------------------------------------------------------------
@@ -192,6 +207,8 @@ public final class DiagShare {
         line(sb, "Telemetry setting changed", tsOrNa(f.telemetryChangedMs));
         line(sb, "Display name changed", tsOrNa(f.nameChangedMs));
         line(sb, "Language setting changed", tsOrNa(f.languageChangedMs));
+        line(sb, "QTC price fetched", tsOrNa(f.priceFetchedMs));
+        line(sb, "QTC price fetch error", priceErrorLine(f));
         // A5
         String first = firstLogTimestamp(sharedLogBody);
         String last = lastLogTimestamp(sharedLogBody);
@@ -208,6 +225,68 @@ public final class DiagShare {
 
     private static void line(StringBuilder sb, String label, String value) {
         sb.append(label).append(": ").append(value).append('\n');
+    }
+
+    /** The price-fetch error line's value: the error's KIND
+     *  and, when known, its time — never the raw recorded
+     *  text. */
+    private static String priceErrorLine(Facts f) {
+        if (f.priceError == null) {
+            return NA;
+        }
+        String kind = errorKind(f.priceError);
+        if (kind == null) {
+            kind = "unknown";
+        }
+        return f.priceErrorMs > 0
+                ? kind + " (at "
+                        + formatTimestamp(f.priceErrorMs) + ")"
+                : kind;
+    }
+
+    /**
+     * Reduce a recorded error text to its kind: the leading
+     * class-name token. Internal.26 persists kinds alone
+     * (PriceStore), but values written by earlier builds are
+     * "ClassName: message" — and a network failure's message
+     * can carry the device's own address (audit F-09), while
+     * the summary historically printed the text verbatim,
+     * outside the masking applied to the log body. Reducing
+     * here makes every stored value safe at render time,
+     * whichever build wrote it. A text that does not start
+     * with a class-name token (letters/digits/_/./$, not
+     * solely digits and dots — an address is not a kind)
+     * yields null; the caller renders a placeholder, so the
+     * failure's existence and time still show.
+     */
+    public static String errorKind(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        int end = 0;
+        boolean hasLetter = false;
+        boolean allDigitsAndDots = true;
+        while (end < raw.length()) {
+            char c = raw.charAt(end);
+            boolean letter = (c >= 'a' && c <= 'z')
+                    || (c >= 'A' && c <= 'Z');
+            boolean digit = c >= '0' && c <= '9';
+            if (!letter && !digit && c != '_' && c != '.'
+                    && c != '$') {
+                break;
+            }
+            if (letter) {
+                hasLetter = true;
+                allDigitsAndDots = false;
+            } else if (!digit && c != '.') {
+                allDigitsAndDots = false;
+            }
+            end++;
+        }
+        if (end < 3 || !hasLetter || allDigitsAndDots) {
+            return null;
+        }
+        return raw.substring(0, end);
     }
 
     private static String orNa(String s) {

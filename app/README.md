@@ -7,9 +7,10 @@ it has synced.
 
 - applicationId: `app.quantusnode.node`
 - minSdk 31 / targetSdk 35 / arm64-v8a only
-- versionName `0.2.2` (versionCode 28; public releases began at v0.1.0)
-- Permissions (only these): `INTERNET`, `FOREGROUND_SERVICE`,
-  `FOREGROUND_SERVICE_SPECIAL_USE`, `POST_NOTIFICATIONS`
+- versionName `0.3.0` (versionCode 58; public releases began at v0.1.0)
+- Permissions (only these): `INTERNET`, `ACCESS_NETWORK_STATE`,
+  `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE`,
+  `POST_NOTIFICATIONS`
 - `android:allowBackup="false"`
 - Plain framework Java + Android SDK APIs only. **No third-party
   libraries** (JSON via the SDK's built-in `org.json`).
@@ -43,10 +44,45 @@ it has synced.
   buffers, no unbounded appends.
 - If the node process exits, the exit code is logged and shown, the
   service stops, and nothing restarts it behind the user's back.
+- **Sync stall watchdog** (versionCode 58): if the node reports
+  itself syncing with the network tip at least 5 blocks ahead and
+  its best block has not moved for 30 minutes, NodeService
+  restarts the node (at most 3 restarts in 24 hours, at least 45
+  minutes apart, once per frozen value per session) and logs a
+  WARN line. Process exits are still never auto-restarted. The
+  node process environment also sets
+  `RUST_LOG=info,sync=debug,sc_network_sync=debug`, so sync
+  stalls leave debug evidence in `node.log` (bounded by the
+  rotation above); the argument list itself is unchanged.
 - Status comes from the **local** JSON-RPC endpoint only
   (`http://127.0.0.1:9944/`, `system_health` + `system_syncState`,
   polled every ~3 s). Connection refused while booting is shown as
   "起動中" (starting), never as an error. No external endpoint is contacted.
+
+## DePIN activity recording (versionCode 58 / v0.3.0)
+
+- Recording runs in a separate `:depin` process. The pure-Java
+  core lives in `app/src/main/java/app/quantusnode/node/depin/`
+  — journal, identity vault, transfer packages, proof bundle
+  export — and is verified by the JVM suites under `core/tests/`
+  (312 base checks, 368 migration checks) plus the vision-logic
+  (197) and strings (329 keys × 9 languages) checks.
+- Opt-in, off by default (`DepinSettings`). When on, the app
+  writes a signed checkpoint of the node's uptime and relay work
+  every 600 seconds to an append-only on-device journal. The
+  identity seed is stored in an AES-GCM vault whose key lives in
+  the Android Keystore; the identity itself is `qdp1-…` (device
+  ID + generation).
+- Identity transfer moves the key and the full history to another
+  install: the one-file exchange (a single encrypted package
+  file; the sender freezes at creation, the receiver goes live
+  after a code entry and a full-value confirmation) is the
+  default path, and the strict multi-step protocol remains
+  available. Proof bundles export as a single JSON file through
+  the share sheet. Nothing is transmitted by the app itself.
+- The node process is only ever observed read-only (local RPC);
+  recording never changes how the node runs, and if recording
+  stops, the node keeps syncing and relaying.
 
 ## MainActivity (dashboard)
 
@@ -56,7 +92,13 @@ versionCode 26 the dashboard is four screens in one activity —
 reached from home with instant switching; each screen keeps its
 scroll position. The palette follows the Quantus brand colours from
 quantus.com (background #0E0E0E, surfaces #181818, accent #FF6B35,
-text #E8E6E0, the synced state in the brand green #4ADE80).
+text #E8E6E0, the synced state in the brand green #4ADE80). Since
+versionCode 58 (v0.3.0) the top level is a bottom navigation with
+three tabs — **home**, **connection** (the network-field
+visualization) and **membership card** — with node details and
+settings reached from home; the DePIN recording screens (identity,
+transfer, proof bundle export) live in the same activity and are
+described in the DePIN section below.
 
 - **PulseView** (custom Canvas view, on home): a faint still ring and
   dot. Only while the node is synced, a poll that first observes a
@@ -114,7 +156,7 @@ text #E8E6E0, the synced state in the brand green #4ADE80).
     Français, or "follow device settings" (the default). Applies to
     the dashboard immediately (activity recreate) and to the service
     notification the next time it is rebuilt. All strings live in
-    `StringsTable.java` (151 keys × 9 languages, mechanically checked
+    `StringsTable.java` (329 keys × 9 languages, mechanically checked
     for completeness, including a check that no value has decayed
     into "?" placeholders); the full table and contribution guide are
     in `../docs/I18N.md`. Numbers always render with ASCII digits in
@@ -179,7 +221,7 @@ strictly higher, so a fixed versionCode would silently strand testers
 on old builds. `versionName` stayed `0.1-mvp` through the
 pre-release builds; the first public release (versionCode 20)
 shipped as `0.1.0`, and the versionName in `build-manual.sh` and
-`build.gradle` moves with each release since (currently `0.2.2`).
+`build.gradle` moves with each release since (currently `0.3.0`).
 versionCode 3 is the
 evidence build: per-attempt start records on the dashboard and a
 share-log button, for diagnosing the on-device instant-exit failure

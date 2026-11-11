@@ -66,6 +66,36 @@
                 android:value="Long-running full blockchain node operation: keeps the user-started Quantus node resident so it can continuously sync, verify and relay blocks." />
         </service>
 
+        <!-- The DePIN observer lives in its own process (:depin), so a
+             failure on the DePIN side cannot propagate into the node
+             process: the node keeps syncing and relaying whether the
+             observer runs or not. Not exported, like the node service.
+             No new permission is declared for this service: it reuses
+             the foreground-service permissions already declared above. -->
+        <service
+            android:name=".depin.DepinObserverService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:process=":depin">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Opt-in DePIN observation: while the user keeps it on, a separate process records signed checkpoints of this node's uptime; it never affects node operation." />
+        </service>
+
+        <!-- The device-transfer host (audit H-1): a bound-only
+             service in the same :depin process, so every
+             transfer operation — seed handling included — runs
+             inside the process the design closes the seed into,
+             while the observer above keeps its own launch-claim
+             lifecycle (the transfer flow itself freezes the
+             observer, so the transfer host must outlive it).
+             Bound only by the app's own main process; not
+             exported, no foreground requirement. -->
+        <service
+            android:name=".depin.DepinTransferService"
+            android:exported="false"
+            android:process=":depin" />
+
     </application>
 
 </manifest>

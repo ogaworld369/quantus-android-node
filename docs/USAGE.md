@@ -4,7 +4,7 @@
 
 This app runs a **non-validator full node** for Quantus Network (QTC mainnet) on an Android phone. It syncs the chain, verifies every block itself, and relays data to peers. It does **not** mine, and it has **no wallet** — it never touches seed phrases or reward keys.
 
-> Status: v0.2.2 released (2026-11-06), the current release. The signed APK is published on [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) with a SHA-256 checksum. Earlier test builds were shared directly by the maintainer.
+> Status: v0.3.0 released (2026-11-11), the current release — the DePIN integration release. The signed APK is published on [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) with a SHA-256 checksum. Earlier test builds were shared directly by the maintainer.
 
 ## Requirements
 
@@ -31,23 +31,25 @@ You do not need to keep the app open. The node runs as a foreground service: it 
 
 ## What the screens show
 
-The app has four screens. Home is where you start; the others are one tap away from it.
+The app has three main tabs along the bottom — Home, Connection, and Membership card. Node details and Settings are reached from Home.
 
-- **Home** — the pulse, the node's state (Stopped / Starting / Syncing / Synced / Failed) and the one main button. While the node runs, it also shows the connected peer count and this session's uptime. The pulse draws one quiet ripple only while the node is synced, at the moment a new best block is first observed. If a start fails, Home shows it as a failure with a retry button instead of a plain stop; if a setting you changed has not taken effect yet, Home shows a link to review it
+- **Home** — the pulse, the node's state (Stopped / Starting / Syncing / Synced / Failed) and the one main button. While the node runs, it also shows the connected peer count, this session's uptime, and the current QTC price. The pulse draws one quiet ripple only while the node is synced, at the moment a new best block is first observed. If a start fails, Home shows it as a failure with a retry button instead of a plain stop; if a setting you changed has not taken effect yet, Home shows a link to review it
+- **Connection** — a living picture of your node's network field: the peers it is connected to and the echoes of its own recorded checkpoints. It shows relationships, not numbers to compete with — there is no ranking
 - **Node details** — best block / highest block (where your node is, versus the network tip it knows), the sync gap, peers and uptime, and the **Diagnostics** section: exit code, service notes, the record of each start attempt, and **Share log** (see below). While the node is stopped, this screen shows your cumulative track record instead of the previous session's values
-- **Track record** — your local record: total uptime, new blocks observed, and the most peers observed. Stored only on this device; never uploaded, and worth no money — it is simply your own trail of contribution
-- **Settings** — the four settings below; the app version is shown at the bottom
+- **Membership card** — your member card: your member number (your device ID) and the headline figures of your local record — total uptime, new blocks observed, and the most peers observed. The record is stored only on this device; it is never uploaded, and it is worth no money — it is simply your own trail of contribution, yours to show
+- **Settings** — the settings below; the app version is shown at the bottom
 
 ## Settings
 
 - **Appear in telemetry** (off by default) — when on, your node name and live status become publicly visible in the official telemetry at telemetry.quantus.com. Turn it on only if you want to be listed. Applies from the next node start (Stop → Start).
 - **Display name** — the name your node uses (also shown in telemetry if enabled), edited in a dialog. Leave blank to use the default name `quantus-android-node`. Applies from the next node start.
 - **Language** — follow the device setting, or pick one of 9 languages (Japanese, English, Simplified Chinese, Spanish, Hindi, Arabic, Korean, Russian, French). Applies immediately.
-- **Lock settings** — locks the three settings above (telemetry, display name, language) so they cannot be changed by accident while the phone sits there running the node. It is a mis-tap guard only: there is no PIN, and starting or stopping the node is never locked. Turn **Lock settings** off when you want to change settings again.
+- **Record my activity (DePIN)** (off by default) — when on, the app keeps a signed record of the node's uptime and relay work on this device (a checkpoint every 10 minutes). Nothing is sent anywhere by itself; from Settings you can export the record as a proof bundle file and share it yourself. Turning it off stops the recording; the record stays on the device
+- **Lock settings** — locks the settings above (telemetry, display name, language, and activity recording) so they cannot be changed by accident while the phone sits there running the node. It is a mis-tap guard only: there is no PIN, and starting or stopping the node is never locked. Turn **Lock settings** off when you want to change settings again.
 
 Settings never restart the node by themselves. If you change telemetry or the display name while the node is running, the changed item is marked in Settings as not yet applied, and Home shows a link to review the pending settings; the change takes effect at the next node start (Stop → Start).
 
-**Share log** lives under **Node details → Diagnostics**: it shares the node log as text, and is what to attach when you report a problem. Before posting a log in a public place, check its contents first: it can include your node's public IP address and peer information.
+**Share log** lives under **Node details → Diagnostics**: it shares the node log as text, and is what to attach when you report a problem. Before posting a log in a public place, check its contents first: it can include your node's public IP address and peer information. The share dialog opens with a summary of the session, and its masking (on by default) covers the display name, this device's own interface addresses and app-private paths; the outward address the node learns through its peers is not masked.
 
 ## Running it day to day
 
@@ -60,6 +62,7 @@ Settings never restart the node by themselves. If you change telemetry or the di
 
 - **The node exits right away** — open **Node details → Diagnostics → Share log** and send the log with a GitHub Issue (bug report template). The log shows each start attempt and why it ended.
 - **Peers stay at 0** — check the connection, then Stop → Start once.
+- **Syncing stalls (your best block stops while the network moves on)** — the app detects this shape and restarts the node by itself (at most 3 times in 24 hours). If it keeps recurring, a stable Wi-Fi connection helps; then Stop → Start once
 - **Your node does not appear in telemetry** — make sure the telemetry option is on and the node was restarted after turning it on. (Listing is verified working: the maintainer's own node appears in the official list.)
 - **Storage questions** — the database is pruned to the latest 256 blocks by design. Uninstalling the app deletes the database and the node's identity key; a reinstall starts a fresh sync with a new identity.
 

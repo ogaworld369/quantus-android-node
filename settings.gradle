@@ -1,0 +1,30 @@
+// Root settings for the Gradle build (the canonical route; the
+// APK shipped from the build VM is produced by app/build-manual.sh
+// instead — see app/build.gradle's header).
+//
+// Two modules:
+//   :app         the Android application (directory app/)
+//   :depin-core  the device-independent DePIN core (directory
+//                core/), integrated per integration design
+//                section 2.1. The dependency runs :app ->
+//                :depin-core only; the module boundary makes a
+//                reference from the core back into the app a
+//                compile error.
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = "quantus-android-app"
+include ':app'
+include ':depin-core'
+project(':depin-core').projectDir = file('core')

@@ -187,25 +187,50 @@ sed 's|<manifest |<manifest package="app.quantusnode.node" |' \
 
 # 3) Resources + aapt2 link: base APK with binary manifest. The app's
 #    resources are the res/xml files referenced by the manifest
-#    (data_extraction_rules.xml, network_security_config.xml);
-#    compile the directory and pass the compiled output to link.
+#    (data_extraction_rules.xml, network_security_config.xml), the
+#    launcher icons, and — since the vision UI — the official logo
+#    as a vector drawable; compile the directory and pass the
+#    compiled output to link. --java generates the R class the
+#    vision UI's logo reference compiles against (AGP generates
+#    the same class in a Gradle build).
 "$BT/aapt2" compile --dir "$APP_DIR/src/main/res" -o "$WORK/res.zip"
 "$BT/aapt2" link -o "$WORK/base.apk" \
   -I "$ANDROID_JAR" \
   -A "$APP_DIR/assets" \
   --manifest "$WORK/AndroidManifest.xml" \
   --min-sdk-version 31 --target-sdk-version 35 \
-  --version-code 28 --version-name 0.2.2 \
+  --version-code 58 --version-name 0.3.0 \
+  --java "$WORK/gen" \
   "$WORK/res.zip"
 
-# 4) Compile all app sources (plain Java + Android SDK APIs only).
+# 3.5) DePIN core: dependency-direction check + separate compile
+# (integration design section 2.1, manual-route enforcement). The
+# device-independent core in ../core is checked and compiled FIRST,
+# on a plain javac classpath with no android.jar, and the app
+# sources below are compiled against the resulting jar only — the
+# same separation the Gradle module boundary enforces. The check
+# script is the one the Gradle builds and the core harness run; a
+# check on only one route is not enforcement.
+CORE_DIR="$APP_DIR/../core"
+bash "$CORE_DIR/check-depin-deps.sh" all
+mkdir -p "$WORK/core-classes"
 "$JAVA_HOME/bin/javac" -source 17 -target 17 \
-  -cp "$ANDROID_JAR" -d "$WORK/classes" \
-  $(find "$APP_DIR/src/main/java" -name '*.java')
+  -d "$WORK/core-classes" \
+  $(find "$CORE_DIR/src/main/java" -name '*.java')
+"$JAVA_HOME/bin/jar" --create --file "$WORK/depin-core.jar" \
+  -C "$WORK/core-classes" .
+
+# 4) Compile all app sources (plain Java + Android SDK APIs only;
+# the DePIN core reaches the compiler as the jar built above).
+"$JAVA_HOME/bin/javac" -source 17 -target 17 \
+  -cp "$ANDROID_JAR:$WORK/depin-core.jar" -d "$WORK/classes" \
+  $(find "$APP_DIR/src/main/java" -name '*.java') \
+  $(find "$WORK/gen" -name '*.java')
 
 # 5) Dex.
 "$BT/d8" --lib "$ANDROID_JAR" --min-api 31 \
-  --output "$WORK/dex" $(find "$WORK/classes" -name '*.class')
+  --output "$WORK/dex" $(find "$WORK/classes" -name '*.class') \
+  "$WORK/depin-core.jar"
 
 # 6) Assemble: dex (deflated) + native libs (STORED, uncompressed, so the
 #    installer extracts them to nativeLibraryDir — the manifest sets

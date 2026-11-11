@@ -15,6 +15,8 @@ import android.os.Build;
 import android.os.IBinder;
 import android.os.SystemClock;
 
+import app.quantusnode.node.depin.DepinModule;
+
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -89,6 +91,14 @@ public class NodeService extends Service {
     private static final long RPC_WATCHDOG_GRACE_MS = 500;
     private static final long POLL_MS = 3000;
     private static final long UPTIME_SAVE_EVERY_MS = 10000;
+    /** Cadence of the app-level drivers riding the poller
+     *  (internal.23): the QTC price fetch and the DePIN facade's
+     *  reconcile. Both were previously driven only by the
+     *  activity's UI tick, so both silently stopped whenever no
+     *  UI was running — the price froze, and a killed DePIN
+     *  observer was never relaunched. The poller is the one
+     *  loop that runs whenever the node runs. */
+    private static final long APP_DRIVERS_EVERY_MS = 30000;
 
     /** Log rotation: at ~512 KB the older half is dropped. Never unbounded. */
     private static final long LOG_MAX_BYTES = 512L * 1024L;
@@ -96,6 +106,54 @@ public class NodeService extends Service {
 
     /** A process that dies faster than this counts as a failed start. */
     private static final long QUICK_EXIT_MS = 2500;
+
+    // ---- sync-stall restart (internal.30) ----
+    /**
+     * The 2026-11-11 field stall (see
+     * mining/sync-stall-investigation-20261111.md): the node's
+     * best block froze at one height for hours while the
+     * highest block kept rising and peers stayed connected —
+     * the sync service was alive but wedged (most likely a
+     * request/timeout chain over a thin peer set on a moving
+     * 4G link), with nothing in the log because the sync
+     * fork's failure paths log at debug level only. The app
+     * had no stall detection at all. The poller now watches
+     * for the shape — status SYNCING, the highest block at
+     * least STALL_MIN_GAP_BLOCKS ahead, and the best block
+     * unchanged for STALL_THRESHOLD_MS — and asks the worker
+     * to relaunch the node process: a fresh sync service
+     * re-requests the missing blocks from scratch.
+     * Guardrails: at most STALL_MAX_RESTARTS_PER_DAY restarts
+     * in any 24 h (persisted across sessions), at least
+     * STALL_MIN_INTERVAL_MS between two, and at most one
+     * restart per frozen best value per session (if a
+     * restart does not unstick that height, more restarts of
+     * the same value are not the remedy). Every detection
+     * and restart is written to node.log as a WARN line, so
+     * it is counted in the diagnostic summary the user can
+     * share (DiagShare's WARN count) instead of happening
+     * invisibly.
+     */
+    private static final long STALL_THRESHOLD_MS = 30L * 60 * 1000;
+    private static final long STALL_MIN_GAP_BLOCKS = 5;
+    private static final int STALL_MAX_RESTARTS_PER_DAY = 3;
+    private static final long STALL_MIN_INTERVAL_MS = 45L * 60 * 1000;
+    private static final String STALL_PREFS = "node_sync_stall";
+    private static final String STALL_PREFS_KEY = "restart_wall_ms_csv";
+    /** The best value currently being watched, -1 before the
+     *  first read. Guarded by stateLock (poller batch). */
+    private long stallTrackedBest = -1;
+    /** elapsedRealtime when stallTrackedBest last changed. */
+    private long stallBestSinceMs = 0;
+    /** A restart for the current frozen value is in flight
+     *  (requested, not yet answered by progress). */
+    private boolean stallRestartInFlight = false;
+    /** Poller → worker handoff: relaunch the node process
+     *  once, for a detected stall. Consumed by the worker
+     *  after the process exits; reset at every session start. */
+    private final java.util.concurrent.atomic.AtomicBoolean
+            stallRestartRequested =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
 
     /**
      * Cross-instance leftover-process wait (audit finding 4): the pid
@@ -341,6 +399,7 @@ public class NodeService extends Service {
     private volatile long sessionStartElapsedMs = -1;
     private volatile long baseUptimeMs = 0;
     private volatile long lastUptimeSaveElapsedMs = 0;
+    private volatile long lastAppDriversElapsedMs = 0;
     private volatile long prevBestBlock = -1;
     /**
      * The last isSyncing value a health response actually STATED
@@ -690,6 +749,14 @@ public class NodeService extends Service {
             prevBestBlock = -1;
             lastKnownSyncing = false;
             syncEvidenceSeen = false;
+            // Sync-stall watch (internal.30): a new session
+            // re-arms from its own first read; a restart
+            // request left over from the old session must
+            // never relaunch the new session's process.
+            stallTrackedBest = -1;
+            stallBestSinceMs = 0;
+            stallRestartInFlight = false;
+            stallRestartRequested.set(false);
             // External audit round 2 (F9): the notification de-dup
             // key must not survive into a new session. The
             // startForeground() above posted this session's first
@@ -1363,6 +1430,23 @@ public class NodeService extends Service {
                 }
             }
 
+            // Sync-stall restart (internal.30): the poller
+            // destroyed this process because the best block
+            // froze while the highest kept rising (the WARN
+            // line above in the log). Relaunch instead of
+            // finishing: a fresh sync service re-requests the
+            // missing blocks from scratch. The request is
+            // consumed exactly here — a stop that landed in
+            // between (started cleared, generation moved on)
+            // falls through to the ordinary finish instead,
+            // and the session reset clears any leftover.
+            if (!interrupted && started.get() && gen == sessionGen.get()
+                    && stallRestartRequested.getAndSet(false)) {
+                logApp("WARN sync stall: node process relaunched"
+                        + " after the stall detection above");
+                triedLinker = false;
+                continue;
+            }
             // Quick, failed start on the direct path: try linker64 once.
             // Anything else is a real exit — record it and stop, no loop.
             // An interrupted attempt is not retried either (see above).
@@ -1464,6 +1548,24 @@ public class NodeService extends Service {
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.environment().put("LD_LIBRARY_PATH", nativeDir);
+        // Sync debug logging (internal.30): the sync fork's
+        // failure paths (request timeouts, block announce /
+        // response handling in client/network-sync, log
+        // target "sync") log at DEBUG only, so the 2026-11-11
+        // stall left a log with zero WARN/ERROR lines and
+        // nothing to diagnose from. Keep the global level at
+        // the node's usual info and raise ONLY the sync
+        // targets to debug; the node's own log target for
+        // the sync service is "sync" (the fork's LOG_TARGET),
+        // with sc_network_sync naming the same crate in
+        // upstream-style filters. Volume is bounded by the
+        // existing node.log rotation (~512 KB, newer half
+        // kept): during active sync the debug lines rotate
+        // faster, but the file cannot grow past the cap, and
+        // during a stall — exactly when the lines matter —
+        // they are the newest content and survive.
+        pb.environment().put("RUST_LOG",
+                "info,sync=debug,sc_network_sync=debug");
         // TLS roots for the node's telemetry (wss) connection: the node
         // runs as a bare native process, where rustls-native-certs finds
         // no system roots ("no native root CA certificates found" —
@@ -3322,6 +3424,7 @@ public class NodeService extends Service {
                 // next poll re-reads everything.
             }
             saveUptimePeriodically(gen);
+            driveAppFeaturesPeriodically(gen);
             long sleepMs = Math.max(0,
                     POLL_MS - (SystemClock.elapsedRealtime() - cycleStartMs));
             try {
@@ -3526,8 +3629,137 @@ public class NodeService extends Service {
                 st.lastObservedBestBlock = current;
                 st.lastObservedElapsedMs = SystemClock.elapsedRealtime();
             }
+            // Sync-stall watch (internal.30): judge THIS
+            // batch's settled values. The decision and the
+            // budget bookkeeping happen here, under the lock;
+            // the process destroy itself runs after the batch
+            // (below), outside every lock, like every other
+            // destroy in this service.
+            noteSyncProgressLocked(st);
+        }
+        if (stallRestartRequested.get()) {
+            // A stall restart was requested by the batch
+            // above (or one is still unconsumed): end the
+            // current process so the worker relaunches it.
+            // A user stop landing in between is safe — the
+            // worker consumes the request only while the
+            // session is still started and current, and the
+            // session reset clears any leftover.
+            Process p = nodeProcess;
+            if (p != null) {
+                p.destroy();
+            }
         }
         updateNotificationMaybe(gen);
+    }
+
+    /**
+     * The sync-stall judgement (internal.30), called from the
+     * poller's locked batch with the batch's settled state.
+     * Arms on the first read and on every advance of the best
+     * block; fires once per frozen value when the node is
+     * SYNCING, the highest block is at least
+     * STALL_MIN_GAP_BLOCKS ahead, the best has not moved for
+     * STALL_THRESHOLD_MS, and the persisted restart budget
+     * allows another restart.
+     */
+    private void noteSyncProgressLocked(NodeState st) {
+        long best = st.bestBlock;
+        long highest = st.highestBlock;
+        if (best < 0) {
+            return;
+        }
+        if (stallTrackedBest < 0 || best != stallTrackedBest) {
+            stallTrackedBest = best;
+            stallBestSinceMs = SystemClock.elapsedRealtime();
+            stallRestartInFlight = false;
+            return;
+        }
+        if (stallRestartInFlight) {
+            return; // one restart per frozen value per session
+        }
+        if (st.status != NodeState.Status.SYNCING
+                || highest < 0
+                || highest - best < STALL_MIN_GAP_BLOCKS) {
+            return;
+        }
+        long frozenMs = SystemClock.elapsedRealtime()
+                - stallBestSinceMs;
+        if (frozenMs < STALL_THRESHOLD_MS) {
+            return;
+        }
+        if (!stallRestartBudgetAllows()) {
+            return;
+        }
+        recordStallRestart();
+        stallRestartInFlight = true;
+        stallRestartRequested.set(true);
+        logApp("WARN sync stall detected: best block " + best
+                + " unchanged for " + (frozenMs / 60000)
+                + " min while highest reached " + highest
+                + " (peers " + st.peers + "); restarting the"
+                + " node process to re-request the missing"
+                + " blocks");
+    }
+
+    /** The persisted restart budget: at most
+     *  STALL_MAX_RESTARTS_PER_DAY restarts in any rolling
+     *  24 h, and at least STALL_MIN_INTERVAL_MS since the
+     *  last one. Read from this service's own preferences
+     *  file (single process, single writer). */
+    private boolean stallRestartBudgetAllows() {
+        long now = System.currentTimeMillis();
+        long last = 0;
+        int recent = 0;
+        String csv = getSharedPreferences(STALL_PREFS, MODE_PRIVATE)
+                .getString(STALL_PREFS_KEY, "");
+        if (csv != null && !csv.isEmpty()) {
+            for (String part : csv.split(",")) {
+                try {
+                    long t = Long.parseLong(part.trim());
+                    if (t > last) {
+                        last = t;
+                    }
+                    if (now - t < 24L * 3600 * 1000) {
+                        recent++;
+                    }
+                } catch (NumberFormatException ignored) {
+                    // A torn entry evidences nothing.
+                }
+            }
+        }
+        return recent < STALL_MAX_RESTARTS_PER_DAY
+                && now - last >= STALL_MIN_INTERVAL_MS;
+    }
+
+    /** Persist a stall restart against the budget, pruning
+     *  entries older than 24 h. */
+    private void recordStallRestart() {
+        long now = System.currentTimeMillis();
+        StringBuilder sb = new StringBuilder();
+        String csv = getSharedPreferences(STALL_PREFS, MODE_PRIVATE)
+                .getString(STALL_PREFS_KEY, "");
+        if (csv != null && !csv.isEmpty()) {
+            for (String part : csv.split(",")) {
+                try {
+                    long t = Long.parseLong(part.trim());
+                    if (now - t < 24L * 3600 * 1000) {
+                        if (sb.length() > 0) {
+                            sb.append(',');
+                        }
+                        sb.append(t);
+                    }
+                } catch (NumberFormatException ignored) {
+                    // Dropped with the rewrite.
+                }
+            }
+        }
+        if (sb.length() > 0) {
+            sb.append(',');
+        }
+        sb.append(now);
+        getSharedPreferences(STALL_PREFS, MODE_PRIVATE).edit()
+                .putString(STALL_PREFS_KEY, sb.toString()).apply();
     }
 
     /**
@@ -3758,6 +3990,44 @@ public class NodeService extends Service {
                 TrackStore.saveUptimeMs(this,
                         baseUptimeMs + (now - sessionStartElapsedMs));
             }
+        }
+    }
+
+    /**
+     * Drive the two main-process features whose refresh used to
+     * depend on the activity being open (internal.23; the
+     * 2026-11-10 incident): the QTC price fetch and the DePIN
+     * facade's status refresh — whose reconcile is what
+     * relaunches an observer that died while its enable setting
+     * stayed on. Both calls are cheap non-blocking hand-offs
+     * (the price store starts its own thread only when a fetch
+     * is due; the facade serialises onto its own executor and
+     * throttles launches), and both keep their own cadence, so
+     * this driver only has to knock every
+     * APP_DRIVERS_EVERY_MS while a session is live. Neither
+     * feature may ever disturb the node: every call is wrapped,
+     * exactly like the poll itself.
+     */
+    private void driveAppFeaturesPeriodically(int gen) {
+        if (gen != sessionGen.get()) {
+            return;
+        }
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastAppDriversElapsedMs < APP_DRIVERS_EVERY_MS) {
+            return;
+        }
+        lastAppDriversElapsedMs = now;
+        try {
+            PriceStore.maybeFetch(this);
+        } catch (Throwable ignored) {
+            // A price failure is PriceStore's to record.
+        }
+        try {
+            DepinModule.get(this).refreshStatus();
+        } catch (Throwable ignored) {
+            // The facade never throws by contract; this net is
+            // for its construction only, and the next cycle
+            // retries.
         }
     }
 

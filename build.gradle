@@ -1,0 +1,4 @@
+// Root build file. The modules carry their own build definitions:
+// :app in app/build.gradle (Android application) and :depin-core in
+// core/build.gradle (device-independent Java library). This file
+// intentionally configures nothing project-wide.
