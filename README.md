@@ -40,3 +40,9 @@ The secrets on the device are identity keys only: the node's P2P identity key, a
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE). (The upstream node's crates declare Apache-2.0; its repository root LICENSE is MIT — the two are compatible for this use, and this app itself is Apache-2.0.)
+
+## Support
+
+Quantus Node for Android is a personal open-source project, developed for the love of decentralization. If it is useful to you, donations in QTC are gratefully received:
+
+`qzoqy3pcLsBcPpGFqj9BTv3UyvRB9o8ScnKqcQfSbQTR6odnu`
