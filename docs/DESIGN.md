@@ -243,3 +243,11 @@ Design from the start for "a state where many people know about it and improveme
 - **Releases** are distributed as signed APKs + checksums, keeping a change history.
 - **CI (GitHub Actions)** automates builds and tests, keeping a state in which PRs can be verified when they come.
 - Progress is visualized with Milestones / Projects. In coordination with the Quantus Network JAPAN community, results that can be returned upstream (the Quantus-Network org) — such as the Android port patches — are also shared upstream.
+
+### Status addendum (part 9, 2026-11-11)
+
+Later developments that postdate the sections above, which are kept as written:
+
+- **DePIN integration shipped in v3.0 (2026-11-11).** Element 2's on-device track record grew into the DePIN participation record: with recording on (opt-in, off by default), the app writes a signed checkpoint every 10 minutes to an on-device journal and can export a proof bundle as a file. The standalone companion app that first implemented this is retired; its identity and history were transferred into the node app. Aggregation follows the design settled in the separate quantus-depin repository (SPEC v0.9); the public aggregation pilot has not started, and — as in §2 — no rankings are made and no monetary value is attached to the record.
+- **One more secret.** §2's "the only remaining secret is the node identity key" predates DePIN: with recording on, the app also holds the DePIN identity seed, kept in an encrypted vault (Android Keystore). SECURITY.md states the current scope.
+- **§11 corrections.** The README is English-only (the bilingual wording above predates the 2026-11-06 rule that public documents are written in English from the start; the usage guides remain the multilingual exception, in 9 languages). This repository has no GitHub Actions CI: verification is the project's local JVM suites, run before every release (see docs/RELEASE.md).

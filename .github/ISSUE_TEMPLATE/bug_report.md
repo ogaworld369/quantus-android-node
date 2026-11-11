@@ -11,4 +11,4 @@ labels: bug
 **Steps to reproduce**:
 1.
 2.
-**Logs**: (never paste keys or secrets — this app stores none, but check anyway)
+**Logs**: (never paste keys or secrets — the app has no wallet, but the node key and, if you use DePIN recording, the identity seed in its encrypted vault are on-device secrets, so check anyway)

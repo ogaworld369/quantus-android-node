@@ -12,6 +12,15 @@ fails, it automatically retries through `/system/bin/linker64` and shows that
 result too. Nothing is hidden: on an untested platform, the failure mode is
 the information we need.
 
+**Status (2026-11-11).** The question this harness was built to answer —
+whether the Android build of `quantus-node` starts and runs on a real
+device — has been answered in the affirmative by the main app: a full
+mainnet sync on a Pixel 9a / GrapheneOS on 2026-11-03 and public releases
+through v3.0 (see `../docs/DESIGN.md` and `../docs/RELEASE.md`). The
+sections below are the original 2026-11-03 record, kept unchanged; the
+"not done yet" / "not yet verified" notes in them describe that day, not
+the current state.
+
 - applicationId: `app.quantusnode.smoke`
 - minSdk 31 / targetSdk 35 / arm64-v8a only
 - **No permissions at all** (not even INTERNET — `--version` needs none)

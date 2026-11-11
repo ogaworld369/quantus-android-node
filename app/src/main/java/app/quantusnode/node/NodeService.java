@@ -53,8 +53,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   - if the node process exits, records the exit code and stops. It does
  *     NOT restart it in a loop.
  *
- * The app holds no secrets: no wallet, no phrase, nothing but the node's
- * own files under the app-private directory.
+ * The app holds no wallet secrets: no wallet, no seed phrase. Its only
+ * secrets stay on the device — the node's own key material in the
+ * app-private directory and, with DePIN recording on, the DePIN
+ * identity seed in its encrypted vault (see SECURITY.md).
  */
 public class NodeService extends Service {
 

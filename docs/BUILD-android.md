@@ -134,6 +134,7 @@ Linking passed, but the following remain unverified. **Link success is not proof
 - Startup on a real device (bionic): bundled loading of `libc++_shared.so`, wasmtime memory allocation, RocksDB mmap and file locks, SELinux / W^X, and background restrictions are unknown until actually run.
 - Clean-build time (without `target/`).
 - Whether `[profile.production]` (a separate profile including LTO) builds.
+- (Appended 2026-11-11) Real-device startup was verified the same day, 2026-11-03: the node started on a Pixel 9a / GrapheneOS, completed a full mainnet sync, and has since shipped in public releases through v3.0 (see docs/DESIGN.md, parts 4–5, and docs/RELEASE.md). The clean-build timing above remains unmeasured, as recorded.
 
 ### Release profile verification result (appended 2026-11-03)
 
