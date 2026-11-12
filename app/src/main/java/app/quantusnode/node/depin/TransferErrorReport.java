@@ -78,6 +78,7 @@ public final class TransferErrorReport {
     public static String classify(Throwable t) {
         boolean sawIo = false;
         boolean sawIllegalArg = false;
+        boolean sawHold = false;
         for (Throwable c = t; c != null; c = c.getCause()) {
             if (c instanceof InterruptedException) {
                 return R_INTERRUPTED;
@@ -91,9 +92,17 @@ public final class TransferErrorReport {
             }
             if (c instanceof javax.crypto.AEADBadTagException
                     || n.contains("AEAD")) {
-                // The one crypto failure that IS the entered
-                // code's verdict: the AEAD tag did not verify.
-                return R_CODE;
+                // The AEAD tag did not verify. Under the
+                // transfer code's own key that IS the entered
+                // code's verdict. Final check round 4 (I-11):
+                // under a Keystore-held key it is not — the
+                // platform reports a failed unwrap there as an
+                // AEAD tag failure CAUSED BY a keystore
+                // exception, and it is the wrap key or the
+                // wrapped record that failed; no code was
+                // involved. The cause chain decides.
+                return keystoreCaused(c.getCause())
+                        ? R_KEYSTORE : R_CODE;
             }
             if (c instanceof java.security.KeyStoreException
                     || c instanceof java.security
@@ -123,7 +132,16 @@ public final class TransferErrorReport {
                 return R_UNKNOWN;
             }
             if (c instanceof IllegalStateException) {
-                return R_HOLD;
+                // Residual F-25: remembered, not returned.
+                // An app-layer guard's ISE wrapping the
+                // core's own verdict used to end the walk
+                // here and report a hold, concealing the
+                // more specific verdict below (an AEAD tag
+                // failure became "hold_state" instead of the
+                // code verdict). The walk continues; the hold
+                // decides only when nothing more specific
+                // follows in the chain.
+                sawHold = true;
             }
             if (c instanceof java.io.IOException) {
                 sawIo = true;
@@ -132,6 +150,9 @@ public final class TransferErrorReport {
                 sawIllegalArg = true;
             }
         }
+        if (sawHold) {
+            return R_HOLD;
+        }
         if (sawIllegalArg) {
             return R_VERIFICATION;
         }
@@ -139,6 +160,25 @@ public final class TransferErrorReport {
             return R_IO;
         }
         return R_UNKNOWN;
+    }
+
+    /** Whether a keystore-family failure appears in the
+     *  cause chain starting at {@code c} (type and class
+     *  name only, never a message). Bounded walk. */
+    private static boolean keystoreCaused(Throwable c) {
+        for (int i = 0; c != null && i < 16; c = c.getCause(), i++) {
+            if (c instanceof java.security.KeyStoreException
+                    || c instanceof java.security
+                            .UnrecoverableKeyException
+                    || c instanceof java.security
+                            .UnrecoverableEntryException
+                    || c instanceof java.security.ProviderException
+                    || c.getClass().getSimpleName()
+                            .contains("KeyStore")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Build the file body from whitelist fields only. */

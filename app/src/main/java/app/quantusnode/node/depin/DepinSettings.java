@@ -73,6 +73,12 @@ public final class DepinSettings {
     private static final String KEY_SELF_STOP_UNIX = "self_stop_unix";
     private static final String KEY_ATTEMPT_LOG_RESET_UNIX =
             "attempt_log_reset_unix";
+    private static final String KEY_LAST_KNOWN_CP_COUNT =
+            "last_known_checkpoint_count";
+    private static final String KEY_LAST_KNOWN_CP_UNIX =
+            "last_known_checkpoint_unix";
+    private static final String KEY_LAST_KNOWN_CP_DEVICE_ID =
+            "last_known_checkpoint_device_id";
 
     private static SharedPreferences prefs(Context context) {
         return context.getApplicationContext()
@@ -285,5 +291,139 @@ public final class DepinSettings {
         prefs(context).edit()
                 .putLong(KEY_ATTEMPT_LOG_RESET_UNIX, nowUnix())
                 .commit();
+    }
+
+    // ---------------- last known journal statistics ----------------
+
+    /** The checkpoint count a live journal last reported
+     *  (residual F-16), or -1 when none ever did. A process
+     *  that cannot open the journal (the writer gate is
+     *  closed, e.g. during a transfer) reports THESE values
+     *  in its status instead of the process defaults, so
+     *  the status file it writes does not erase the user's
+     *  recorded history from the display. */
+    public static long lastKnownCheckpointCount(
+            Context context, String deviceId) {
+        if (!knownStatsBelongTo(context, deviceId)) {
+            return -1L;
+        }
+        try {
+            return prefs(context).getLong(KEY_LAST_KNOWN_CP_COUNT, -1L);
+        } catch (ClassCastException e) {
+            return -1L;
+        }
+    }
+
+    /** I-02: the stored statistics describe ONE identity.
+     *  A reader asking on behalf of any other identity (or
+     *  of none) is told nothing is known, instead of being
+     *  handed a displaced identity's history. */
+    private static boolean knownStatsBelongTo(
+            Context context, String deviceId) {
+        if (deviceId == null) {
+            return false;
+        }
+        try {
+            return deviceId.equals(prefs(context).getString(
+                    KEY_LAST_KNOWN_CP_DEVICE_ID, null));
+        } catch (ClassCastException e) {
+            return false;
+        }
+    }
+
+    /** The last checkpoint time a live journal last
+     *  reported (unix seconds, 0 when none ever did). */
+    public static long lastKnownCheckpointUnix(
+            Context context, String deviceId) {
+        if (!knownStatsBelongTo(context, deviceId)) {
+            return 0L;
+        }
+        try {
+            return prefs(context).getLong(KEY_LAST_KNOWN_CP_UNIX, 0L);
+        } catch (ClassCastException e) {
+            return 0L;
+        }
+    }
+
+    /** Remember the journal's current statistics. Called
+     *  from the status build whenever a journal IS open;
+     *  writes only when a value actually changed. */
+    public static void recordKnownCheckpointStats(
+            Context context, String deviceId,
+            long count, long lastUnix) {
+        if (deviceId == null) {
+            return;
+        }
+        if (lastKnownCheckpointCount(context, deviceId) == count
+                && lastKnownCheckpointUnix(context, deviceId)
+                        == lastUnix) {
+            return;
+        }
+        prefs(context).edit()
+                .putString(KEY_LAST_KNOWN_CP_DEVICE_ID, deviceId)
+                .putLong(KEY_LAST_KNOWN_CP_COUNT, count)
+                .putLong(KEY_LAST_KNOWN_CP_UNIX, lastUnix)
+                .apply();
+    }
+
+    // ---- notification texts (final check round 4, I-20) ----
+
+    private static final String KEY_NOTIF_SET = "notif_set";
+    private static final String KEY_NOTIF_TITLE = "notif_title";
+    private static final String KEY_NOTIF_CHANNEL_NAME =
+            "notif_channel_name";
+    private static final String KEY_NOTIF_CHANNEL_DESC =
+            "notif_channel_desc";
+    private static final String KEY_NOTIF_STARTING = "notif_starting";
+    private static final String KEY_NOTIF_OBSERVING = "notif_observing";
+    private static final String KEY_NOTIF_CHECKPOINT_FORMAT =
+            "notif_checkpoint_format";
+    private static final String KEY_NOTIF_CANNOT_START =
+            "notif_cannot_start";
+
+    /** The notification texts last supplied by the UI, or
+     *  null when none were ever recorded. */
+    public static DepinIpc.NotifStrings notifStrings(Context context) {
+        SharedPreferences p = prefs(context);
+        if (!p.getBoolean(KEY_NOTIF_SET, false)) {
+            return null;
+        }
+        DepinIpc.NotifStrings n = new DepinIpc.NotifStrings();
+        n.title = p.getString(KEY_NOTIF_TITLE, null);
+        n.channelName = p.getString(KEY_NOTIF_CHANNEL_NAME, null);
+        n.channelDesc = p.getString(KEY_NOTIF_CHANNEL_DESC, null);
+        n.starting = p.getString(KEY_NOTIF_STARTING, null);
+        n.observing = p.getString(KEY_NOTIF_OBSERVING, null);
+        n.checkpointFormat =
+                p.getString(KEY_NOTIF_CHECKPOINT_FORMAT, null);
+        n.cannotStart = p.getString(KEY_NOTIF_CANNOT_START, null);
+        return n;
+    }
+
+    /** Record the notification texts the UI supplied with a
+     *  start (:depin process only, like every writer here).
+     *  The texts ride only the user's own enable; every other
+     *  start of the observer — a reconcile-issued relaunch,
+     *  the system's sticky restart — arrives without them, in
+     *  a new process that has nothing to fall back on but the
+     *  built-in (Japanese) defaults. Recording the last
+     *  supplied set here is what lets those starts keep the
+     *  user's language. */
+    public static void recordNotifStrings(
+            Context context, DepinIpc.NotifStrings n) {
+        if (n == null) {
+            return;
+        }
+        prefs(context).edit()
+                .putBoolean(KEY_NOTIF_SET, true)
+                .putString(KEY_NOTIF_TITLE, n.title)
+                .putString(KEY_NOTIF_CHANNEL_NAME, n.channelName)
+                .putString(KEY_NOTIF_CHANNEL_DESC, n.channelDesc)
+                .putString(KEY_NOTIF_STARTING, n.starting)
+                .putString(KEY_NOTIF_OBSERVING, n.observing)
+                .putString(KEY_NOTIF_CHECKPOINT_FORMAT,
+                        n.checkpointFormat)
+                .putString(KEY_NOTIF_CANNOT_START, n.cannotStart)
+                .apply();
     }
 }

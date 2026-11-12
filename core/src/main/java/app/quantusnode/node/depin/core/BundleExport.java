@@ -33,8 +33,16 @@ public final class BundleExport {
     private BundleExport() {}
 
     /** Export cap, identical to the companion's
-     *  EXPORT_MAX_CHECKPOINTS. */
-    public static final int MAX_CHECKPOINTS = 100_000;
+     *  EXPORT_MAX_CHECKPOINTS. Residual F-25 (round 2's
+     *  G-13): this was a flat 100_000 — half the journal
+     *  cap — so a journal that grew past it (about 694
+     *  days of recording) could never be exported again
+     *  while it kept growing. The cap now derives from
+     *  the journal cap itself: anything the journal can
+     *  hold can be exported, and the refusal above still
+     *  guards direct callers. */
+    public static final int MAX_CHECKPOINTS =
+            DepinCore.MAX_CHECKPOINTS;
 
     /**
      * Build + self-check + serialise the bundle for the given

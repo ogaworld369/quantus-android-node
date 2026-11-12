@@ -607,13 +607,27 @@ public final class TransferStore {
      *  was a probe nobody called — the design's 2 GiB floor
      *  constrained nothing. The receiver's expansion /
      *  promotion gates and the journal append path now call
-     *  the check with the floor the app layer installed. */
+     *  the check with the floor the app layer installed.
+     *  This two-argument form is the no-incoming form: it
+     *  delegates to the three-argument form below with an
+     *  incoming byte count of 0. */
     public static boolean freeFloorRespected(File storeRoot,
                                              long floorBytes) {
+        return freeFloorRespected(storeRoot, floorBytes, 0);
+    }
+
+    /** The floor check accounting for the write about to
+     *  happen (self-check 2026-11-11, S-04): the floor is
+     *  respected only when the usable space still covers
+     *  the floor PLUS the incoming bytes, i.e. the floor is
+     *  what remains AFTER the write lands. */
+    public static boolean freeFloorRespected(File storeRoot,
+                                             long floorBytes,
+                                             long incomingBytes) {
         File probe = storeRoot;
         while (probe != null && !probe.exists()) probe = probe.getParentFile();
         if (probe == null) return false;
-        return probe.getUsableSpace() >= floorBytes;
+        return probe.getUsableSpace() >= floorBytes + incomingBytes;
     }
 
     /** All staging roots that currently exist, oldest path

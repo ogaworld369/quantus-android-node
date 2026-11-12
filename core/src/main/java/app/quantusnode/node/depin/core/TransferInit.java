@@ -104,9 +104,22 @@ public final class TransferInit {
             String key = TransferVault.initKey(init.initId);
             if (!vault.has(key)) {
                 vault.put(key, seed);
-            } else if (!java.util.Arrays.equals(vault.get(key), seed)) {
-                throw new IOException(
-                        "init vault entry exists for a different seed");
+            } else {
+                // Residual F-21: the comparison copy is
+                // wiped. The caller's seed is NOT wiped
+                // here — ownership stays with the caller
+                // (in MODE_NEW it installs the seed into
+                // the app vault after this returns).
+                byte[] existing = vault.get(key);
+                boolean same = java.util.Arrays.equals(
+                        existing, seed);
+                if (existing != null) {
+                    java.util.Arrays.fill(existing, (byte) 0);
+                }
+                if (!same) {
+                    throw new IOException(
+                            "init vault entry exists for a different seed");
+                }
             }
             String pubHash = Hex.encode(DepinCore.sha256(
                     Ed25519.publickeyFromSeed(seed)));

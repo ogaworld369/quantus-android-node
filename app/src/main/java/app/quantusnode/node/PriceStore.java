@@ -59,7 +59,8 @@ public final class PriceStore {
     /** A cached value older than this is presented as stale. */
     private static final long STALE_MS = 10L * 60 * 1000;
 
-    private static volatile boolean inFlight;
+    private static final java.util.concurrent.atomic.AtomicBoolean
+            IN_FLIGHT = new java.util.concurrent.atomic.AtomicBoolean();
     private static volatile long nextAttemptWallMs;
     private static volatile int failures;
     /** Whether the most recent attempt of THIS process failed. */
@@ -163,10 +164,14 @@ public final class PriceStore {
      */
     public static void maybeFetch(Context ctx) {
         long now = System.currentTimeMillis();
-        if (inFlight || now < nextAttemptWallMs) {
+        // Residual F-25: the in-flight flag used to be a
+        // volatile check-then-set, so two callers (the UI
+        // tick and the service poller) could both pass and
+        // fetch twice. The claim is atomic now.
+        if (now < nextAttemptWallMs
+                || !IN_FLIGHT.compareAndSet(false, true)) {
             return;
         }
-        inFlight = true;
         final Context app = ctx.getApplicationContext();
         Thread t = new Thread(() -> {
             try {
@@ -214,11 +219,21 @@ public final class PriceStore {
                 nextAttemptWallMs = System.currentTimeMillis()
                         + PriceLogic.backoffMs(failures);
             } finally {
-                inFlight = false;
+                IN_FLIGHT.set(false);
             }
         }, "price-fetch");
         t.setDaemon(true);
-        t.start();
+        try {
+            t.start();
+        } catch (Throwable startFailure) {
+            // Final check round 4 (I-12): the in-flight claim
+            // is released by the worker's finally — which
+            // never runs when the worker cannot start (thread
+            // creation can fail under memory pressure). The
+            // flag then stayed set for the rest of the
+            // process and no fetch ever ran again.
+            IN_FLIGHT.set(false);
+        }
     }
 
     /** One fetch's parsed result. */

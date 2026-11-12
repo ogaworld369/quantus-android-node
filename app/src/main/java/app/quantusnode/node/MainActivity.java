@@ -194,11 +194,23 @@ public class MainActivity extends Activity {
     private long tickerBest = -1;
     private int tickerPeers = Integer.MIN_VALUE;
     private long tickerCpCount = -1;
+    /** The identity the checkpoint baseline belongs to
+     *  (residual F-24): a count alone cannot tell this
+     *  identity's growth from another lineage's journal. */
+    private String tickerCpDeviceId;
+    private long tickerCpGeneration = -1;
     private boolean tickerHeld;
     /** Best-block advance tracking for the stalled state:
      *  the best this UI has seen and when (wall) it last grew. */
     private long netAdvanceBest = -1;
     private long netAdvanceWallMs = -1;
+    /** Residual F-22: when the current SEARCHING stretch
+     *  began (elapsed clock), and which condition it is
+     *  measuring — a measured zero or not-yet-measured.
+     *  The searching line's elapsed time is read from
+     *  here, not from the session's acceptance time. */
+    private long netSearchSinceElapsedMs = -1;
+    private boolean netSearchMeasuredZero = false;
 
     // Home (vision): today's-record row (stage 1 spec S1-10).
     private LinearLayout homeTodayBox;
@@ -3250,10 +3262,24 @@ public class MainActivity extends Activity {
      * record. While recording is HELD the bar freezes where
      * it was and the line says so.
      */
+    /** Residual F-08: whether the snapshot's aggregates
+     *  may be presented as current — a live presented state
+     *  and a build within the freshness bound (UiLogic).
+     *  A dead observer's snapshot fails one or both, and
+     *  its aggregates stop presenting as live values. */
+    private boolean depinAggregatesCurrent(DepinStatus ds) {
+        boolean live = ds.state == DepinStatus.STATE_RECORDING
+                || ds.state == DepinStatus.STATE_PREPARING
+                || ds.state == DepinStatus.STATE_HELD;
+        return UiLogic.aggregatesCurrent(
+                live, ds.updatedWallMs, System.currentTimeMillis());
+    }
+
     private void refreshTodayRow() {
         DepinStatus ds = DepinModule.get(this).latestStatus();
         if (ds == null || !ds.enabled || ds.todayCheckpoints < 0
-                || ds.todaySlotsElapsed < 0) {
+                || ds.todaySlotsElapsed < 0
+                || !depinAggregatesCurrent(ds)) {
             homeTodayBox.setVisibility(View.GONE);
             return;
         }
@@ -3319,8 +3345,15 @@ public class MainActivity extends Activity {
         priceDeltaView.setTextColor(LABEL2);
         if (snap.hasChange) {
             double ch = snap.change24h;
-            String delta = String.format(Locale.US, "%s %.1f%% 24H",
-                    ch >= 0 ? "\u25B2" : "\u25BC", Math.abs(ch));
+            // Residual F-22: an exactly-zero change wore an
+            // up arrow ("▲ 0.0%"). The arrow follows the
+            // DISPLAYED value: a change that rounds to 0.0
+            // at this precision gets no arrow.
+            double shown = Math.round(Math.abs(ch) * 10.0) / 10.0;
+            String delta = shown == 0.0
+                    ? String.format(Locale.US, "0.0%% 24H")
+                    : String.format(Locale.US, "%s %.1f%% 24H",
+                            ch > 0 ? "\u25B2" : "\u25BC", shown);
             setTextIfChanged(priceDeltaView, delta);
         } else {
             setTextIfChanged(priceDeltaView, "24h \u2014");
@@ -3469,15 +3502,32 @@ public class MainActivity extends Activity {
             }
             case SEARCHING: {
                 // A measured zero reads "0"; not-yet-measured
-                // reads "—". The line reports how long the node
-                // has been observing zero (or nothing yet).
+                // reads "—". Residual F-22: the two are no
+                // longer the same line, either — a measured
+                // zero says so (MESSAGE_NO_PEERS, an existing
+                // string), and the searching line's elapsed
+                // time is measured from when THIS condition
+                // began, not from the session's acceptance
+                // (the old line could open at "searching for
+                // 3 hours" the moment peers dropped to zero
+                // in a long-running session).
                 setTextIfChanged(netNumView,
                         st.peers == 0 ? "0" : "\u2014");
                 netNumView.setTextColor(ACCENT);
-                long elapsedMs = st.sessionAcceptedElapsedMs >= 0
-                        ? nowEl - st.sessionAcceptedElapsedMs : 0;
-                sub = I18n.format(this, StringsTable.STATE_SEARCHING,
-                        UiLogic.durationText(tag, elapsedMs, false));
+                boolean measuredZero = st.peers == 0;
+                if (netSearchSinceElapsedMs < 0
+                        || netSearchMeasuredZero != measuredZero) {
+                    netSearchSinceElapsedMs = nowEl;
+                    netSearchMeasuredZero = measuredZero;
+                }
+                if (measuredZero) {
+                    sub = I18n.get(this, StringsTable.MESSAGE_NO_PEERS);
+                } else {
+                    long elapsedMs = Math.max(0,
+                            nowEl - netSearchSinceElapsedMs);
+                    sub = I18n.format(this, StringsTable.STATE_SEARCHING,
+                            UiLogic.durationText(tag, elapsedMs, false));
+                }
                 break;
             }
             case STALLED:
@@ -3495,6 +3545,11 @@ public class MainActivity extends Activity {
                 sub = I18n.get(this, StringsTable.NET_LABEL_PEERS);
                 break;
         }
+        if (ns != UiLogic.NetState.SEARCHING) {
+            // The stretch is over; the next one times itself
+            // from its own start (residual F-22).
+            netSearchSinceElapsedMs = -1;
+        }
         setTextIfChanged(netSubView, sub);
         netTagView.setVisibility(tagVisible ? View.VISIBLE : View.GONE);
         if (tagVisible) {
@@ -3507,11 +3562,17 @@ public class MainActivity extends Activity {
         // ring / sparkline slot window and the ghost layer.
         // Display data of this device's own journal only.
         DepinStatus ds = DepinModule.get(this).latestStatus();
-        if (ds != null) {
+        if (ds != null && depinAggregatesCurrent(ds)) {
             networkField.setRecordRing(ds.recentSlotPeers);
             networkField.setGhostData(ds.recentDayTs,
                     ds.recentDayPeers, netShow24h);
             sparkView.setSlots(ds.recentSlotPeers);
+        } else if (ds != null) {
+            // Residual F-08: a stale snapshot's aggregates
+            // are withdrawn, not shown as current values.
+            networkField.setRecordRing(null);
+            networkField.setGhostData(null, null, false);
+            sparkView.setSlots(null);
         }
 
         // The aggregate TalkBack readout (S2-04): one text for
@@ -3558,6 +3619,9 @@ public class MainActivity extends Activity {
             tickerPeers = running && st.peers >= 0
                     ? st.peers : Integer.MIN_VALUE;
             tickerCpCount = ds != null ? ds.checkpointCount : -1;
+            tickerCpDeviceId = ds != null ? ds.deviceId : null;
+            tickerCpGeneration = ds != null
+                    ? ds.identityGeneration : -1;
             tickerHeld = ds != null && ds.holdActive;
             return;
         }
@@ -3593,7 +3657,20 @@ public class MainActivity extends Activity {
             tickerPeers = st.peers;
         }
         if (ds != null && ds.checkpointCount >= 0) {
-            if (tickerCpCount >= 0
+            // Residual F-24: the checkpoint baseline is
+            // keyed to the identity (device + generation).
+            // After a transfer, the count alone either
+            // stayed silent until the new lineage's count
+            // passed the old one, or — receiving a larger
+            // journal — announced a checkpoint this session
+            // never recorded. An identity change re-baselines
+            // silently, exactly like the first snapshot.
+            boolean sameIdentity =
+                    java.util.Objects.equals(
+                            tickerCpDeviceId, ds.deviceId)
+                    && tickerCpGeneration
+                            == ds.identityGeneration;
+            if (sameIdentity && tickerCpCount >= 0
                     && ds.checkpointCount > tickerCpCount) {
                 long cpWall = ds.lastCheckpointUnix > 0
                         ? ds.lastCheckpointUnix * 1000L : nowWall;
@@ -3604,7 +3681,9 @@ public class MainActivity extends Activity {
                 networkField.onCheckpointRecorded();
             }
             tickerCpCount = ds.checkpointCount;
-            if (ds.holdActive && !tickerHeld) {
+            tickerCpDeviceId = ds.deviceId;
+            tickerCpGeneration = ds.identityGeneration;
+            if (sameIdentity && ds.holdActive && !tickerHeld) {
                 addTickerLine(I18n.format(this,
                         StringsTable.TICK_HELD, timeHhMm(nowWall)));
             }

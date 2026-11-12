@@ -135,7 +135,7 @@ flatten_java() {
 }
 
 # The DepinSettings writer methods (the class's mutators).
-DEPIN_SETTINGS_WRITERS='setEnabled|setDisabled|bindActiveIdentity|recordSelfStop|clearSelfStopRecord|recordAttemptLogReset'
+DEPIN_SETTINGS_WRITERS='setEnabled|setDisabled|bindActiveIdentity|recordSelfStop|clearSelfStopRecord|recordAttemptLogReset|recordKnownCheckpointStats|recordNotifStrings'
 
 check_main() {
   # G-01 (final check round 2): the invariant "DepinSettings

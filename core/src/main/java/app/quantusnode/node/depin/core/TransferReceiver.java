@@ -152,22 +152,29 @@ public final class TransferReceiver {
      *  (core-only use and the JVM harness, whose scratch
      *  filesystems are smaller than the floor); the app
      *  layers install 2 GiB. Enforced through
-     *  TransferStore.freeFloorRespected. */
+     *  TransferStore.freeFloorRespected, with each call
+     *  passing the incoming byte count its write is about
+     *  to add, so the floor is what remains AFTER that
+     *  write, not merely what holds before it (self-check
+     *  2026-11-11, S-04). */
     private long freeFloorBytes = 0;
 
     public void setFreeFloorBytes(long bytes) {
         this.freeFloorBytes = Math.max(0, bytes);
     }
 
-    private void checkFreeFloor(File dir, String what)
+    private void checkFreeFloor(File dir, String what,
+                                long incomingBytes)
             throws IOException {
         if (freeFloorBytes > 0
                 && !TransferStore.freeFloorRespected(
-                        dir, freeFloorBytes)) {
+                        dir, freeFloorBytes, incomingBytes)) {
             throw new IOException(
                     "free space would fall below the design "
                             + "section 3.4 floor of "
-                            + freeFloorBytes + " bytes; " + what
+                            + freeFloorBytes + " bytes after "
+                            + "writing " + incomingBytes
+                            + " bytes; " + what
                             + " not started");
         }
     }
@@ -567,8 +574,12 @@ public final class TransferReceiver {
             // Design section 3.4 floor (H-11): the expansion
             // is the intake's large write; it does not start
             // if the projected free space breaches the floor.
+            // incoming is the whole package (fileBytes
+            // .length): the expansion output is derived from
+            // that payload, so the package size is a
+            // conservative upper bound for it (S-04).
             checkFreeFloor(root.getParentFile(),
-                    "staging expansion");
+                    "staging expansion", fileBytes.length);
             root.mkdirs();
             TransferIo.fsyncDir(root.getParentFile());
             // Final check round 3, H-07: the decrypted payload
@@ -1241,6 +1252,12 @@ public final class TransferReceiver {
             // sliced verifier still re-derives from its
             // cursor on every run.
             sr.journalSigVerifiedSha256 = fileSha;
+            // S-03 (self-check 2026-11-11): this save must
+            // not carry a verified count for THIS content:
+            // the chain phase and step 5 have not run yet, so
+            // the verified count for these bytes is still
+            // undetermined; reset it to 0 in the same save.
+            sr.verifiedCount = 0;
             TransferStore.saveStaging(root, sr);
         }
         // Final check round 3, H-08: refuse a staged journal
@@ -1301,7 +1318,13 @@ public final class TransferReceiver {
                                 + outcome);
             }
         }
-        sr.verifiedCount = parsed.count();
+        // S-03: the count the chain phase just proved is
+        // held in a LOCAL until step 5 below has passed in
+        // full; sr.verifiedCount is assigned only there, so
+        // no early save in between (the archive loop's, in
+        // particular) can persist it as a confirmed count
+        // for a staging a later check may still refuse.
+        long verifiedParsedCount = parsed.count();
         // Archives: header verification + substance hashes.
         // The H-10 discipline applies per archive as well:
         // full signature verification once per distinct file
@@ -1322,6 +1345,27 @@ public final class TransferReceiver {
             JournalFile.Parsed ap = JournalFile.parse(
                     archiveBytes, mf.deviceId,
                     archiveFullVerification);
+            // S-02 (self-check 2026-11-11): the H-08 gate
+            // above covered only the journal's own
+            // checkpoints. Apply the SAME gate to this
+            // archive, right after its parse and before any
+            // of its other checks / the early save below,
+            // and name the archive in the refusal.
+            if (expectedIterations > 0) {
+                for (DepinCore.Checkpoint c : ap.checkpoints) {
+                    if (c.iterations != expectedIterations) {
+                        throw new IllegalArgumentException(
+                                "archive " + ae.id
+                                        + " names iterations="
+                                        + c.iterations
+                                        + "; this intake accepts "
+                                        + "only "
+                                        + expectedIterations
+                                        + " (final check round 3, "
+                                        + "H-08; self-check S-02)");
+                    }
+                }
+            }
             if (ap.count() != ae.count) {
                 throw new IllegalArgumentException(
                         "archive count mismatch for " + ae.id);
@@ -1336,6 +1380,12 @@ public final class TransferReceiver {
                 // Recorded per archive, as soon as this
                 // archive's own checks have passed (the same
                 // early-record discipline as the journal).
+                // S-03: this early save persists only a
+                // PROVISIONAL verifiedCount (0, or the value
+                // confirmed by an earlier completed
+                // verification): the assignment for THIS run
+                // happens after step 5 below, so the new
+                // count can never be persisted early here.
                 sr.archiveSigVerifiedSha256.put(ae.id, sha);
                 TransferStore.saveStaging(root, sr);
             }
@@ -1362,6 +1412,18 @@ public final class TransferReceiver {
         if (!anchor.equals(mf.anchorBundleHash)) {
             throw new IllegalArgumentException(
                     "anchor bundle hash does not match the manifest");
+        }
+        // Step 5 has passed in full (tail / anchor /
+        // count): only NOW is this run's verified count
+        // confirmed into the staging record (S-03).
+        // Final check round 4: and it is SAVED here. The
+        // S-03 fix left this as an in-memory assignment with
+        // no save after it, so the durable record of a fully
+        // verified staging kept verified_count 0 for good —
+        // the opposite inaccuracy of the one S-03 removed.
+        if (sr.verifiedCount != verifiedParsedCount) {
+            sr.verifiedCount = verifiedParsedCount;
+            TransferStore.saveStaging(root, sr);
         }
     }
 
@@ -1466,9 +1528,16 @@ public final class TransferReceiver {
                     "notified R1 without a staging record");
         }
         byte[] secret = unwrapSecret(sr);
-        return TransferPackage.buildNotice(generation,
-                TransferState.stringOr(rec, "package_sha256", null),
-                state.installId(), secret);
+        try {
+            // buildNotice derives its proof from the
+            // secret and returns text only (residual
+            // F-21: wipe the unwrapped copy).
+            return TransferPackage.buildNotice(generation,
+                    TransferState.stringOr(rec, "package_sha256", null),
+                    state.installId(), secret);
+        } finally {
+            java.util.Arrays.fill(secret, (byte) 0);
+        }
     }
 
     // ---------------- permit intake (step 7) ----------------
@@ -2456,6 +2525,26 @@ public final class TransferReceiver {
         // run recovery"); resumption is through recovery
         // (or cancellation) only, once the slot is free.
         holdIfSlotHeldByOtherLineage(generation, deviceId);
+        // Final check round 4 (I-09): the section 3.4 floor
+        // is judged HERE too, for the same reason as the
+        // slot proof above — before anything hard to undo.
+        // The H-11 / S-04 check lives in executePromotion,
+        // which runs only after this method has frozen a
+        // writer, quarantined a foreign placement and
+        // ADOPTED the plan; a refusal there left an adopted,
+        // unfinished plan behind, and that closes the writer
+        // gate for every identity in the store (F-06,
+        // "promotion_in_progress") until space is freed. A
+        // trial that has not adopted a plan yet is refused
+        // here instead, with the store untouched: the trial
+        // stays resumable through recovery, and the live
+        // identity keeps recording meanwhile. (A trial whose
+        // plan IS adopted re-enters through recovery and is
+        // judged by executePromotion's own check, as before.)
+        if (!TransferState.boolOr(trial, "plan_adopted", false)) {
+            checkFreeFloor(storeRoot, "promotion",
+                    promotionIncomingEstimate(root));
+        }
         // M4: the SAME-identity case needs the writer freeze
         // too. Quarantine below covers a foreign placement
         // only; when the live placement belongs to the very
@@ -2513,6 +2602,50 @@ public final class TransferReceiver {
         return plan;
     }
 
+    /** The bytes a promotion of this staging is about to
+     *  add (final check round 4, I-09): the staged journal
+     *  and archives, plus the live files it backs up first
+     *  — the same quantities executePromotion's S-04
+     *  accounting derives from the adopted plan, taken here
+     *  from the directories themselves because no plan
+     *  exists yet. Anything that cannot be read counts as
+     *  0; this accounting never throws. */
+    private long promotionIncomingEstimate(File stagingRoot) {
+        long total = 0;
+        try {
+            File stagedJournal =
+                    TransferStore.stagingJournal(stagingRoot);
+            if (stagedJournal.isFile()) {
+                total += stagedJournal.length();
+            }
+            File[] stagedArchives =
+                    new File(stagingRoot, "archives").listFiles();
+            if (stagedArchives != null) {
+                for (File f : stagedArchives) {
+                    if (f.isFile()) {
+                        total += f.length();
+                    }
+                }
+            }
+            File liveJournal = TransferStore.journalFile(storeRoot);
+            if (liveJournal.isFile()) {
+                total += liveJournal.length();
+            }
+            File[] liveArchives =
+                    TransferStore.archivesDir(storeRoot).listFiles();
+            if (liveArchives != null) {
+                for (File f : liveArchives) {
+                    if (f.isFile()) {
+                        total += f.length();
+                    }
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // Undetermined parts count as 0.
+        }
+        return total;
+    }
+
     /**
      * Step 8-2: place the staged seed in the vault slot for
      * its generation, proved at the point of use.
@@ -2561,12 +2694,20 @@ public final class TransferReceiver {
                                 + "(audit F11)");
             }
             byte[] seed = unwrapSeed(sr);
-            if (!deviceId.equals(DepinCore.deviceIdFromPubkey(
-                    Ed25519.publickeyFromSeed(seed)))) {
-                throw new InconsistencyException(
-                        "staged seed does not derive the manifest identity");
+            try {
+                if (!deviceId.equals(DepinCore.deviceIdFromPubkey(
+                        Ed25519.publickeyFromSeed(seed)))) {
+                    throw new InconsistencyException(
+                            "staged seed does not derive the manifest identity");
+                }
+                // TransferVault.put encrypts the seed into
+                // its own storage form; it does not retain
+                // this array (residual F-21: the unwrapped
+                // copy is wiped on every exit).
+                vault.put(TransferVault.receiverKey(generation), seed);
+            } finally {
+                java.util.Arrays.fill(seed, (byte) 0);
             }
-            vault.put(TransferVault.receiverKey(generation), seed);
         }
     }
 
@@ -2741,8 +2882,66 @@ public final class TransferReceiver {
         // Design section 3.4 floor (final check round 3,
         // H-11): the promotion is the receiver's other large
         // write; it does not start if the free space has
-        // fallen below the installed floor.
-        checkFreeFloor(storeRoot, "promotion");
+        // fallen below the installed floor. S-04: incoming
+        // is the total length of the staged files to be
+        // promoted (journal + archives, from the staging
+        // root derived from the plan's seed_device_id /
+        // generation / package_sha256) plus the total
+        // length of the current live files the promotion
+        // backs up, so the floor is what remains AFTER the
+        // promotion's writes. Any part that cannot be
+        // derived or is absent counts as 0: the floor check
+        // itself still runs and this accounting never
+        // throws.
+        long promotionIncoming = 0;
+        try {
+            String seedDeviceId = TransferState.stringOr(
+                    plan, "seed_device_id", null);
+            long planGeneration = TransferState.longOr(
+                    plan, "generation", -1);
+            String planPackageSha = TransferState.stringOr(
+                    plan, "package_sha256", null);
+            if (seedDeviceId != null && planGeneration >= 0
+                    && planPackageSha != null) {
+                File planStagingRoot = TransferStore.stagingRoot(
+                        storeRoot, seedDeviceId, planGeneration,
+                        planPackageSha);
+                File stagedJournal = TransferStore
+                        .stagingJournal(planStagingRoot);
+                if (stagedJournal.isFile()) {
+                    promotionIncoming += stagedJournal.length();
+                }
+                File stagedArchives =
+                        new File(planStagingRoot, "archives");
+                File[] archiveFiles = stagedArchives.listFiles();
+                if (archiveFiles != null) {
+                    for (File af : archiveFiles) {
+                        if (af.isFile()) {
+                            promotionIncoming += af.length();
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+            // Undetermined staged part counts as 0 (above).
+        }
+        try {
+            Map<String, Object> oldM =
+                    TransferState.child(plan, "old_manifest");
+            Map<String, Object> oldFiles = oldM == null ? null
+                    : TransferState.child(oldM, "files");
+            if (oldFiles != null) {
+                for (String key : oldFiles.keySet()) {
+                    File live = liveFileFor(key);
+                    if (live != null && live.isFile()) {
+                        promotionIncoming += live.length();
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+            // Undetermined backup part counts as 0 (above).
+        }
+        checkFreeFloor(storeRoot, "promotion", promotionIncoming);
         List<Map<String, Object>> entries = readPromotionEntries();
         java.util.Set<String> backupDone = doneKeys(entries, trialId,
                 "backup_done");
@@ -3148,6 +3347,17 @@ public final class TransferReceiver {
         if (trial == null) throw new HoldException("no trial to cancel");
         File root = stagingRootOf(rec, deviceId);
         TransferStore.StagingRecord sr = TransferStore.loadStaging(root);
+        if (sr == null) {
+            // Final check round 4 (I-18): the same named stop
+            // recovery gives this state ("trial without a
+            // staging record", classification (c): preserve
+            // everything). The cancel path dereferenced the
+            // missing record instead and died with a
+            // NullPointerException.
+            throw new InconsistencyException(
+                    "trial without a staging record; "
+                            + "cancellation cannot proceed");
+        }
         Map<String, Object> plan = null;
         if (TransferState.boolOr(trial, "plan_adopted", false)) {
             plan = findPlan(readPromotionEntries(),
@@ -3877,8 +4087,14 @@ public final class TransferReceiver {
                                     + " without its seed in the vault");
                 }
                 byte[] seed = vault.get(TransferVault.receiverKey(gen));
-                if (!deviceId.equals(DepinCore.deviceIdFromPubkey(
-                        Ed25519.publickeyFromSeed(seed)))) {
+                // Residual F-21: every fact this branch needs
+                // from the seed copy is drawn first, then the
+                // copy is wiped before any exit below.
+                boolean r2Derives = deviceId.equals(
+                        DepinCore.deviceIdFromPubkey(
+                                Ed25519.publickeyFromSeed(seed)));
+                boolean r2Occupied = false;
+                if (!r2Derives) {
                     // Audit M13: a mismatch is a LEGITIMATE
                     // occupancy when this record's absence is
                     // explained (the identity was sent onward;
@@ -3890,9 +4106,14 @@ public final class TransferReceiver {
                     // (an unexplained absence, a copy no
                     // record claims) still stops here, by
                     // name, exactly as before.
-                    if (seedAbsenceExplained(state, deviceId, gen)
+                    r2Occupied = seedAbsenceExplained(
+                            state, deviceId, gen)
                             && slotOccupiedByOtherRecord(
-                                    state, deviceId, gen, seed)) {
+                                    state, deviceId, gen, seed);
+                }
+                java.util.Arrays.fill(seed, (byte) 0);
+                if (!r2Derives) {
+                    if (r2Occupied) {
                         notes.add("gen " + gen
                                 + ": R2 seed slot legitimately "
                                 + "occupied by another "
@@ -3932,13 +4153,23 @@ public final class TransferReceiver {
                                     + " without its seed in the vault");
                 }
                 byte[] seed = vault.get(TransferVault.receiverKey(gen));
-                if (!deviceId.equals(DepinCore.deviceIdFromPubkey(
-                        Ed25519.publickeyFromSeed(seed)))) {
+                // Residual F-21: facts first, wipe, then
+                // branch — as in the R2 branch above.
+                boolean osDerives = deviceId.equals(
+                        DepinCore.deviceIdFromPubkey(
+                                Ed25519.publickeyFromSeed(seed)));
+                boolean osOccupied = false;
+                if (!osDerives) {
                     // Audit M13: the legitimate-occupancy
                     // allowance, as in the R2 branch above.
-                    if (seedAbsenceExplained(state, deviceId, gen)
+                    osOccupied = seedAbsenceExplained(
+                            state, deviceId, gen)
                             && slotOccupiedByOtherRecord(
-                                    state, deviceId, gen, seed)) {
+                                    state, deviceId, gen, seed);
+                }
+                java.util.Arrays.fill(seed, (byte) 0);
+                if (!osDerives) {
+                    if (osOccupied) {
                         notes.add("gen " + gen
                                 + ": one-shot seed slot "
                                 + "legitimately occupied by "
@@ -4511,9 +4742,15 @@ public final class TransferReceiver {
                     "receipt materials (staging record) are gone");
         }
         byte[] secret = unwrapSecret(sr);
-        return TransferPackage.buildReceipt(generation, state.installId(),
-                TransferState.stringOr(rec, "package_sha256", null),
-                secret);
+        try {
+            // buildReceipt likewise (residual F-21).
+            return TransferPackage.buildReceipt(generation,
+                    state.installId(),
+                    TransferState.stringOr(rec, "package_sha256", null),
+                    secret);
+        } finally {
+            java.util.Arrays.fill(secret, (byte) 0);
+        }
     }
 
     /** Take in the completion ack: verify everything, FIRST
@@ -4642,20 +4879,37 @@ public final class TransferReceiver {
             }
         }
         byte[] seed = unwrapSeed(sr);
-        Map<String, Object> abandon = TransferPackage.buildAbandon(
-                seed, generation,
-                TransferState.stringOr(rec, "package_sha256", null),
-                state.installId(), permitHash);
+        Map<String, Object> abandon;
+        try {
+            // buildAbandon signs from the seed and returns
+            // text only; it does not retain the array
+            // (residual F-21: wipe the unwrapped copy).
+            abandon = TransferPackage.buildAbandon(
+                    seed, generation,
+                    TransferState.stringOr(rec, "package_sha256", null),
+                    state.installId(), permitHash);
+        } finally {
+            java.util.Arrays.fill(seed, (byte) 0);
+        }
         // One update: refusal + full value + stage + restoration.
         Map<String, Object> closure = new LinkedHashMap<>();
         closure.put("kind", "refusal");
         closure.put("abandon", abandon);
         rec.put("closure", closure);
-        if (trial != null) trial.put("stage", "refused");
+        // Final check round 4 (I-17): "moved" is judged from
+        // the stage the trial HAD, before it is overwritten
+        // below. The overwrite used to come first, so the
+        // cancel_complete test read "refused" and was never
+        // true: an abandon issued after a completed
+        // cancellation — everything already restored — was
+        // recorded "restoration pending", closing the writer
+        // gate for that identity until a later recovery pass
+        // re-derived the restoration it had already done.
         boolean moved = trial != null && TransferState.boolOr(
                 trial, "plan_adopted", false)
                 && !"cancel_complete".equals(
                         TransferState.stringOr(trial, "stage", null));
+        if (trial != null) trial.put("stage", "refused");
         rec.put("restoration", moved ? "pending" : "complete");
         state.save();
         return abandon;

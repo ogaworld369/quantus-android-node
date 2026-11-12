@@ -59,6 +59,11 @@ public final class Reverification {
     }
 
     public static final long SLICE_MAX_CPU_MS = 2_000;
+    /** Upper sanity bound for one slice's settled CPU (I-16):
+     *  far above any real overshoot (one checkpoint's
+     *  recomputation past the slice limit), so it only ever
+     *  binds on a nonsensical CPU-clock reading. */
+    public static final long SETTLE_SANITY_MAX_MS = 60_000;
     public static final long WINDOW_MS = 3_600_000;
     public static final long WINDOW_BUDGET_MS = 600_000;
 
@@ -245,8 +250,25 @@ public final class Reverification {
             if (Boolean.TRUE.equals(reservation.get("settled"))) {
                 return;
             }
-            reservation.put("cpu_consumed_ms",
-                    Math.max(0, Math.min(actualCpuMs, SLICE_MAX_CPU_MS)));
+            // Final check round 4 (I-16): the BUDGET is
+            // charged what the slice ACTUALLY spent. The slice
+            // loop can only stop between checkpoints, so one
+            // checkpoint's recomputation routinely carries it
+            // past the 2 s it reserved; clipping the charge
+            // to the reservation hid that overshoot from the
+            // hourly budget. The reservation stays the
+            // admission test (2 s must be available to
+            // start); the settlement is the truth, bounded
+            // only by a sanity limit against a broken CPU
+            // clock. The idle owed keeps its cap at the slice
+            // limit on purpose: the app layers absorb a wait
+            // pause with one sleep of exactly that cap plus a
+            // margin, and a longer obligation would make
+            // every overshooting slice cost one more
+            // re-issued stage — more unledgered work, not
+            // less.
+            reservation.put("cpu_consumed_ms", Math.max(0,
+                    Math.min(actualCpuMs, SETTLE_SANITY_MAX_MS)));
             reservation.put("wait_required_ms",
                     Math.max(0, Math.min(actualCpuMs, SLICE_MAX_CPU_MS)));
             reservation.put("wait_accum_ms", 0L);

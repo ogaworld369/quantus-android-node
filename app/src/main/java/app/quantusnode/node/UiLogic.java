@@ -403,6 +403,39 @@ public final class UiLogic {
         return NetState.NORMAL;
     }
 
+    /** How old a DePIN status snapshot may be while its
+     *  aggregates still present as current: three recording
+     *  slots. A live observer's builds are never this old
+     *  (the facade's replies and the status file both track
+     *  the 600 s cadence); a dead one's snapshot ages past
+     *  the bound and stays there. */
+    public static final long AGGREGATES_STALE_AFTER_MS = 1_800_000L;
+
+    /**
+     * Residual F-08: whether a DePIN snapshot's aggregates
+     * (today's row, the record ring, the ghost layer, the
+     * sparkline) may be presented as the CURRENT values.
+     * Until now the readers never consulted freshness at
+     * all, so a dead observer's last snapshot — kept by the
+     * facade for as long as the restart backoff runs (up
+     * to an hour) — rendered as if it were live. Two facts
+     * decide, both already in the snapshot: the presented
+     * state must be a live one (the caller derives it from
+     * DepinStatus: RECORDING / PREPARING / HELD — a dead
+     * observer presents UNAVAILABLE, a self-stopped one
+     * SELF_STOPPED), and the snapshot must have been built
+     * within {@link #AGGREGATES_STALE_AFTER_MS}.
+     */
+    public static boolean aggregatesCurrent(boolean liveState,
+                                            long updatedWallMs,
+                                            long nowWallMs) {
+        if (!liveState || updatedWallMs <= 0) {
+            return false;
+        }
+        return nowWallMs - updatedWallMs
+                <= AGGREGATES_STALE_AFTER_MS;
+    }
+
     // ------------------------------------------------------------------
     // Ghost layer geometry (vision UI stage 2, spec S2-01)
     // ------------------------------------------------------------------

@@ -944,20 +944,40 @@ public final class DepinTransferRuntime {
      *  recorded and NEVER failing the operation that
      *  triggered it — a recovery that itself hits an
      *  inconsistency leaves the state exactly as it found
-     *  it and says so on the record. */
+     *  it and says so on the record.
+     *
+     *  Order (self-check S-08): recover() runs FIRST and
+     *  its notes are persisted before the expansion-debris
+     *  sweep and its notes. The debris sweep's note saving
+     *  must never be able to abort this call's recover():
+     *  a failure persisting a debris note is a logging
+     *  failure, not a reason to leave a judged trial
+     *  unmaterialised for another cycle. */
     public static void runRecovery(Context context) {
         try {
             if (TransferState.loadInit(storeRoot(context)) == null) {
                 return;
             }
             TransferReceiver r = receiver(context);
-            for (String note : r.sweepExpansionDebris()) {
-                app.quantusnode.node.depin.core.CrashLog
-                        .recordMessageAt(
-                                DepinFiles.crashLogFile(context),
-                                "recovery", note);
+            // Final check round 4 (I-10): the two stages are
+            // independent. S-08 put recover() first so a
+            // debris-note failure could not abort it — but
+            // with one shared try, a recover() that throws
+            // (a classification (c) stop, a promotion held at
+            // the free-space floor: states that persist) then
+            // skipped the debris sweep on every call, for as
+            // long as the state lasted.
+            try {
+                for (String note : r.recover()) {
+                    app.quantusnode.node.depin.core.CrashLog
+                            .recordMessageAt(
+                                    DepinFiles.crashLogFile(context),
+                                    "recovery", note);
+                }
+            } catch (Exception e) {
+                DepinRuntime.recordError(context, "recovery", e);
             }
-            for (String note : r.recover()) {
+            for (String note : r.sweepExpansionDebris()) {
                 app.quantusnode.node.depin.core.CrashLog
                         .recordMessageAt(
                                 DepinFiles.crashLogFile(context),
@@ -1297,6 +1317,93 @@ public final class DepinTransferRuntime {
                     DepinRuntime.recordError(context,
                             "home_seed_erasure", new IOException(
                                     out.failure));
+                    return out;
+                }
+                // Self-check S-07: the seed is already gone
+                // (no seed file), so the fresh due check
+                // below — keyed on the home seed's own id —
+                // can never re-derive the identity, and an
+                // erasure interrupted at "seed_erased" would
+                // never reach its marker. The recovery path
+                // below is tried only under this conjunction:
+                // no sent-out marker exists, AND an erasure
+                // record file (current or legacy pending)
+                // exists on disk. Reaching this point means
+                // loadOrAdoptErasureRecord above returned
+                // null, so a record file that exists here
+                // was unreadable or unadoptable — a readable
+                // one would already have resumed. (No marker
+                // and no record file at all is the ordinary
+                // not-due: nothing was ever held at home, or
+                // a completed erasure already landed.)
+                boolean erasureRecordPresent = new File(
+                        storeRoot(context), ERASURE_RECORD).exists();
+                boolean legacyPendingPresent = new File(
+                        storeRoot(context), ERASURE_PENDING).exists();
+                if (sentOutMarker(context) == null
+                        && (erasureRecordPresent
+                                || legacyPendingPresent)) {
+                    TransferState st = TransferState.load(
+                            storeRoot(context));
+                    java.util.List<String> candidates =
+                            app.quantusnode.node.depin.core
+                                    .TransferRemediation
+                                    .sentOutErasureCandidates(st);
+                    if (candidates.size() == 1) {
+                        String candidate = candidates.get(0);
+                        long gen = maxS2Generation(st, candidate);
+                        // The seed is verified gone by the
+                        // branch itself, so the rebuilt
+                        // record starts at "seed_erased";
+                        // resumeErasure re-derives due-ness,
+                        // re-verifies the seed's absence,
+                        // writes the marker and removes the
+                        // record through the existing machine.
+                        try {
+                            writeErasureRecord(context, candidate,
+                                    gen, "seed_erased");
+                        } catch (Exception e) {
+                            out.failure = "the erasure record "
+                                    + "could not be re-created "
+                                    + "from the transfer state, "
+                                    + "so the sent-out marker "
+                                    + "was not written: "
+                                    + e.getMessage();
+                            DepinRuntime.recordError(context,
+                                    "home_seed_erasure", e);
+                            return out;
+                        }
+                        ErasureRecord rebuilt = new ErasureRecord();
+                        rebuilt.deviceId = candidate;
+                        rebuilt.generation = gen;
+                        rebuilt.stage = "seed_erased";
+                        resumeErasure(context, rebuilt, out);
+                        return out;
+                    }
+                    // Zero candidates, or two or more: there
+                    // is no single identity the marker could
+                    // truthfully name. Touch nothing; leave
+                    // a durable record carrying the count.
+                    String why = "the erasure record could "
+                            + "not be read or adopted, the home "
+                            + "seed is gone and no sent-out "
+                            + "marker exists, but the transfer "
+                            + "state yields " + candidates.size()
+                            + " sent-out erasure candidate(s); "
+                            + "no record was re-created and no "
+                            + "marker was written (self-check "
+                            + "S-07)";
+                    if (candidates.size() >= 2) {
+                        out.failure = "the sent-out identity "
+                                + "awaiting erasure is ambiguous: "
+                                + candidates.size()
+                                + " candidates in the transfer "
+                                + "state";
+                    }
+                    DepinRuntime.recordError(context,
+                            "home_seed_erasure",
+                            new IOException(why));
+                    return out;
                 }
                 return out;
             }

@@ -32,6 +32,7 @@ bash "$CORE/check-depin-deps.sh" core
   "$CORE_DIR/JournalStore.java" \
   "$CORE_DIR/CompanionStatus.java" \
   "$CORE_DIR/PendingExport.java" \
+  "$CORE_DIR/BundleExport.java" \
   "$CORE_DIR/CrashLog.java" \
   "$CORE/tests/app/quantusnode/node/depin/core/HarnessMain.java" \
   "$CORE/tests/app/quantusnode/node/depin/core/BundleGenMain.java" \

@@ -113,6 +113,17 @@ public final class DepinRuntime {
      *  keeps is the one the audit states: within a process, a
      *  journal file has exactly one writable store. */
     private static JournalStore observerHeldStore;
+    /** The generation token of the current observer hold
+     *  (S-05): minted from observerHoldSequence at adoption
+     *  and required, matching, at release — a stale instance's
+     *  late release, keyed by store identity alone, otherwise
+     *  cleared a rapidly restarted successor's hold on the
+     *  same cached store. Guarded by JOURNAL_LOCK; 0 names no
+     *  hold (and matches no adoption, whose tokens start at 1). */
+    private static long observerHoldToken;
+    /** Monotonic source of hold tokens. Guarded by
+     *  JOURNAL_LOCK. */
+    private static long observerHoldSequence;
     /** An invalidation arrived while an observer held the
      *  cached store and was deferred (G-06). It takes effect
      *  when the observer releases the store: the
@@ -189,10 +200,15 @@ public final class DepinRuntime {
     /** Called by the observer service when it takes the
      *  constructed store as its own (ensureInitialized): from
      *  here on this instance is the store's writer, and the
-     *  cache must not be dropped from under it (G-06). */
-    public static void observerAdoptedStore(JournalStore store) {
+     *  cache must not be dropped from under it (G-06).
+     *
+     *  @return the hold's generation token (S-05); the adopter
+     *          must present it to observerReleasedStore */
+    public static long observerAdoptedStore(JournalStore store) {
         synchronized (JOURNAL_LOCK) {
             observerHeldStore = store;
+            observerHoldToken = ++observerHoldSequence;
+            return observerHoldToken;
         }
     }
 
@@ -200,12 +216,21 @@ public final class DepinRuntime {
      *  a store is destroyed. A deferred invalidation (a
      *  transfer operation ran while the observer was live)
      *  takes effect now, so the next reader re-resolves the
-     *  writer against the current transfer state. */
-    public static void observerReleasedStore(JournalStore store) {
+     *  writer against the current transfer state.
+     *
+     *  S-05: the release is keyed by the adoption token as
+     *  well as the store — a token that does not match the
+     *  current hold (a destroyed predecessor's late release
+     *  after a successor re-adopted the same store, token 0,
+     *  an unknown token, or a repeat release) clears nothing. */
+    public static void observerReleasedStore(JournalStore store,
+                                             long token) {
         boolean drop;
         synchronized (JOURNAL_LOCK) {
-            if (observerHeldStore == store) {
+            if (observerHeldStore == store
+                    && observerHoldToken == token) {
                 observerHeldStore = null;
+                observerHoldToken = 0;
             }
             drop = journalInvalidationDeferred
                     && observerHeldStore == null;
@@ -224,12 +249,18 @@ public final class DepinRuntime {
         public final JournalStore store;
         public final String deviceId;
         public final byte[] pubkey;
+        /** The observer hold token minted for this hand-out
+         *  (S-05), or 0 when no hold was registered (the
+         *  non-observer read). The observer presents it when
+         *  releasing the hold. */
+        public final long holdToken;
 
         JournalWithIdentity(JournalStore store, String deviceId,
-                            byte[] pubkey) {
+                            byte[] pubkey, long holdToken) {
             this.store = store;
             this.deviceId = deviceId;
             this.pubkey = pubkey;
+            this.holdToken = holdToken;
         }
     }
 
@@ -326,15 +357,22 @@ public final class DepinRuntime {
                     throw new IllegalStateException(
                             "journal constructed without an identity");
                 }
+                long holdToken = 0;
                 if (forObserver) {
                     // H-03: the hold is registered in the same
                     // lock section that hands the store out —
                     // no window for an invalidation to slip
                     // between obtaining and adopting.
+                    // S-05: the hold is token-keyed; the token
+                    // rides the hand-out so only this adopter
+                    // can release it.
                     observerHeldStore = journal;
+                    observerHoldToken = ++observerHoldSequence;
+                    holdToken = observerHoldToken;
                 }
                 return new JournalWithIdentity(journal,
-                        journalDeviceId, journalPubkey.clone());
+                        journalDeviceId, journalPubkey.clone(),
+                        holdToken);
             }
         }
     }
@@ -788,8 +826,20 @@ public final class DepinRuntime {
         }
     }
 
-    /** The most recent persisted error entry, or null. */
+    /** The most recent persisted error entry, or null.
+     *  Residual F-18 (the companion has done this since
+     *  audit L23): the superseded-copy sweep's entries are
+     *  excluded — neither its action records
+     *  ("superseded_sweep") nor its steady-state notes
+     *  ("superseded_sweep_steady") is an error, yet the
+     *  kind-blind last entry made whichever the sweep
+     *  recorded most recently the displayed "last recorded
+     *  error", covering the most recent real failure. Both
+     *  kinds stay in the log in full; they are simply not
+     *  errors for this summary slot. */
     public static String lastErrorEntry(Context context) {
-        return CrashLog.lastEntry(errorLog(context));
+        return CrashLog.lastEntryExcludingKinds(
+                errorLog(context),
+                "superseded_sweep", "superseded_sweep_steady");
     }
 }

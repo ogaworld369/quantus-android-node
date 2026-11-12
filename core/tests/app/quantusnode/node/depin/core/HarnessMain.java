@@ -47,6 +47,8 @@ public final class HarnessMain {
         testSeedBoxKeystorePairing();
         testSeedVaultNoCache();
         testCrashLog();
+        testCrashLogConcurrentProcesses();
+        testExportCapCoversJournal();
         testJournal();
         testJournalAuth();
         testJournalArchive();
@@ -57,6 +59,7 @@ public final class HarnessMain {
         testJsonStrictRaw();
         testRpcAgainstStub();
         testRpcValidation();
+        testRound4RpcResultShapes();
         testRpcStrictParsing();
         testRpcAbsoluteDeadline();
         testPlausibility();
@@ -76,6 +79,7 @@ public final class HarnessMain {
         testObservedPeersU32();
         testArchiveHeaderRepairF04();
         testJournalCheckpointCap();
+        testJournalCapIncomingS04();
         testRpcChunkedBodyDeadline();
         testJournalAppendGeneration();
         testPendingExportHolder();
@@ -648,6 +652,25 @@ public final class HarnessMain {
                 last != null && last.contains("second entry")
                         && !last.contains("first failure"));
 
+        // Residual F-18: the "last recorded error" summary
+        // excludes the superseded-copy sweep's housekeeping
+        // kinds — the companion has excluded them since
+        // audit L23; the node core carries the same helper
+        // and its summary slot now uses it (DepinRuntime).
+        CrashLog.recordMessage(dir, "superseded_sweep",
+                "sweep action record");
+        String allAfterSweep = CrashLog.readAll(dir);
+        String lastReal = CrashLog.lastEntryExcludingKinds(
+                allAfterSweep,
+                "superseded_sweep", "superseded_sweep_steady");
+        check("crash log: excluded kinds skipped for the summary",
+                lastReal != null && lastReal.contains("second entry")
+                        && !lastReal.contains("sweep action record"));
+        check("crash log: kind-blind lastEntry still sees the sweep",
+                CrashLog.lastEntry(allAfterSweep) != null
+                        && CrashLog.lastEntry(allAfterSweep)
+                                .contains("sweep action record"));
+
         // Size cap: flood the log well past the cap; it must stay
         // bounded and the surviving text must start at an entry
         // boundary. (Each entry is only ~100 bytes on this shallow
@@ -670,6 +693,129 @@ public final class HarnessMain {
         CrashLog.clear(dir);
         check("crash log: clear removes the log",
                 CrashLog.readAll(dir) == null);
+    }
+
+    /** Writer entry point for the two-process CrashLog test:
+     *  launched as a nested-class main by
+     *  {@link #testCrashLogConcurrentProcesses()}. */
+    public static final class CrashLogWriter {
+        public static void main(String[] args) throws Exception {
+            File dir = new File(args[0]);
+            String prefix = args[1];
+            int n = Integer.parseInt(args[2]);
+            StringBuilder filler = new StringBuilder();
+            for (int i = 0; i < 96; i++) {
+                filler.append('x');
+            }
+            for (int i = 0; i < n; i++) {
+                CrashLog.recordMessage(dir, "conc",
+                        prefix + "-" + i + "-end " + filler);
+            }
+        }
+    }
+
+    private static void testCrashLogConcurrentProcesses()
+            throws Exception {
+        // Residual F-12: the main and :depin processes append
+        // to the same error log file. The class monitor
+        // serializes only within one process, so two processes
+        // doing read-modify-write with no cross-process lock
+        // overwrite each other's appends. Spawn two writer
+        // JVMs hammering the same log and require every entry
+        // to survive. (Total stays under the 64 KiB cap:
+        // 400 entries of ~140 bytes.)
+        File dir = new File(System.getProperty("java.io.tmpdir"),
+                "depin-crashlog-conc-" + System.nanoTime());
+        //noinspection ResultOfMethodCallIgnored
+        dir.mkdirs();
+        int perWriter = 200;
+        String javaBin = System.getProperty("java.home")
+                + File.separator + "bin" + File.separator + "java";
+        String cp = System.getProperty("java.class.path");
+        String writerClass = HarnessMain.class.getName()
+                + "$CrashLogWriter";
+        Process[] procs = new Process[2];
+        for (int w = 0; w < 2; w++) {
+            procs[w] = new ProcessBuilder(javaBin, "-cp", cp,
+                    writerClass, dir.getAbsolutePath(),
+                    "W" + w, String.valueOf(perWriter))
+                    .redirectErrorStream(true)
+                    .redirectOutput(
+                            new File(dir, "writer-" + w + ".out"))
+                    .start();
+        }
+        boolean finished = true;
+        for (Process p : procs) {
+            if (!p.waitFor(120,
+                    java.util.concurrent.TimeUnit.SECONDS)) {
+                p.destroyForcibly();
+                finished = false;
+            }
+        }
+        check("crash log: concurrent writers finished", finished);
+        String all = CrashLog.readAll(dir);
+        int surviving = 0;
+        if (all != null) {
+            for (int w = 0; w < 2; w++) {
+                for (int i = 0; i < perWriter; i++) {
+                    if (all.contains(
+                            "W" + w + "-" + i + "-end")) {
+                        surviving++;
+                    }
+                }
+            }
+        }
+        check("crash log: no append lost across processes ("
+                        + surviving + "/" + (2 * perWriter) + ")",
+                surviving == 2 * perWriter);
+    }
+
+    private static void testExportCapCoversJournal() {
+        // Residual F-25 (final-check round 2, G-13): the
+        // journal admits up to DepinCore.MAX_CHECKPOINTS
+        // checkpoints, but the export cap was half of that —
+        // past ~100k checkpoints (about 694 days of recording)
+        // every bundle export would have been refused forever
+        // while the journal itself kept growing. The export
+        // cap must cover everything the journal can hold, and
+        // the refusal above the journal cap must stay.
+        check("export cap: covers the journal cap",
+                BundleExport.MAX_CHECKPOINTS
+                        >= DepinCore.MAX_CHECKPOINTS);
+        java.util.List<DepinCore.Checkpoint> over =
+                new java.util.ArrayList<>();
+        for (int i = 0; i < DepinCore.MAX_CHECKPOINTS + 1; i++) {
+            over.add(null);
+        }
+        String refusal = null;
+        try {
+            BundleExport.buildJson(new byte[32], over, 0L);
+        } catch (IllegalStateException e) {
+            refusal = e.getMessage();
+        }
+        check("export cap: refusal above the journal cap kept",
+                refusal != null
+                        && refusal.contains("export limit"));
+        // Inside the journal cap the export must not be
+        // refused on cap grounds. (Assembly over placeholder
+        // entries fails on its own terms; only the cap
+        // refusal is in question here.)
+        java.util.List<DepinCore.Checkpoint> mid =
+                new java.util.ArrayList<>();
+        for (int i = 0; i < 150_000; i++) {
+            mid.add(null);
+        }
+        String midRefusal = null;
+        try {
+            BundleExport.buildJson(new byte[32], mid, 0L);
+        } catch (IllegalStateException e) {
+            midRefusal = e.getMessage();
+        } catch (Throwable t) {
+            // Expected: assembly over null entries.
+        }
+        check("export cap: no refusal inside the journal cap",
+                midRefusal == null
+                        || !midRefusal.contains("export limit"));
     }
 
     private static JournalStore.EntrySigner testSigner(byte[] seed) {
@@ -1688,6 +1834,95 @@ public final class HarnessMain {
             threw = true;
         }
         check("rpc stub: unreachable node is a clean failure", threw);
+    }
+
+    /** Final check round 4 (I-13): a well-formed JSON-RPC
+     *  response whose RESULT has the wrong shape (null, a
+     *  missing member) must fail the round as an RPC failure
+     *  — the R-M03 promise that a malformed value "fails the
+     *  round cleanly". The shape checks sat outside call()'s
+     *  own conversion, so they surfaced as unchecked
+     *  IllegalArgumentExceptions instead: past the service's
+     *  RpcException handling, into the tick circuit breaker,
+     *  which reads three of them in a row as a programming
+     *  fault and stops recording until the user turns it on
+     *  again. */
+    private static void testRound4RpcResultShapes() throws Exception {
+        final String bestHash = "0x" + "ab".repeat(32);
+        final String finHash = "0x" + "cd".repeat(32);
+        String[] victims = {"system_syncState", "chain_getBlockHash",
+                "chain_getFinalizedHead", "chain_getHeader",
+                "system_health"};
+        for (final String victim : victims) {
+            RpcClient c = new RpcClient(cannedTransport(request -> {
+                if (request.contains(victim)) {
+                    return resultJson("null");
+                }
+                if (request.contains("system_syncState")) {
+                    return resultJson("{\"currentBlock\":1000,"
+                            + "\"highestBlock\":1000,\"startingBlock\":900}");
+                }
+                if (request.contains("chain_getBlockHash")) {
+                    return resultJson("\"" + bestHash + "\"");
+                }
+                if (request.contains("chain_getFinalizedHead")) {
+                    return resultJson("\"" + finHash + "\"");
+                }
+                if (request.contains("chain_getHeader")) {
+                    return resultJson("{\"number\":\"0x3e0\"}");
+                }
+                return resultJson("{\"peers\":7,\"isSyncing\":false}");
+            }));
+            boolean clean = false;
+            try {
+                c.fetchObservation();
+            } catch (RpcClient.RpcException e) {
+                clean = true;
+            } catch (RpcClient.InconsistentObservation
+                    | RuntimeException e) {
+                clean = false;
+            }
+            check("r4/rpc: a null result for " + victim
+                    + " fails the round as an RPC failure", clean);
+        }
+        RpcClient noNumber = new RpcClient(cannedTransport(request -> {
+            if (request.contains("system_syncState")) {
+                return resultJson("{\"currentBlock\":1000,"
+                        + "\"highestBlock\":1000,\"startingBlock\":900}");
+            }
+            if (request.contains("chain_getBlockHash")) {
+                return resultJson("\"" + bestHash + "\"");
+            }
+            if (request.contains("chain_getFinalizedHead")) {
+                return resultJson("\"" + finHash + "\"");
+            }
+            if (request.contains("chain_getHeader")) {
+                return resultJson("{\"parentHash\":\"0x00\"}");
+            }
+            return resultJson("{\"peers\":7}");
+        }));
+        boolean memberClean = false;
+        try {
+            noNumber.fetchObservation();
+        } catch (RpcClient.RpcException e) {
+            memberClean = true;
+        } catch (RpcClient.InconsistentObservation | RuntimeException e) {
+            memberClean = false;
+        }
+        check("r4/rpc: a header without a number fails as an RPC failure",
+                memberClean);
+        RpcClient peer = new RpcClient(
+                cannedTransport(request -> resultJson("null")));
+        boolean peerClean = false;
+        try {
+            peer.fetchLocalPeerId();
+        } catch (RpcClient.RpcException e) {
+            peerClean = true;
+        } catch (RuntimeException e) {
+            peerClean = false;
+        }
+        check("r4/rpc: a null local peer id fails as an RPC failure",
+                peerClean);
     }
 
     private static void testRpcValidation() throws Exception {
@@ -3286,7 +3521,7 @@ public final class HarnessMain {
             byte[] prevHash = DepinCore.ZERO32;
             String dummySig = Hex.encode(new byte[64]);
             DepinCore.Checkpoint lastCp = null;
-            for (int i = 0; i < max; i++) {
+            for (int i = 0; i < max - 1; i++) {
                 DepinCore.Observation o = new DepinCore.Observation();
                 o.timestampUnix = baseTs + i * 600L;
                 o.bestBlockNumber = 360000L + i * 7L;
@@ -3308,52 +3543,124 @@ public final class HarnessMain {
         }
         JournalStore store = JournalStore.forFile(file, deviceId, Hex.encode(pub), dummySigner, dummyVerifier);
         store.setFsyncForTest(out -> { });
-        check("cap: journal filled to seq MAX-1 loads whole",
-                store.count() == max && store.droppedOnLoad() == 0);
+        check("cap: journal filled to seq MAX-2 loads whole",
+                store.count() == max - 1 && store.droppedOnLoad() == 0);
 
-        // seq == MAX is the largest value the reload path
-        // accepts, so append must accept it too.
-        DepinCore.Observation oMax = new DepinCore.Observation();
-        oMax.timestampUnix = baseTs + (long) max * 600L;
-        oMax.bestBlockNumber = 360000L + (long) max * 7L;
-        oMax.bestBlockHash = DepinCore.sha256(
-                "cap-block-max".getBytes(StandardCharsets.US_ASCII));
-        oMax.observedPeers = 12;
-        oMax.finalizedBlockNumber = oMax.bestBlockNumber - 2;
-        DepinCore.Checkpoint cpMax = DepinCore.makeCheckpoint(
-                max, oMax, tail.chainState, tail.checkpointHash, 1, pub);
-        store.append(cpMax);
-        check("cap: append at seq MAX (the reload bound) succeeds",
-                store.count() == max + 1);
+        // Final check round 4 (I-06): the journal's bound is
+        // the COUNT one bundle may carry (verifyBundle and the
+        // reference schema accept at most MAX_CHECKPOINTS
+        // checkpoints), so seq MAX-1 is the last append the
+        // store accepts. The old bound (seq <= MAX, i.e.
+        // MAX + 1 entries) let one more entry in and made the
+        // whole journal unexportable from then on.
+        DepinCore.Observation oLast = new DepinCore.Observation();
+        oLast.timestampUnix = baseTs + ((long) max - 1) * 600L;
+        oLast.bestBlockNumber = 360000L + ((long) max - 1) * 7L;
+        oLast.bestBlockHash = DepinCore.sha256(
+                "cap-block-last".getBytes(StandardCharsets.US_ASCII));
+        oLast.observedPeers = 12;
+        oLast.finalizedBlockNumber = oLast.bestBlockNumber - 2;
+        DepinCore.Checkpoint cpLast = DepinCore.makeCheckpoint(
+                (long) max - 1, oLast,
+                tail.chainState, tail.checkpointHash, 1, pub);
+        store.append(cpLast);
+        check("cap: append at seq MAX-1 (the last bundle slot) succeeds",
+                store.count() == max);
+        check("cap: a full journal still fits one bundle",
+                store.count() <= DepinCore.MAX_CHECKPOINTS);
 
-        // seq == MAX + 1 could never reload: append must refuse
-        // it outright — surfaced — instead of writing a record
-        // the next load would drop and delete.
+        // seq == MAX would be the (MAX + 1)-th entry: append
+        // must refuse it outright — surfaced — instead of
+        // writing a record no bundle could ever carry.
         DepinCore.Observation oOver = new DepinCore.Observation();
-        oOver.timestampUnix = baseTs + ((long) max + 1) * 600L;
-        oOver.bestBlockNumber = 360000L + ((long) max + 1) * 7L;
+        oOver.timestampUnix = baseTs + (long) max * 600L;
+        oOver.bestBlockNumber = 360000L + (long) max * 7L;
         oOver.bestBlockHash = DepinCore.sha256(
                 "cap-block-over".getBytes(StandardCharsets.US_ASCII));
         oOver.observedPeers = 12;
         oOver.finalizedBlockNumber = oOver.bestBlockNumber - 2;
         DepinCore.Checkpoint cpOver = DepinCore.makeCheckpoint(
-                (long) max + 1, oOver,
-                cpMax.chainState, cpMax.checkpointHash, 1, pub);
+                (long) max, oOver,
+                cpLast.chainState, cpLast.checkpointHash, 1, pub);
         boolean refused = false;
         try {
             store.append(cpOver);
         } catch (IllegalStateException e) {
             refused = true;
         }
-        check("cap: append beyond seq MAX refuses instead of writing",
-                refused && store.count() == max + 1);
+        check("cap: append at seq MAX refuses instead of writing",
+                refused && store.count() == max);
 
         JournalStore reloaded = JournalStore.forFile(file, deviceId, Hex.encode(pub), dummySigner, dummyVerifier);
         check("cap: everything append wrote reloads losslessly",
-                reloaded.count() == max + 1
+                reloaded.count() == max
                         && reloaded.droppedOnLoad() == 0
                         && reloaded.last() != null
-                        && reloaded.last().seq == max);
+                        && reloaded.last().seq == max - 1);
+    }
+
+
+    private static void testJournalCapIncomingS04() throws Exception {
+        // S-04 (self-check 2026-11-11): the section 3.4 cap
+        // compared only the CURRENT journal + archives total
+        // against the cap, so an append starting just under
+        // the cap wrote its entry straight past it. The
+        // comparison now adds the incoming entry's exact
+        // byte length. Fixture, in the style of
+        // testJournalCheckpointCap: a few real entries, then
+        // sparse archive files (RandomAccessFile.setLength
+        // -- no real space is consumed) sized so the current
+        // total sits 10 bytes under the cap, far less than
+        // one entry line, so current <= cap but current +
+        // incoming > cap holds.
+        byte[] seed = testSeed();
+        byte[] pub = Ed25519.publickeyFromSeed(seed);
+        String deviceId = DepinCore.deviceIdFromPubkey(pub);
+        List<DepinCore.Observation> obs = syntheticObservations(4);
+        File dir = new File(System.getProperty("java.io.tmpdir"),
+                "depin-journal-s04-" + System.nanoTime());
+        //noinspection ResultOfMethodCallIgnored
+        dir.mkdirs();
+        File file = new File(dir, "journal.json");
+        JournalStore store = JournalStore.forFile(file, deviceId,
+                Hex.encode(pub), testSigner(seed), testVerifier(pub));
+        store.bindIdentity(deviceId, Hex.encode(pub));
+        for (int i = 0; i < 3; i++) {
+            store.append(DepinCore.makeCheckpoint(i, obs.get(i),
+                    store.nextPrevState(), store.nextPrevCheckpointHash(),
+                    50, pub));
+        }
+        long journalBytes = file.length();
+        long archiveTotal =
+                JournalStore.MAX_JOURNAL_PLUS_ARCHIVES_BYTES
+                        - journalBytes - 10;
+        File v04 = new File(dir, JournalStore.ARCHIVE_V04_FILE_NAME);
+        File v03 = new File(dir, JournalStore.ARCHIVE_FILE_NAME);
+        try (java.io.RandomAccessFile raf =
+                     new java.io.RandomAccessFile(v04, "rw")) {
+            raf.setLength(archiveTotal / 2);
+        }
+        try (java.io.RandomAccessFile raf =
+                     new java.io.RandomAccessFile(v03, "rw")) {
+            raf.setLength(archiveTotal - archiveTotal / 2);
+        }
+        check("s04: current journal + archives total is at or under the cap",
+                journalBytes + v04.length() + v03.length()
+                        <= JournalStore
+                                .MAX_JOURNAL_PLUS_ARCHIVES_BYTES);
+        long lenBefore = file.length();
+        boolean refused = false;
+        try {
+            store.append(DepinCore.makeCheckpoint(3, obs.get(3),
+                    store.nextPrevState(), store.nextPrevCheckpointHash(),
+                    50, pub));
+        } catch (IllegalStateException e) {
+            refused = true;
+        }
+        check("s04: an append whose incoming entry crosses the cap is refused",
+                refused);
+        check("s04: the refused append wrote nothing",
+                store.count() == 3 && file.length() == lenBefore);
     }
 
     /** Models the JDK's chunked stream for the F-03 server

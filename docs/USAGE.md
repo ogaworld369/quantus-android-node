@@ -4,7 +4,7 @@
 
 This app runs a **non-validator full node** for Quantus Network (QTC mainnet) on an Android phone. It syncs the chain, verifies every block itself, and relays data to peers. It does **not** mine, and it has **no wallet** — it never touches seed phrases or reward keys.
 
-> Status: v3.0 released (2026-11-11), the current release — the DePIN integration release. The signed APK is published on [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) with a SHA-256 checksum. Earlier test builds were shared directly by the maintainer.
+> Status: v3.0.1 released (2026-11-12), the current release — a maintenance release with audit fixes (v3.0, released 2026-11-11, was the DePIN integration release). The signed APK is published on [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) with a SHA-256 checksum. Earlier test builds were shared directly by the maintainer.
 
 ## Requirements
 

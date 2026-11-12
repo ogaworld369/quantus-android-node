@@ -599,10 +599,17 @@ public class NetworkFieldView extends View {
                 }
             }
             paint.setStyle(Paint.Style.STROKE);
+            // Residual F-22: with no ring data yet (null),
+            // the unlit ticks draw at a fraction of the
+            // alpha, so "not measured yet" is visibly
+            // distinct from a measured all-empty window
+            // (every slot -1) — the same distinction the
+            // numbers make ("—" versus "0").
+            boolean ringKnown = recordRing != null;
             for (int slot = 0; slot < 48; slot++) {
                 double ang = -Math.PI / 2
                         + (47 - slot) * (Math.PI * 2 / 48.0);
-                boolean lit = recordRing != null
+                boolean lit = ringKnown
                         && slot < recordRing.length
                         && recordRing[slot] >= 0;
                 float len = 4f * d;
@@ -613,7 +620,8 @@ public class NetworkFieldView extends View {
                 } else {
                     paint.setColor(Color.rgb(0x2A, 0x2A, 0x33));
                     paint.setStrokeWidth(1.2f * d);
-                    paint.setAlpha((int) (dim * 255f));
+                    paint.setAlpha((int) (dim
+                            * (ringKnown ? 1f : 0.35f) * 255f));
                 }
                 if (slot == 47 && flash > 0f) {
                     len += 4f * d * flash;

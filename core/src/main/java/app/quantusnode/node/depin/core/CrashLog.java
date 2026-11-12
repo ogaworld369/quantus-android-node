@@ -227,21 +227,95 @@ public final class CrashLog {
 
     private static void appendEntryTo(File file, String entry) {
         try {
-            String existing = readFrom(file);
-            String combined = (existing == null ? "" : existing) + entry;
-            if (combined.length() > MAX_BYTES) {
-                int cut = combined.length() - MAX_BYTES;
-                int boundary = combined.indexOf(ENTRY_MARKER, cut);
-                combined = boundary >= 0
-                        ? combined.substring(boundary)
-                        : combined.substring(cut);
+            File parent = file.getAbsoluteFile().getParentFile();
+            if (parent != null && !parent.exists()) {
+                //noinspection ResultOfMethodCallIgnored
+                parent.mkdirs();
             }
-            try (FileOutputStream out = new FileOutputStream(file)) {
-                out.write(combined.getBytes(StandardCharsets.UTF_8));
+            try (java.io.RandomAccessFile raf =
+                         new java.io.RandomAccessFile(file, "rw");
+                 java.nio.channels.FileChannel channel =
+                         raf.getChannel()) {
+                // Residual F-12: the class monitor serializes
+                // only within one process, but the main and
+                // :depin processes append to this same file —
+                // the bare read-modify-write let each process
+                // overwrite the other's appends wholesale (a
+                // two-writer harness run kept 5 of 400 entries)
+                // and never fsynced, so a crash could lose or
+                // tear what was written. The whole
+                // read-combine-write now runs under a
+                // cross-process file lock and is forced to
+                // storage before the lock is released.
+                java.nio.channels.FileLock lock = null;
+                try {
+                    lock = channel.lock();
+                } catch (java.nio.channels
+                        .OverlappingFileLockException e) {
+                    // This JVM already holds the lock (a
+                    // re-entrant record on the same stack):
+                    // the class monitor is the serializer
+                    // there, so proceeding unlocked is sound.
+                }
+                try {
+                    String existing = readFromChannel(channel);
+                    String combined =
+                            (existing == null ? "" : existing)
+                                    + entry;
+                    if (combined.length() > MAX_BYTES) {
+                        int cut = combined.length() - MAX_BYTES;
+                        int boundary =
+                                combined.indexOf(ENTRY_MARKER, cut);
+                        combined = boundary >= 0
+                                ? combined.substring(boundary)
+                                : combined.substring(cut);
+                    }
+                    byte[] bytes =
+                            combined.getBytes(StandardCharsets.UTF_8);
+                    java.nio.ByteBuffer out =
+                            java.nio.ByteBuffer.wrap(bytes);
+                    channel.position(0);
+                    while (out.hasRemaining()) {
+                        channel.write(out);
+                    }
+                    channel.truncate(bytes.length);
+                    channel.force(false);
+                } finally {
+                    if (lock != null) {
+                        lock.release();
+                    }
+                }
             }
         } catch (IOException ignored) {
             // Diagnostics must never take the app down with them.
         }
+    }
+
+    /** Read the channel's full current content as text, or
+     *  null when it is empty. The caller holds the file lock. */
+    private static String readFromChannel(
+            java.nio.channels.FileChannel channel)
+            throws IOException {
+        long size = channel.size();
+        if (size <= 0) {
+            return null;
+        }
+        java.io.ByteArrayOutputStream buf =
+                new java.io.ByteArrayOutputStream();
+        java.nio.ByteBuffer chunk =
+                java.nio.ByteBuffer.allocate(8192);
+        long pos = 0;
+        while (pos < size) {
+            chunk.clear();
+            int n = channel.read(chunk, pos);
+            if (n < 0) {
+                break;
+            }
+            buf.write(chunk.array(), 0, n);
+            pos += n;
+        }
+        String text = buf.toString(StandardCharsets.UTF_8.name());
+        return text.isEmpty() ? null : text;
     }
 
     private static void appendThrowable(StringBuilder sb, Throwable t, boolean causedBy) {

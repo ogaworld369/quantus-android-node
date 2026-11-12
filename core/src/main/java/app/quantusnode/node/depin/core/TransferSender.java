@@ -843,6 +843,9 @@ public final class TransferSender {
         closeSender(state, deviceId, sender, "cancelled_pre_permit", null);
         vault.delete(secretKey(gen));
         vault.delete(TransferVault.senderKey(gen));
+        // Final check round 4 (I-23): a one-shot S1 can be
+        // closed here too; its commit keys go with it.
+        vault.delete(commitKeysKey(gen));
         if (freeze != null) freeze.unfreeze();
         return token;
     }
@@ -900,6 +903,9 @@ public final class TransferSender {
         // (3) erase the (generation, sender) vault material.
         vault.delete(TransferVault.senderKey(gen));
         vault.delete(secretKey(gen));
+        // Final check round 4 (I-23): a one-shot S1 can be
+        // closed here too; its commit keys go with it.
+        vault.delete(commitKeysKey(gen));
         eraseSupersededReceiverKeys(state, deviceId, gen);
         return ack;
     }
@@ -1059,6 +1065,9 @@ public final class TransferSender {
         closeSender(state, deviceId, sender, "abandoned", abandon);
         vault.delete(secretKey(gen));
         vault.delete(TransferVault.senderKey(gen));
+        // Final check round 4 (I-23): a one-shot S1 can be
+        // closed here too; its commit keys go with it.
+        vault.delete(commitKeysKey(gen));
         if (freeze != null) freeze.unfreeze();
     }
 

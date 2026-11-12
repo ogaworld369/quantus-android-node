@@ -108,6 +108,26 @@ public final class DepinModule {
     private volatile BundleCallback pendingBundleCallback;
     private volatile boolean alive = false;
     private volatile boolean bindRequested = false;
+    /** When the outstanding bind was requested (residual
+     *  F-11): the bare flag alone let one lost callback
+     *  disable binding for the rest of the process. The
+     *  stamp is what DepinStatusMerge.bindOutstanding
+     *  judges; every set and clear goes through the two
+     *  helpers below so the pair never drifts apart. */
+    private volatile long bindRequestedElapsedMs = 0;
+
+    private void markBindRequested() {
+        // I-04: an in-process deadline is measured on the
+        // monotonic clock, never the wall clock.
+        bindRequestedElapsedMs = Math.max(1L,
+                android.os.SystemClock.elapsedRealtime());
+        bindRequested = true;
+    }
+
+    private void clearBindRequested() {
+        bindRequested = false;
+        bindRequestedElapsedMs = 0;
+    }
 
     // The user's recorded toggle intent (internal.24): held in
     // volatiles for latestStatus() and persisted to the
@@ -131,6 +151,10 @@ public final class DepinModule {
      *  into latestStatus() so the backoff is presented
      *  without file I/O on the read path. */
     private volatile DepinSupervisor.RestartState restartStateCache;
+
+    /** I-01: when ACTION_DISABLE was last sent (elapsed
+     *  realtime; executor thread only). */
+    private long lastOffDeliveryElapsedMs = Long.MIN_VALUE;
 
     public static synchronized DepinModule get(Context context) {
         if (instance == null) {
@@ -161,8 +185,12 @@ public final class DepinModule {
             hasUserIntent = ip.getBoolean(KEY_INTENT_SET, false);
             userIntentEnabled = ip.getBoolean(KEY_INTENT_ENABLED, false);
             userIntentWallMs = ip.getLong(KEY_INTENT_WALL_MS, 0L);
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            // Residual F-10: a swallowed failure leaves a
+            // trace (type only, never the message).
             hasUserIntent = false;
+            logFacadeEvent("facade_intent_read_failed",
+                    t.getClass().getSimpleName());
         }
 
         // Replies arrive on their own thread: handling one is a
@@ -248,10 +276,13 @@ public final class DepinModule {
                 }
                 ensureBound();
                 refreshCachedFromFile();
-            } catch (Throwable ignored) {
+            } catch (Throwable t) {
                 // The facade never throws into its caller: a
                 // failed start leaves the cached status as the
                 // record, and the next refresh reconciles.
+                // Residual F-10: the failure leaves a trace.
+                logFacadeEvent("facade_enable_failed",
+                        t.getClass().getSimpleName());
             }
         });
     }
@@ -281,11 +312,14 @@ public final class DepinModule {
                 out.flush();
                 out.getFD().sync();
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
             // Best effort like every facade write: if the flag
             // cannot be written, the observer's next start
             // finds no request and self-stops on the corruption
             // as before — the user can confirm again.
+            // Residual F-10: the failure leaves a trace.
+            logFacadeEvent("facade_attempt_reset_flag_failed",
+                    t.getClass().getSimpleName());
         }
     }
 
@@ -327,13 +361,18 @@ public final class DepinModule {
                     intent.putExtra(DepinIpc.EXTRA_EXPECTED_GENERATION,
                             expectedGeneration);
                     appContext.startService(intent);
+                    lastOffDeliveryElapsedMs =
+                            android.os.SystemClock.elapsedRealtime();
                 }
                 DepinStatus s = cached.copy();
                 s.enabled = false;
                 s.updatedWallMs = System.currentTimeMillis();
                 cached = s;
-            } catch (Throwable ignored) {
+            } catch (Throwable t) {
                 // See enable(): the facade never throws.
+                // Residual F-10: the failure leaves a trace.
+                logFacadeEvent("facade_disable_failed",
+                        t.getClass().getSimpleName());
             }
         });
     }
@@ -403,8 +442,12 @@ public final class DepinModule {
                                     + " time "
                                     + rs.nextLaunchAllowedWallMs);
                 }
-            } catch (Throwable ignored) {
+                deliverPendingUserOff(false);
+            } catch (Throwable t) {
                 // See enable(): the facade never throws.
+                // Residual F-10: the failure leaves a trace.
+                logFacadeEvent("facade_refresh_failed",
+                        t.getClass().getSimpleName());
             }
         });
     }
@@ -448,8 +491,14 @@ public final class DepinModule {
             return new DepinStatus();
         }
         boolean merged = mergedEnabled(s);
+        // Residual F-11: a bind request older than the
+        // staleness bound no longer presents as outstanding.
         int presented = DepinStatusMerge.presentedState(
-                s, alive, bindRequested, merged, userIntentOff());
+                s, alive,
+                DepinStatusMerge.bindOutstanding(
+                        bindRequestedElapsedMs,
+                        android.os.SystemClock.elapsedRealtime()),
+                merged, userIntentOff());
         DepinSupervisor.RestartState rs = restartStateCache;
         int failures = rs != null
                 ? rs.consecutiveFailures : s.restartFailures;
@@ -494,9 +543,12 @@ public final class DepinModule {
                         .putBoolean(KEY_INTENT_ENABLED, en)
                         .putLong(KEY_INTENT_WALL_MS, wall)
                         .commit();
-            } catch (Throwable ignored) {
+            } catch (Throwable t) {
                 // The volatiles still carry the intent for
                 // this process's lifetime.
+                // Residual F-10: the failure leaves a trace.
+                logFacadeEvent("facade_intent_persist_failed",
+                        t.getClass().getSimpleName());
             }
         });
     }
@@ -521,14 +573,51 @@ public final class DepinModule {
         return hasUserIntent && !userIntentEnabled;
     }
 
+    /** I-01: a live observer must not outlive the user's
+     *  recorded OFF. disable() sends the command only when
+     *  the binding is already up, so an OFF tapped while a
+     *  launch is still connecting reached nobody. Executor
+     *  thread only; never throws. */
+    private void deliverPendingUserOff(boolean justConnected) {
+        if (!alive || !userIntentOff()) {
+            return;
+        }
+        DepinStatus s = cached;
+        if (!justConnected && (s == null || !s.enabled)) {
+            return; // the observer already reports OFF
+        }
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (lastOffDeliveryElapsedMs != Long.MIN_VALUE
+                && now - lastOffDeliveryElapsedMs
+                        < DepinReconcilePolicy.INTERVAL_MS) {
+            return;
+        }
+        lastOffDeliveryElapsedMs = now;
+        try {
+            appContext.startService(
+                    serviceIntent(DepinIpc.ACTION_DISABLE));
+            logFacadeEvent("user_off_redelivered",
+                    "live observer under a recorded OFF;"
+                            + " disable re-sent");
+        } catch (Throwable t) {
+            logFacadeEvent("facade_off_redelivery_failed",
+                    t.getClass().getSimpleName());
+        }
+    }
+
     /** Refresh the cached restart state from the supervisor.
      *  Executor-thread only (it evaluates the window file). */
     private void refreshRestartStateCache() {
         try {
             restartStateCache = supervisor.restartState(alive);
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
             // The previous cache (or the snapshot's own fields)
             // carries latestStatus() meanwhile.
+            // Residual F-10: a supervisor evaluation failure
+            // (e.g. a damaged window file) leaves a trace
+            // instead of silently freezing the restart state.
+            logFacadeEvent("facade_restart_state_failed",
+                    t.getClass().getSimpleName());
         }
     }
 
@@ -595,7 +684,7 @@ public final class DepinModule {
                 // Dead binder: same conclusion as requestStatus.
                 serviceMessenger = null;
                 alive = false;
-                bindRequested = false;
+                clearBindRequested();
                 if (pendingBundleCallback == callback) {
                     pendingBundleCallback = null;
                 }
@@ -635,9 +724,13 @@ public final class DepinModule {
                 try {
                     supervisor.serviceAliveObserved();
                     refreshRestartStateCache();
-                } catch (Throwable ignored) {
+                } catch (Throwable t) {
                     // The next refreshStatus derives it anyway.
+                    // Residual F-10: the failure leaves a trace.
+                    logFacadeEvent("facade_alive_observed_failed",
+                            t.getClass().getSimpleName());
                 }
+                deliverPendingUserOff(true);
             });
             // Ask at once: a fresh binding's first useful act is
             // replacing the file-derived cache with the service's
@@ -649,7 +742,7 @@ public final class DepinModule {
         public void onServiceDisconnected(ComponentName name) {
             serviceMessenger = null;
             alive = false;
-            bindRequested = false;
+            clearBindRequested();
             // Internal.23: the observer's death used to leave
             // no record anywhere — the status file simply went
             // stale. A disconnect also follows an orderly stop
@@ -668,7 +761,7 @@ public final class DepinModule {
         public void onBindingDied(ComponentName name) {
             serviceMessenger = null;
             alive = false;
-            bindRequested = false;
+            clearBindRequested();
             logFacadeEvent("observer_disconnected",
                     "observer service binding died");
         }
@@ -677,7 +770,7 @@ public final class DepinModule {
         public void onNullBinding(ComponentName name) {
             serviceMessenger = null;
             alive = false;
-            bindRequested = false;
+            clearBindRequested();
         }
     };
 
@@ -685,17 +778,45 @@ public final class DepinModule {
      *  auto-create — binding attaches to a running service or
      *  fails, it never starts one. */
     private void ensureBound() {
-        if (alive || bindRequested) {
+        if (alive) {
             return;
+        }
+        if (bindRequested) {
+            long requestedAt = bindRequestedElapsedMs;
+            if (requestedAt > 0) {
+                if (DepinStatusMerge.bindOutstanding(
+                        requestedAt,
+                        android.os.SystemClock.elapsedRealtime())) {
+                    return;
+                }
+                // Residual F-11: the request was never answered
+                // and never will be (a wedged registration whose
+                // callback is lost). Drop it and bind afresh —
+                // the bare flag alone used to disable binding
+                // for the rest of the process.
+                try {
+                    appContext.unbindService(connection);
+                } catch (Throwable ignored) {
+                    // Not registered (never bound): nothing to drop.
+                }
+                clearBindRequested();
+                logFacadeEvent("bind_stale",
+                        "unanswered bind request dropped; rebinding");
+            }
+            // requestedAt == 0: a disconnect callback cleared
+            // the request between the two reads; nothing stale.
         }
         Intent intent = new Intent(appContext, DepinObserverService.class);
         try {
             if (appContext.bindService(intent, connection, 0)) {
-                bindRequested = true;
+                markBindRequested();
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
             // Binding is retried by the next facade operation;
             // the status file keeps the cache honest meanwhile.
+            // Residual F-10: the failure leaves a trace.
+            logFacadeEvent("facade_bind_failed",
+                    t.getClass().getSimpleName());
         }
     }
 
@@ -713,7 +834,7 @@ public final class DepinModule {
             // been delivered yet: believe the send, not the flag.
             serviceMessenger = null;
             alive = false;
-            bindRequested = false;
+            clearBindRequested();
         }
     }
 

@@ -22,8 +22,8 @@ android {
         applicationId 'app.quantusnode.node'
         minSdk 31
         targetSdk 35
-        versionCode 58
-        versionName '3.0'
+        versionCode 62
+        versionName '3.0.1'
 
         ndk {
             // arm64-v8a only: quantus-node is built for aarch64-linux-android.

@@ -10,7 +10,7 @@ The design concept is to make the node's pulse visible: live block/peer visualiz
 
 | | |
 |---|---|
-| Current release | **v3.0** (versionCode 58), published 2026-11-11 — [release page](https://github.com/ogaworld369/quantus-android-node/releases/tag/v3.0) |
+| Current release | **v3.0.1** (versionCode 62), published 2026-11-12 — [release page](https://github.com/ogaworld369/quantus-android-node/releases/tag/v3.0.1) |
 | First public release | v0.1.0, published 2026-11-04 |
 | Download | Signed APK from [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) |
 | Requirements | Android 12 or later, arm64 device |
@@ -26,6 +26,12 @@ The design concept is to make the node's pulse visible: live block/peer visualiz
 - **It is not** a wallet. It never handles wallet seed phrases or reward keys; the only secrets on the device are identity keys, and neither controls any assets (see "Security first" below).
 - **New in v3.0 — activity recording (DePIN), built in.** Opt-in and off by default. With it on, the app keeps a signed record of the node's uptime and relay work, which you can export as a proof bundle file whenever you choose.
 
+## What's in v3.0.1
+
+- **A maintenance release with audit fixes only** — no feature changes, no new permissions, and no changes to the node launch arguments, the database or the bundled node binary.
+- A fourth round of external audit and an internal review of the v3.0 tree fixed a set of defects in the activity-recording and identity-transfer machinery — among them: turning recording off right after turning it on could leave recording running while the display showed off; a journal filled to exactly the maximum could no longer be exported; and exporting a proof bundle could create a fresh identity seed as a side effect after the home identity had been sent out.
+- Every verified finding is fixed; one display item that needs new UI strings in all nine languages is left for a later release. Details: [CHANGELOG.md](CHANGELOG.md).
+
 ## What's in v3.0
 
 - **Activity recording (DePIN) is built into the node app** — the standalone companion app's role is complete. Recording writes a signed checkpoint every 10 minutes to an on-device journal; the identity seed is kept in an encrypted vault; an existing identity — key and full history — moves between installs in a single one-file exchange.
@@ -37,7 +43,7 @@ Details and the full version history: [CHANGELOG.md](CHANGELOG.md).
 
 ## Download
 
-Get the signed APK from [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases). The current release is [v3.0](https://github.com/ogaworld369/quantus-android-node/releases/tag/v3.0); its APK size and SHA-256 are listed on the release page and in the [CHANGELOG](CHANGELOG.md), so you can verify your download. v3.0 installs over v0.2.2 keeping settings and synced data — verified in place on the reference device.
+Get the signed APK from [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases). The current release is [v3.0.1](https://github.com/ogaworld369/quantus-android-node/releases/tag/v3.0.1); its APK size and SHA-256 are listed on the release page and in the [CHANGELOG](CHANGELOG.md), so you can verify your download. v3.0.1 installs over v3.0 keeping settings and synced data — the same code is verified in place on the reference device.
 
 ## Usage
 
@@ -45,7 +51,7 @@ New to the app? Start with the Usage Guide — available in all 9 languages the 
 
 ## Status
 
-- Publicly released since 2026-11-04; the current release is v3.0 (above). Per-version details live in the [CHANGELOG](CHANGELOG.md), not here.
+- Publicly released since 2026-11-04; the current release is v3.0.1 (above). Per-version details live in the [CHANGELOG](CHANGELOG.md), not here.
 - Still being watched on the reference device: the remaining on-device checks — where the pruned database size plateaus, and battery/heat over long uptimes.
 - Release gates: [docs/RELEASE.md](docs/RELEASE.md). Design: [docs/DESIGN.md](docs/DESIGN.md).
 

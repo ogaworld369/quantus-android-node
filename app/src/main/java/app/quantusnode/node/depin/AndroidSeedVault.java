@@ -72,7 +72,22 @@ public final class AndroidSeedVault implements SeedVault {
         this.file = DepinFiles.identityFile(context);
     }
 
+    /** Final check round 4 (I-14): process-wide lock for the
+     *  two get-or-create steps below. Every call site builds
+     *  its own AndroidSeedVault, so the instance monitor
+     *  ("synchronized") serialises nothing between callers:
+     *  two first-use callers could both find no Keystore key
+     *  and both generate one under the same alias — the
+     *  second generation REPLACES the first key, and whatever
+     *  the first caller had already wrapped (the identity
+     *  file, a transfer-vault entry) can never be unwrapped
+     *  again — or both mint a seed, each returning its own
+     *  while only one reaches the file. Reentrant, so the
+     *  seed path may call the key path inside it. */
+    private static final Object CREATE_LOCK = new Object();
+
     private SecretKey keystoreKey() throws Exception {
+        synchronized (CREATE_LOCK) {
         KeyStore ks = KeyStore.getInstance("AndroidKeyStore");
         ks.load(null);
         KeyStore.Entry entry = ks.getEntry(KEY_ALIAS, null);
@@ -93,6 +108,7 @@ public final class AndroidSeedVault implements SeedVault {
                         SeedVault.KEYSTORE_RANDOMIZED_ENCRYPTION_REQUIRED)
                 .build());
         return gen.generateKey();
+        }
     }
 
     /**
@@ -105,6 +121,7 @@ public final class AndroidSeedVault implements SeedVault {
      */
     @Override
     public synchronized byte[] loadOrCreateSeed() throws Exception {
+        synchronized (CREATE_LOCK) {
         SecretKey key = keystoreKey();
         if (file.exists()) {
             return loadStoredSeed(key);
@@ -117,10 +134,41 @@ public final class AndroidSeedVault implements SeedVault {
         stored.put("version", 1L);
         stored.put("iv", Base64.encodeToString(wrapped.iv, Base64.NO_WRAP));
         stored.put("ct", Base64.encodeToString(wrapped.ciphertext, Base64.NO_WRAP));
-        try (FileOutputStream out = new FileOutputStream(file)) {
-            out.write(Json.pretty(stored).getBytes(StandardCharsets.UTF_8));
-        }
+        storeWrappedAtomically(Json.pretty(stored));
         return seed;
+        }
+    }
+
+    /** Residual F-25: the create used to write the wrapped
+     *  seed directly onto the identity file, so a death
+     *  mid-write left a torn file that every later load
+     *  failed on — stranding the identity it had just
+     *  minted. The write now lands on a unique sibling, is
+     *  fsynced, and renames onto the target (the directory
+     *  fsynced after, best effort), so the identity file
+     *  is either absent or whole. */
+    private void storeWrappedAtomically(String json)
+            throws Exception {
+        File dir = file.getParentFile();
+        File tmp = new File(dir, file.getName()
+                + ".tmp-" + System.nanoTime());
+        try (FileOutputStream out = new FileOutputStream(tmp)) {
+            out.write(json.getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            out.getFD().sync();
+        }
+        if (!tmp.renameTo(file)) {
+            //noinspection ResultOfMethodCallIgnored
+            tmp.delete();
+            throw new java.io.IOException(
+                    "could not move the new identity file into place");
+        }
+        try (FileInputStream dirIn = new FileInputStream(dir)) {
+            dirIn.getFD().sync();
+        } catch (Throwable ignored) {
+            // Best effort: the rename stands on filesystems
+            // without directory fsync.
+        }
     }
 
     /** Unwrap the stored seed; the file must exist. */

@@ -87,6 +87,33 @@ public final class TransferRemediation {
     }
 
     /**
+     * Every identity awaiting home-seed erasure, in the
+     * iteration order of {@code state.identities()}
+     * (self-check S-07). The app layer uses this when the
+     * home seed is already gone and its derived id — the
+     * key the single-identity decision above needs — can
+     * no longer be read: the candidates are derived from
+     * the transfer state's S2 histories alone. An empty
+     * list is returned for a null state. Nothing here
+     * decides what the caller may do with the candidates:
+     * acting on a derived candidate is safe only when
+     * exactly one qualifies.
+     */
+    public static java.util.List<String> sentOutErasureCandidates(
+            TransferState state) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        if (state == null) {
+            return out;
+        }
+        for (String id : state.identities().keySet()) {
+            if (sentOutIdentityAwaitingErasure(state, id) != null) {
+                out.add(id);
+            }
+        }
+        return out;
+    }
+
+    /**
      * Whether the sent-out marker closes the writer gate
      * (audit F6). Round 1 left the marker's effect to the
      * app layer, which honoured it FIRST and

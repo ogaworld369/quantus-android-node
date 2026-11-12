@@ -122,4 +122,24 @@ public final class DepinStatusMerge {
         }
         return snapshot.presentedState(serviceAlive, bindOutstanding);
     }
+
+    /** Residual F-11: how long a bind request may stay
+     *  unanswered before it stops counting as outstanding.
+     *  A bind normally completes in well under a second —
+     *  30 s is far beyond any healthy cold start — and a
+     *  request older than that names a wedged registration
+     *  whose callback will never arrive, not a connection
+     *  in progress. The facade used to trust the bare flag
+     *  forever: one lost callback disabled binding, and
+     *  kept the presentation at "connecting", for the rest
+     *  of the process. */
+    public static final long BIND_STALE_MS = 30_000L;
+
+    /** Whether a bind requested at {@code requestedWallMs}
+     *  still counts as outstanding at {@code nowWallMs}. */
+    public static boolean bindOutstanding(long requestedWallMs,
+                                          long nowWallMs) {
+        return requestedWallMs > 0
+                && nowWallMs - requestedWallMs < BIND_STALE_MS;
+    }
 }

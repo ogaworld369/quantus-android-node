@@ -17,6 +17,7 @@ import android.os.Messenger;
 import android.os.RemoteException;
 
 import app.quantusnode.node.depin.core.CompanionStatus;
+import app.quantusnode.node.depin.core.CrashLog;
 import app.quantusnode.node.depin.core.DepinCore;
 import app.quantusnode.node.depin.core.Ed25519;
 import app.quantusnode.node.depin.core.Hex;
@@ -109,6 +110,12 @@ public class DepinObserverService extends Service {
     // the executor; without volatile the destroy path could
     // read a stale null and skip releasing the store hold.
     private volatile JournalStore journal;
+    /** The S-05 hold token minted when this instance took
+     *  the journal store (jwi.holdToken); presented at both
+     *  release sites so a stale instance cannot release a
+     *  successor's hold. Volatile for the same reason as
+     *  journal: assigned on the executor, read in onDestroy. */
+    private volatile long journalHoldToken;
     private AndroidSeedVault vault;
     private RpcAttemptLog attemptLog;
     private byte[] pubkey;
@@ -282,6 +289,31 @@ public class DepinObserverService extends Service {
             }
         };
         messenger = new Messenger(ipcHandler);
+        sweepStaleStatusTmp();
+    }
+
+    /** I-05: remove status tmp files a killed writer left
+     *  behind. Only files older than a minute, so a write in
+     *  flight on another thread is never raced. */
+    private void sweepStaleStatusTmp() {
+        try {
+            File target = DepinFiles.statusFile(this);
+            File[] files = target.getParentFile().listFiles();
+            if (files == null) {
+                return;
+            }
+            String prefix = target.getName() + ".tmp";
+            long now = System.currentTimeMillis();
+            for (File f : files) {
+                if (f.getName().startsWith(prefix)
+                        && now - f.lastModified() > 60_000L) {
+                    //noinspection ResultOfMethodCallIgnored
+                    f.delete();
+                }
+            }
+        } catch (Throwable ignored) {
+            // Housekeeping only.
+        }
     }
 
     @Override
@@ -306,6 +338,25 @@ public class DepinObserverService extends Service {
             Bundle notifBundle = intent.getBundleExtra(DepinIpc.EXTRA_NOTIF);
             if (notifBundle != null) {
                 notifStrings = DepinIpc.NotifStrings.fromBundle(notifBundle);
+                // Final check round 4 (I-20): keep the set
+                // for starts that arrive without one.
+                try {
+                    DepinSettings.recordNotifStrings(this, notifStrings);
+                } catch (Throwable ignored) {
+                    // The instance still holds the set.
+                }
+            }
+        }
+        if (notifStrings == null) {
+            // I-20: only the user's own enable carries the
+            // texts. A reconcile-issued ACTION_START or a
+            // sticky restart in a NEW process has none, and
+            // the notification then fell back to the built-in
+            // Japanese defaults whatever the app's language.
+            try {
+                notifStrings = DepinSettings.notifStrings(this);
+            } catch (Throwable ignored) {
+                // Built-in defaults, as before.
             }
         }
 
@@ -442,7 +493,7 @@ public class DepinObserverService extends Service {
             // G-06: this instance no longer holds the store;
             // an invalidation deferred while it was live (a
             // transfer operation ran) takes effect now.
-            DepinRuntime.observerReleasedStore(journal);
+            DepinRuntime.observerReleasedStore(journal, journalHoldToken);
         }
         // The clean-run marker is written only for an orderly
         // stop of a claimed launch: it is the supervisor's
@@ -669,6 +720,7 @@ public class DepinObserverService extends Service {
             // second store over the same file.
             jwi = DepinRuntime.journalWithIdentityForObserver(this);
             journal = jwi.store;
+            journalHoldToken = jwi.holdToken;
         } catch (Throwable t) {
             // Internal.25: an authorisation-dependent gate
             // verdict (DepinGateVerdict) is a WAIT, not a
@@ -735,7 +787,7 @@ public class DepinObserverService extends Service {
             // hold here instead of leaking it — a leaked hold
             // would defer every future cache invalidation
             // forever, and this run is over either way.
-            DepinRuntime.observerReleasedStore(journal);
+            DepinRuntime.observerReleasedStore(journal, journalHoldToken);
             return false;
         }
         try {
@@ -1254,8 +1306,28 @@ public class DepinObserverService extends Service {
         s.deviceId = deviceId != null
                 ? deviceId : DepinSettings.activeDeviceId(this);
         s.identityGeneration = DepinSettings.identityGeneration(this);
+        // Residual F-16: with no journal open (a fresh
+        // process stopped at the writer gate), the counts
+        // used to fall back to this process's defaults
+        // (-1 / 0) and the status file written from them
+        // erased the recorded history from the display.
+        // The last statistics a live journal reported are
+        // persisted in the settings and reported instead;
+        // the process defaults remain only for an install
+        // whose journal never reported.
+        // I-02: the process mirror and the persisted statistics
+        // are reported only for the identity they describe.
+        boolean mirrorIsThisIdentity = s.deviceId != null
+                && s.deviceId.equals(CompanionStatus.deviceId);
+        long knownCount = DepinSettings.lastKnownCheckpointCount(
+                this, s.deviceId);
         s.checkpointCount = journal != null
-                ? journal.count() : CompanionStatus.checkpointCount;
+                ? journal.count()
+                : (knownCount >= 0
+                        ? (int) Math.min(knownCount, Integer.MAX_VALUE)
+                        : (mirrorIsThisIdentity
+                                ? CompanionStatus.checkpointCount
+                                : -1));
         if (journal != null) {
             // Member-card aggregates (vision UI): plain facts of
             // the journal's own records — the first record's time
@@ -1314,8 +1386,35 @@ public class DepinObserverService extends Service {
             s.recentDayPeers = agg.recentDayPeers;
             s.todayCheckpoints = agg.todayCheckpoints;
             s.todaySlotsElapsed = agg.todaySlotsElapsed;
+            // Residual F-16: remember the journal's own
+            // statistics for the processes that cannot
+            // open it (see the checkpointCount fallback
+            // above). The last checkpoint time is the
+            // series' own maximum — the process mirror can
+            // lag a just-appended checkpoint.
+            long lastCpUnix = 0;
+            for (long ts : cpTs) {
+                if (ts > lastCpUnix) {
+                    lastCpUnix = ts;
+                }
+            }
+            s.lastCheckpointUnix = lastCpUnix;
+            if (deviceId != null) {
+                DepinSettings.recordKnownCheckpointStats(
+                        this, deviceId, s.checkpointCount, lastCpUnix);
+            }
         }
-        s.lastCheckpointUnix = CompanionStatus.lastCheckpointUnix;
+        if (journal == null) {
+            // Residual F-16: the persisted statistics, when
+            // a live journal ever reported them.
+            long knownUnix = DepinSettings.lastKnownCheckpointUnix(
+                    this, s.deviceId);
+            s.lastCheckpointUnix = knownUnix > 0
+                    ? knownUnix
+                    : (mirrorIsThisIdentity
+                            ? CompanionStatus.lastCheckpointUnix
+                            : 0L);
+        }
         s.lastBest = CompanionStatus.lastBest;
         s.holdActive = hold;
         s.selfStopReason = selfStopped ? reason : null;
@@ -1363,7 +1462,15 @@ public class DepinObserverService extends Service {
      *  operation it describes. */
     private void writeStatusFile(DepinStatus s) {
         File target = DepinFiles.statusFile(this);
-        File tmp = new File(target.getParentFile(), target.getName() + ".tmp");
+        // Residual F-25: the tmp name is unique per call.
+        // The fixed name let two writers in this process
+        // (tick thread, IPC thread) tear each other's tmp
+        // file, and one thread's rename could move the
+        // other's half-written file into place.
+        File tmp = new File(target.getParentFile(),
+                target.getName() + ".tmp-"
+                        + Thread.currentThread().getId()
+                        + "-" + System.nanoTime());
         try {
             try (FileOutputStream out = new FileOutputStream(tmp)) {
                 out.write(Json.pretty(s.toMap())
@@ -1424,6 +1531,38 @@ public class DepinObserverService extends Service {
         }
     }
 
+    /** Residual F-15: whether this process has already
+     *  recorded the clock-skew note. */
+    private boolean clockSkewNoted = false;
+
+    /** Record, once per process, that the tick is skipping
+     *  rounds because recorded slots are ahead of the
+     *  current clock (the clock was moved back, or the
+     *  recorded observations run ahead of it). Residual
+     *  F-15: these skips used to be silent — recording
+     *  simply stopped, with nothing anywhere saying why.
+     *  The note lands in the persistent diagnostic log,
+     *  the file the diagnostic summary is built from. No
+     *  behaviour changes: the rounds still skip, exactly
+     *  as before. */
+    private void noteClockSkew(long recordedSlot, long currentSlot) {
+        if (clockSkewNoted) {
+            return;
+        }
+        clockSkewNoted = true;
+        try {
+            CrashLog.recordMessageAt(
+                    DepinFiles.crashLogFile(this), "tick_clock_skew",
+                    "recorded slot " + recordedSlot
+                            + " is ahead of the current slot "
+                            + currentSlot
+                            + "; rounds resume when the clock"
+                            + " catches up");
+        } catch (Throwable ignored) {
+            // Diagnostics must never take the tick down.
+        }
+    }
+
     private void tick() {
         if (!identityReady || journal == null || attemptLog == null) {
             return;
@@ -1437,6 +1576,12 @@ public class DepinObserverService extends Service {
         long slot = now / DepinCore.SLOT_SEC;
         DepinCore.Checkpoint last = journal.last();
         if (last != null && last.timestampUnix / DepinCore.SLOT_SEC >= slot) {
+            if (last.timestampUnix / DepinCore.SLOT_SEC > slot) {
+                // The recorded tail is ahead of the clock
+                // (residual F-15: this skip was silent).
+                noteClockSkew(
+                        last.timestampUnix / DepinCore.SLOT_SEC, slot);
+            }
             return; // this slot already has its checkpoint
         }
 
@@ -1458,6 +1603,8 @@ public class DepinObserverService extends Service {
             // budget record has been pruned, so how much of it
             // was spent is unknowable). Skip the round — counted
             // as neither an error nor a failure.
+            // Residual F-15: the skip is no longer silent.
+            noteClockSkew(maxSlot, slot);
             return;
         }
         if (attemptLog.hasAttempts(slot)) {

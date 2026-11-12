@@ -354,8 +354,105 @@ public final class DepinSupervisor {
             }
         }
 
+        // Residual F-13: launch records (and their claim
+        // markers) were never deleted, so the supervisor
+        // directory grew by two small files per launch,
+        // forever. Housekeeping only — see the sweep.
+        sweepLaunchRecords(dir, System.currentTimeMillis());
+
         if (dirty) {
             persistWindow();
+        }
+    }
+
+    /** Delete launch records no window entry claims any
+     *  more, once their own TTL has passed: an expired
+     *  record can neither be claimed (the observer's claim
+     *  check enforces the same expiry) nor consulted (the
+     *  issue-time fallback reads records of window entries
+     *  only). Unexpired orphans stay — a launch in flight
+     *  across a window clear (manualReenable) must still
+     *  be claimable. An unreadable record is swept only
+     *  when its file is older than the TTL, so a record
+     *  being written right now is never raced. */
+    private void sweepLaunchRecords(File dir, long nowWall) {
+        try {
+            File[] files = dir.listFiles();
+            if (files == null) {
+                return;
+            }
+            java.util.Set<String> live = new java.util.HashSet<>();
+            for (Entry e : entries) {
+                live.add(e.id);
+            }
+            for (File f : files) {
+                String name = f.getName();
+                // I-03: the supervisor's own window file shares
+                // the "launch-" prefix and must never be swept.
+                if (name.equals(WINDOW_FILE)
+                        || name.startsWith(WINDOW_FILE + ".")) {
+                    continue;
+                }
+                // I-03: orphan markers of launches the window
+                // no longer holds.
+                if (name.startsWith("launch-")
+                        && name.endsWith(".claimed")) {
+                    String cid = name.substring(
+                            "launch-".length(),
+                            name.length() - ".claimed".length());
+                    if (!live.contains(cid)
+                            && !new File(dir, "launch-" + cid
+                                    + ".json").exists()
+                            && nowWall - f.lastModified()
+                                    > RECORD_TTL_MS) {
+                        //noinspection ResultOfMethodCallIgnored
+                        f.delete();
+                    }
+                    continue;
+                }
+                if (name.startsWith("clean-")) {
+                    String cid = name.substring("clean-".length());
+                    if (!live.contains(cid)
+                            && nowWall - f.lastModified()
+                                    > RECORD_TTL_MS) {
+                        //noinspection ResultOfMethodCallIgnored
+                        f.delete();
+                    }
+                    continue;
+                }
+                if (!name.startsWith("launch-")
+                        || !name.endsWith(".json")) {
+                    continue;
+                }
+                String id = name.substring(
+                        "launch-".length(),
+                        name.length() - ".json".length());
+                if (live.contains(id)) {
+                    continue;
+                }
+                long expires = -1L;
+                try {
+                    Map<String, Object> m =
+                            Json.parseObject(readSmallFile(f));
+                    expires = longOr(m.get("expiresWallMs"), -1L);
+                } catch (Throwable t) {
+                    expires = -1L;
+                }
+                boolean expired = expires >= 0
+                        ? expires < nowWall
+                        : nowWall - f.lastModified()
+                                > RECORD_TTL_MS;
+                if (expired) {
+                    //noinspection ResultOfMethodCallIgnored
+                    new File(dir, "launch-" + id + ".claimed")
+                            .delete();
+                    //noinspection ResultOfMethodCallIgnored
+                    f.delete();
+                }
+            }
+        } catch (Throwable ignored) {
+            // Housekeeping: a failed sweep leaves the files
+            // for the next evaluation.
         }
     }
 
@@ -452,9 +549,27 @@ public final class DepinSupervisor {
                     e.ageMs = longOr(m.get("ageMs"), 0L);
                     e.stampBoot = stringOr(m.get("stampBoot"));
                     e.stampElapsed = longOr(m.get("stampElapsed"), 0L);
-                    e.clean = boolOr(m.get("clean"), false);
-                    e.issuedWallMs = longOr(m.get("issuedWallMs"), 0L);
-                    e.seenAlive = boolOr(m.get("seenAlive"), false);
+                    // Residual F-14: the three fields the
+                    // suppression judgement reads must be
+                    // present and well-typed. The forgiving
+                    // defaults (clean=false, seenAlive=false,
+                    // issuedWallMs=0) would admit a malformed
+                    // entry as an unclean, never-alive launch
+                    // and bias the window toward suppression,
+                    // against its err-toward-allowing
+                    // doctrine; a malformed entry is skipped
+                    // like one without an id.
+                    if (!(m.get("clean") instanceof Boolean)
+                            || !(m.get("seenAlive")
+                                    instanceof Boolean)
+                            || !(m.get("issuedWallMs")
+                                    instanceof Number)) {
+                        continue;
+                    }
+                    e.clean = (Boolean) m.get("clean");
+                    e.issuedWallMs = ((Number) m.get(
+                            "issuedWallMs")).longValue();
+                    e.seenAlive = (Boolean) m.get("seenAlive");
                     entries.add(e);
                 }
             }

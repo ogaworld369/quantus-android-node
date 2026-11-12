@@ -313,6 +313,13 @@ public final class RpcClient {
             conn.setRequestMethod("POST");
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setDoOutput(true);
+            // Final check round 4 (I-24): never follow a
+            // redirect. The endpoint is this device's own
+            // loopback node; whatever answers on that port
+            // with a redirect is not it, and the node
+            // service's own poller has refused redirects
+            // from the start.
+            conn.setInstanceFollowRedirects(false);
             try (OutputStream os = conn.getOutputStream()) {
                 os.write(body);
             }
@@ -641,6 +648,17 @@ public final class RpcClient {
         }
         try {
             return fetchObservationRound();
+        } catch (IllegalArgumentException e) {
+            // Final check round 4 (I-13): the result-shape
+            // checks (Json.asObject / asString / asBool on a
+            // call's RESULT) throw IllegalArgumentException,
+            // outside call()'s own conversion. A node answer
+            // of the wrong shape is a failed round, the same
+            // as any other malformed value (R-M03) — not an
+            // unchecked exception for the tick circuit breaker
+            // to count as a programming fault.
+            throw new RpcException(
+                    "malformed RPC result: " + e.getMessage(), e);
         } finally {
             if (ownRound) {
                 endRound();
@@ -703,6 +721,12 @@ public final class RpcClient {
     }
 
     public String fetchLocalPeerId() throws RpcException {
-        return Json.asString(call("system_localPeerId", params()));
+        try {
+            return Json.asString(call("system_localPeerId", params()));
+        } catch (IllegalArgumentException e) {
+            // I-13, as in fetchObservation.
+            throw new RpcException("system_localPeerId: malformed "
+                    + "RPC result: " + e.getMessage(), e);
+        }
     }
 }

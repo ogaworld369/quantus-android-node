@@ -8,6 +8,84 @@ the first public release (published 2026-11-04).
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 62 / v3.0.1 — 2026-11-12
+- **A maintenance release: audit fixes only.** The node launch
+  arguments, the database and the bundled node binary are
+  unchanged (still the versionCode 10 build). No permission is
+  added (still five).
+  - **A fourth round of external audit, plus an internal
+    review, of the shipped v3.0 tree.** The round also read
+    areas the earlier rounds had not covered — the transfer
+    receiver and sender internals among them. Every finding
+    was re-verified against the code before fixing, and all
+    verified findings are fixed in this release, together
+    with the items that were still open from the earlier
+    rounds. One display item that needs new UI strings in
+    all nine languages is left for a later release.
+  - **Recording and status.**
+    - Turning recording off immediately after turning it on
+      could leave recording running while the display showed
+      it off; a pending off is now re-delivered until the
+      recording process confirms it.
+    - After an identity change, the status could show the
+      previous identity's checkpoint count and latest time;
+      the remembered figures are now kept per identity.
+    - The recording notification could fall back to the
+      default language after a process restart; the text
+      last delivered is now kept by the recording process.
+    - Launch-record housekeeping could delete the
+      supervisor's own window file; orphaned claim markers
+      and stale temporary status files are now swept, and a
+      failing recovery step no longer blocks crash-debris
+      cleanup.
+  - **Journal and proof bundles.**
+    - A journal filled to exactly the checkpoint maximum
+      could no longer be exported; the append limit now
+      matches the export and verification limit.
+    - Exporting a proof bundle after the home identity had
+      been sent out and erased could create a fresh home
+      seed as a side effect; export now refuses instead.
+    - Temporary vault files could retain a copy of an
+      erased identity seed; orphaned temporary files are
+      now swept after writes.
+    - The re-verification CPU budget recorded a capped
+      amount per slice instead of the actual consumption;
+      it now records actual use, so the hourly budget means
+      what it says.
+  - **Identity transfer.**
+    - Cancelling a completed attempt could mis-record the
+      restore state and stall recording until the next
+      transfer action; cancelling an attempt with no
+      staging record could crash; and closing a one-shot
+      sender by another path could leave its confirmation
+      key in the vault. All three are fixed.
+    - The free-space floor is now checked before a transfer
+      plan is adopted, so an import can no longer adopt a
+      plan and then stop recording over the floor; and the
+      verified checkpoint count of an imported archive is
+      now saved when staging completes.
+    - The import progress display was capped by a stale
+      constant below the real journal capacity; the cap now
+      derives from the capacity.
+    - A decryption failure caused by the Android Keystore
+      was reported as a corrupted transfer code; it is now
+      classified as a keystore problem, with the matching
+      guidance.
+  - **Node connection and price.**
+    - An unexpected reply from the local node could make
+      recording stop itself; such replies are now handled
+      as ordinary RPC failures.
+    - The DePIN RPC client no longer follows redirects,
+      matching the node poller.
+    - A failed background start could leave the QTC price
+      marked as fetching indefinitely; the in-flight flag
+      is now released.
+  - **Release record.** APK: 55,995,644 bytes, SHA-256
+    `3542f338c53ec85e102ff11872a892cf7a8745ef4282b7d284f6ae3838b82715`.
+    Installs over v3.0 keeping settings and synced data —
+    the same code is verified in place on the reference
+    device.
+
 ## versionCode 58 / v3.0 — 2026-11-11
 - **The DePIN integration release.** The node launch arguments, the
   database and the bundled node binary are unchanged (still the

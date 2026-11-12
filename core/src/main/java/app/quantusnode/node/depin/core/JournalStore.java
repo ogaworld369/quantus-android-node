@@ -231,7 +231,9 @@ import java.util.Set;
  *    seq > MAX_CHECKPOINTS — the one constant governs both
  *    sides — so anything append ever wrote reloads losslessly,
  *    and reaching the cap surfaces as a refusal instead of a
- *    silent loss.
+ *    silent loss. (Final check round 4, I-06: the refusal now
+ *    starts at seq == MAX_CHECKPOINTS, so the journal never
+ *    holds more entries than one bundle may carry.)
  *  - F-09 (atomic generation gate): the generation overload of
  *    append re-verifies the caller's service generation UNDER
  *    the store lock at write time (see the method), closing
@@ -371,7 +373,10 @@ public final class JournalStore {
      *  (bytes of free space that must remain AFTER a write).
      *  The app layer installs 2 GiB at construction of the
      *  production store; the core default of 0 keeps the JVM
-     *  harness and core-only uses unconstrained. */
+     *  harness and core-only uses unconstrained. The append
+     *  gate enforces the after-write meaning literally: it
+     *  compares usable space against the floor plus the
+     *  incoming entry's exact byte length (S-04). */
     public synchronized void setFreeFloorBytes(long bytes) {
         this.freeFloorBytes = Math.max(0, bytes);
     }
@@ -1811,7 +1816,7 @@ public final class JournalStore {
     /** The append itself; called only from the two synchronized
      *  appends above, so it always runs under the store lock. */
     private void appendInternal(DepinCore.Checkpoint c) {
-        if (c.seq > DepinCore.MAX_CHECKPOINTS) {
+        if (c.seq >= DepinCore.MAX_CHECKPOINTS) {
             // F-05 (v0.9): ONE cap governs both sides of the
             // journal. Checkpoint.fromMap — the reload path —
             // accepts seq only up to MAX_CHECKPOINTS; append
@@ -1822,11 +1827,24 @@ public final class JournalStore {
             // reloads losslessly, and reaching the cap surfaces
             // (the service reports the failure) rather than
             // silently losing a stored record.
+            //
+            // Final check round 4 (I-06): the bound is the
+            // COUNT a bundle may carry, not the largest seq the
+            // reload path parses. verifyBundle — and the
+            // reference schema it mirrors — accepts at most
+            // MAX_CHECKPOINTS checkpoints, so a journal holding
+            // seq 0..MAX (MAX + 1 entries, which the old
+            // "seq > MAX" test admitted) could never be
+            // exported again: the entry at seq MAX made the
+            // whole history unexportable, permanently. The
+            // journal now stops at MAX_CHECKPOINTS entries
+            // (seq MAX - 1 is the last one accepted).
             throw new IllegalStateException(
                     "checkpoint seq " + c.seq
-                            + " exceeds the journal cap "
+                            + " reaches the journal cap "
                             + DepinCore.MAX_CHECKPOINTS
-                            + " (the largest seq the reload path accepts)");
+                            + " (a bundle carries at most that many"
+                            + " checkpoints)");
         }
         long expectedSeq = checkpoints.size();
         if (c.seq != expectedSeq) {
@@ -1853,6 +1871,10 @@ public final class JournalStore {
                         "checkpoint best block number regresses below the recorded tail");
             }
         }
+        byte[] sig = signer.signEntry(c.checkpointHash, c.seq);
+        if (sig == null || sig.length != 64) {
+            throw new IllegalStateException("journal entry signer returned a bad signature");
+        }
         // Design section 3.4 enforcement (final check round
         // 3, H-11): the journal + archives total cap and the
         // installed free-space floor were design numbers with
@@ -1863,7 +1885,23 @@ public final class JournalStore {
         // withholds the batch via FreeFloorException so the
         // caller can present "storage nearly full" without
         // counting a journal failure.
+        // S-04 (self-check 2026-11-11): this block runs
+        // AFTER the signature above has been obtained,
+        // because the incoming size is the exact byte length
+        // of the entry line about to be written, which needs
+        // the signature; both comparisons add that incoming
+        // size, so the cap / floor hold AFTER the write, not
+        // merely before it. When the header has not been
+        // written yet, the first write rewrites the whole
+        // file and also writes the header line, so the
+        // header line's length is part of incoming too.
         {
+            long incomingBytes = (entryLine(c, sig) + "\n")
+                    .getBytes(StandardCharsets.UTF_8).length;
+            if (!headerWritten) {
+                incomingBytes += (Json.canonical(headerMap()) + "\n")
+                        .getBytes(StandardCharsets.UTF_8).length;
+            }
             long journalBytes = headerWritten ? goodTailOffset : 0;
             long archiveBytes = 0;
             for (DepinCore.FormatProfile fmt : new DepinCore
@@ -1874,31 +1912,31 @@ public final class JournalStore {
                     archiveBytes += af.length();
                 }
             }
-            if (journalBytes + archiveBytes
+            if (journalBytes + archiveBytes + incomingBytes
                     > MAX_JOURNAL_PLUS_ARCHIVES_BYTES) {
                 throw new IllegalStateException(
-                        "journal + archives exceed the design "
+                        "journal + archives + incoming entry "
+                                + "exceed the design "
                                 + "section 3.4 cap of "
                                 + MAX_JOURNAL_PLUS_ARCHIVES_BYTES
                                 + " bytes (journal " + journalBytes
-                                + ", archives " + archiveBytes + ")");
+                                + ", archives " + archiveBytes
+                                + ", incoming " + incomingBytes + ")");
             }
             if (freeFloorBytes > 0) {
                 File parent = file.getAbsoluteFile().getParentFile();
                 long usable = parent == null
                         ? Long.MAX_VALUE : parent.getUsableSpace();
-                if (usable < freeFloorBytes) {
+                if (usable < freeFloorBytes + incomingBytes) {
                     throw new FreeFloorException(
-                            "free space " + usable + " is below "
-                                    + "the design section 3.4 floor "
-                                    + freeFloorBytes
-                                    + "; append withheld");
+                            "free space " + usable + " would fall "
+                                    + "below the design section "
+                                    + "3.4 floor " + freeFloorBytes
+                                    + " after writing "
+                                    + incomingBytes
+                                    + " bytes; append withheld");
                 }
             }
-        }
-        byte[] sig = signer.signEntry(c.checkpointHash, c.seq);
-        if (sig == null || sig.length != 64) {
-            throw new IllegalStateException("journal entry signer returned a bad signature");
         }
         if (!headerWritten) {
             // H-02: the first write is a full rewrite; it must

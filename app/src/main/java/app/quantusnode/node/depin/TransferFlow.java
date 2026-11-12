@@ -81,8 +81,15 @@ public final class TransferFlow {
 
     /** The checkpoint ceiling for unverified manifest totals
      *  (E11): nothing the app can hold exceeds it — the same
-     *  ceiling the bundle export enforces. */
-    public static final long MAX_DISPLAY_CHECKPOINTS = 100_000L;
+     *  ceiling the bundle export enforces. Final check round
+     *  4 (I-19): DERIVED from that ceiling. It was a literal
+     *  100,000, which stopped being "the same ceiling" when
+     *  the export cap was raised to the journal's own
+     *  (F-25): a staged history between 100,001 and 200,000
+     *  checkpoints then showed its total — and its verified
+     *  count — clipped to 100,000. */
+    public static final long MAX_DISPLAY_CHECKPOINTS =
+            app.quantusnode.node.depin.core.BundleExport.MAX_CHECKPOINTS;
 
     public static final class Snapshot {
         public ReceiverState receiver = ReceiverState.NOT_INTRODUCED;

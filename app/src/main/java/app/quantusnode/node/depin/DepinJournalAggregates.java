@@ -157,8 +157,16 @@ public final class DepinJournalAggregates {
         for (int i = 0; i < n; i++) {
             long t = pairs[i][0];
             int p = clampPeers(pairs[i][1]);
-            days.add(Instant.ofEpochSecond(t).atZone(zone)
-                    .toLocalDate());
+            // Residual F-23: only days up to now enter the
+            // streak set. A future-dated record (a clock
+            // moved forward, then back) used to count
+            // toward the streak — a "run" of days that have
+            // not happened. (The windows below keep their
+            // own bounds; this set is the streak's alone.)
+            if (t <= nowUnix) {
+                days.add(Instant.ofEpochSecond(t).atZone(zone)
+                        .toLocalDate());
+            }
             if (t >= windowStart && t < windowEnd) {
                 int idx = (int) ((t - windowStart) / SLOT_SECONDS);
                 // Ascending order: a later record in the same

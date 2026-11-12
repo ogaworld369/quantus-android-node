@@ -7,7 +7,7 @@ it has synced.
 
 - applicationId: `app.quantusnode.node`
 - minSdk 31 / targetSdk 35 / arm64-v8a only
-- versionName `3.0` (versionCode 58; public releases began at v0.1.0)
+- versionName `3.0.1` (versionCode 62; public releases began at v0.1.0)
 - Permissions (only these): `INTERNET`, `ACCESS_NETWORK_STATE`,
   `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_SPECIAL_USE`,
   `POST_NOTIFICATIONS`
@@ -221,7 +221,7 @@ strictly higher, so a fixed versionCode would silently strand testers
 on old builds. `versionName` stayed `0.1-mvp` through the
 pre-release builds; the first public release (versionCode 20)
 shipped as `0.1.0`, and the versionName in `build-manual.sh` and
-`build.gradle` moves with each release since (currently `3.0`).
+`build.gradle` moves with each release since (currently `3.0.1`).
 versionCode 3 is the
 evidence build: per-attempt start records on the dashboard and a
 share-log button, for diagnosing the on-device instant-exit failure

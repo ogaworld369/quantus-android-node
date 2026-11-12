@@ -662,6 +662,15 @@ public final class RpcAttemptLog {
                 if (!tmp.renameTo(file)) {
                     throw new IOException("could not replace attempt log");
                 }
+                // Final check round 4 (I-15): the rename is
+                // made durable like the torn-tail repair's
+                // (H-04). The record appended next is fsynced
+                // into the NEW file; without the directory
+                // sync a power loss could bring the old file
+                // back under this name and take that record —
+                // a paid attempt — with it.
+                app.quantusnode.node.depin.core.TransferIo
+                        .fsyncDir(parent);
             } catch (IOException e) {
                 // The prune is part of making consumption durable:
                 // if it cannot be completed, the on-disk state is

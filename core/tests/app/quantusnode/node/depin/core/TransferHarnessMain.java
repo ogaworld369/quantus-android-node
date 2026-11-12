@@ -221,6 +221,12 @@ public final class TransferHarnessMain {
      *  shape JournalStore keeps: header + signed entry lines. */
     private static void writeLegacyArchive(File storeRoot, byte[] seed,
                                            int count) throws Exception {
+        writeLegacyArchiveWithIterations(storeRoot, seed, count, 50);
+    }
+
+    private static void writeLegacyArchiveWithIterations(
+            File storeRoot, byte[] seed, int count, int iterations)
+            throws Exception {
         byte[] pub = Ed25519.publickeyFromSeed(seed);
         String deviceId = DepinCore.deviceIdFromPubkey(pub);
         StringBuilder sb = new StringBuilder();
@@ -238,7 +244,7 @@ public final class TransferHarnessMain {
         for (int i = 0; i < count; i++) {
             DepinCore.Checkpoint cp = DepinCore.makeCheckpoint(
                     DepinCore.FMT_V04, i, obs.get(i), prevState, prevHash,
-                    50, pub);
+                    iterations, pub);
             Map<String, Object> line = new LinkedHashMap<>(cp.toMap());
             line.put("entry_sig", Hex.encode(
                     DepinCore.journalEntrySig(seed, cp.checkpointHash, i)));
@@ -1156,6 +1162,25 @@ public final class TransferHarnessMain {
         ledger3.stamp();
         check("budget: unsettled reservation recovered as consumed",
                 ledger3.windowUsedMs() >= 1500 + 2000);
+        // Final check round 4 (I-16): a slice cannot stop
+        // inside a checkpoint, so its actual CPU can exceed the
+        // 2 s it reserved — and the ledger must charge what was
+        // actually spent (section 3.5: "settled with the actual
+        // consumption"), not clip it to the reservation. Clipped,
+        // every overshoot was CPU the hourly budget never saw.
+        // The idle owed stays capped at the slice limit: that
+        // cap is what the app layers' wait-absorbing sleep is
+        // sized for.
+        File root4 = tmpDir("budget-overshoot");
+        Reverification.BudgetLedger ledger4 =
+                new Reverification.BudgetLedger(root4, ts);
+        Map<String, Object> res4 = ledger4.reserve();
+        ledger4.settle(res4, 3500);
+        check("r4/budget: an overshooting slice is charged its actual CPU",
+                ledger4.windowUsedMs() >= 3500);
+        check("r4/budget: the idle owed stays within the slice cap",
+                Json.asLong(res4.get("wait_required_ms"))
+                        == Reverification.SLICE_MAX_CPU_MS);
     }
 
     private static void testReversePrefix() throws Exception {
@@ -2313,6 +2338,68 @@ public final class TransferHarnessMain {
                         .sentOutIdentityAwaitingErasure(
                                 TransferState.load(p.senderRoot),
                                 p.deviceId)));
+    }
+
+    /** Self-check S-07 fixture: an identity section whose
+     *  sender_history carries a single entry of the given
+     *  state. */
+    private static void s07AddHistoryIdentity(TransferState st,
+                                              String deviceId,
+                                              String historyState) {
+        Map<String, Object> sec = st.identityOrCreate(deviceId);
+        List<Object> hist = new ArrayList<>();
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("state", historyState);
+        entry.put("generation", 1L);
+        hist.add(entry);
+        sec.put("sender_history", hist);
+    }
+
+    /** Self-check S-07: sentOutErasureCandidates enumerates
+     *  exactly the identities the single-identity decision
+     *  (sentOutIdentityAwaitingErasure) would name, in
+     *  identities() iteration order — the derivation the
+     *  app layer falls back to when the home seed (and
+     *  with it the id the fresh due check keys on) is
+     *  already gone and the erasure record is unreadable. */
+    private static void testS07SentOutErasureCandidates()
+            throws Exception {
+        TransferState empty = TransferState.load(tmpDir("s07-empty"));
+        check("s07: no identities yields no erasure candidates",
+                TransferRemediation.sentOutErasureCandidates(empty)
+                        .isEmpty());
+        TransferState single = TransferState.load(tmpDir("s07-single"));
+        s07AddHistoryIdentity(single, "qdp1-s07-a", "S2");
+        check("s07: a single S2 identity is the only candidate",
+                TransferRemediation.sentOutErasureCandidates(single)
+                        .equals(Arrays.asList("qdp1-s07-a")));
+        TransferState two = TransferState.load(tmpDir("s07-two"));
+        s07AddHistoryIdentity(two, "qdp1-s07-a", "S2");
+        s07AddHistoryIdentity(two, "qdp1-s07-b", "S2");
+        check("s07: two qualifying identities are both enumerated",
+                TransferRemediation.sentOutErasureCandidates(two)
+                        .equals(Arrays.asList(
+                                "qdp1-s07-a", "qdp1-s07-b")));
+        TransferState openS1 = TransferState.load(tmpDir("s07-open-s1"));
+        s07AddHistoryIdentity(openS1, "qdp1-s07-a", "S2");
+        TransferState.childOrCreate(
+                openS1.identityOrCreate("qdp1-s07-a"), "sender");
+        check("s07: an identity with an open S1 is excluded",
+                TransferRemediation.sentOutErasureCandidates(openS1)
+                        .isEmpty());
+        TransferState activeSender =
+                TransferState.load(tmpDir("s07-active"));
+        s07AddHistoryIdentity(activeSender, "qdp1-s07-a", "S2");
+        activeSender.setActive(TransferState.binding(
+                "qdp1-s07-a", 2, "sender", "holding"));
+        check("s07: the active sender is excluded",
+                TransferRemediation.sentOutErasureCandidates(
+                        activeSender).isEmpty());
+        TransferState nonS2 = TransferState.load(tmpDir("s07-non-s2"));
+        s07AddHistoryIdentity(nonS2, "qdp1-s07-a", "S1");
+        check("s07: an identity with only non-S2 history is excluded",
+                TransferRemediation.sentOutErasureCandidates(nonS2)
+                        .isEmpty());
     }
 
     /** Audit F6: the sent-out marker closes the gate ONLY
@@ -4401,6 +4488,97 @@ public final class TransferHarnessMain {
                 in.checkpointCount == 6);
     }
 
+
+    /** S-02 (self-check 2026-11-11): the H-08 iterations
+     *  gate covered only the staged journal's own
+     *  checkpoints; an archive naming a different iteration
+     *  count staged as-is. The same gate now applies to
+     *  every archive right after its parse, and the refusal
+     *  names the archive. The fixture builds the archive
+     *  checkpoints at 51 iterations (a fully self-consistent
+     *  archive: hashes and chain states recompute under 51)
+     *  while the journal stays at the harness's 50, so only
+     *  the archive can trip the gate installed at 50. */
+    private static void testS02ArchiveIterationsGate()
+            throws Exception {
+        Pair p = newPair(false);
+        writeLegacyArchiveWithIterations(p.senderRoot, p.seed, 3, 51);
+        TransferSender.ExportResult ex = p.sender.exportPackage(p.seed);
+        TransferReceiver strict = p.newReceiver();
+        strict.setExpectedIterations(50);
+        String message = null;
+        try {
+            strict.stagePackage(ex.packageFile, ex.transferCode);
+        } catch (Exception e) {
+            message = e.getMessage();
+        }
+        check("s02: an archive naming wrong iterations is refused at staging",
+                message != null);
+        check("s02: the refusal names the archive",
+                message != null
+                        && message.contains(
+                                JournalStore.ARCHIVE_V04_FILE_NAME));
+    }
+
+    /** S-03 (self-check 2026-11-11): the chain-phase
+     *  assignment sr.verifiedCount = parsed.count() ran
+     *  BEFORE the archive loop, so an archive's early
+     *  saveStaging persisted the count as confirmed even
+     *  when a later step-5 check then failed the staging.
+     *  The fixture crafts a package whose manifest names a
+     *  wrong anchor bundle hash (re-signed and re-sealed
+     *  with the identity seed via TransferPackage
+     *  .buildPackage, so every earlier step passes, the
+     *  archive's early save runs, and step 5's anchor
+     *  comparison is what refuses it): after the exception,
+     *  the staging record on disk must still carry
+     *  verified_count 0, even though its archive
+     *  sig-verified hash proves the early save did run. */
+    private static void testS03VerifiedCountAfterArchiveFailure()
+            throws Exception {
+        Pair p = newPair(true);
+        TransferSender.ExportResult ex = p.sender.exportPackage(p.seed);
+        TransferPackage.Envelope env = TransferPackage.parseEnvelope(
+                Files.readAllBytes(ex.packageFile.toPath()));
+        Map<String, Object> manifest =
+                new LinkedHashMap<>(env.manifest.raw);
+        String anchor = (String) manifest.get("anchor_bundle_hash");
+        char repl = anchor.charAt(0) == 'a' ? 'b' : 'a';
+        manifest.put("anchor_bundle_hash", repl + anchor.substring(1));
+        byte[] journalBytes = Files.readAllBytes(new File(
+                p.senderRoot, JournalStore.FILE_NAME).toPath());
+        File archiveFile = new File(p.senderRoot,
+                JournalStore.ARCHIVE_V04_FILE_NAME);
+        if (!archiveFile.isFile()) {
+            archiveFile = TransferStore.archiveFile(p.senderRoot,
+                    JournalStore.ARCHIVE_V04_FILE_NAME);
+        }
+        byte[] archiveBytes = Files.readAllBytes(archiveFile.toPath());
+        byte[] confirmSecret = new byte[16];
+        RANDOM.nextBytes(confirmSecret);
+        String code = TransferCodec.generateCode(RANDOM);
+        Map<String, Object> crafted = TransferPackage.buildPackage(
+                p.seed, manifest, confirmSecret, journalBytes,
+                java.util.Collections.singletonList(archiveBytes),
+                code, RANDOM);
+        File craftedFile = new File(p.receiverRoot, "crafted-anchor.json");
+        Files.write(craftedFile.toPath(), TransferCodec.jcs(crafted));
+        String craftedSha = TransferPackage.parseEnvelope(
+                Files.readAllBytes(craftedFile.toPath()))
+                .packageSha256();
+        check("s03: a package failing step 5 (anchor) is refused at staging",
+                throwsAny(() -> p.receiver.stagePackage(
+                        craftedFile, code)));
+        File root = TransferStore.stagingRoot(p.receiverRoot,
+                p.deviceId, 1, craftedSha);
+        TransferStore.StagingRecord sr = TransferStore.loadStaging(root);
+        check("s03: the archive early save ran before the step-5 failure",
+                sr != null && sr.archiveSigVerifiedSha256 != null
+                        && !sr.archiveSigVerifiedSha256.isEmpty());
+        check("s03: verified_count on disk stays 0 after the failed staging",
+                sr != null && sr.verifiedCount == 0);
+    }
+
     /** H-10 (final check round 3): staged verification
      *  re-ran the FULL signature-verifying parse at every
      *  section boundary, and the re-verification budget
@@ -4647,6 +4825,160 @@ public final class TransferHarnessMain {
                 Arrays.equals(senderJournal, liveJournal));
     }
 
+    /** Final check round 4, core follow-ups.
+     *
+     *  (1) S-03 completion: the self-check fix moved the
+     *  confirmed verified count to an in-memory assignment
+     *  after step 5 — and nothing saved the record after it,
+     *  so a FULLY verified staging kept verified_count 0 on
+     *  disk for good. The count is now persisted once step 5
+     *  has passed.
+     *
+     *  (2) I-08: TransferIo.writeRecordAtomic uses a unique
+     *  temp name per call, so a writer killed between its
+     *  temp write and the rename leaves the temp behind —
+     *  for the vault, a full copy of every wrapped entry as
+     *  it stood. A later erasure removed the entry from the
+     *  live file only; the orphan kept the "erased" seed's
+     *  wrap on disk indefinitely. Every vault write now
+     *  sweeps such leftovers. */
+    private static void testRound4CoreFollowUps() throws Exception {
+        Pair p = newPair(true);
+        TransferSender.ExportResult ex = p.sender.exportPackage(p.seed);
+        TransferReceiver.IntakeResult in =
+                p.receiver.stagePackage(ex.packageFile, ex.transferCode);
+        File root = TransferStore.stagingRoot(p.receiverRoot,
+                p.deviceId, 1, in.packageSha256);
+        TransferStore.StagingRecord sr = TransferStore.loadStaging(root);
+        check("r4/s03: a fully verified staging records its verified count",
+                sr != null && in.checkpointCount > 0
+                        && sr.verifiedCount == in.checkpointCount);
+
+        File vroot = tmpDir("vault-temps");
+        TransferVault v = new TransferVault(vroot, testWrapKey());
+        byte[] seedA = new byte[32];
+        RANDOM.nextBytes(seedA);
+        v.put(TransferVault.receiverKey(1), seedA);
+        File orphan = new File(vroot,
+                TransferVault.FILE_NAME + ".tmp-dead-1");
+        Files.copy(v.file().toPath(), orphan.toPath());
+        v.delete(TransferVault.receiverKey(1));
+        boolean leftover = false;
+        File[] kids = vroot.listFiles();
+        if (kids != null) {
+            for (File k : kids) {
+                if (k.getName().startsWith(
+                        TransferVault.FILE_NAME + ".tmp")) {
+                    leftover = true;
+                }
+            }
+        }
+        check("r4/vault: erasing an entry leaves no temp copy of the vault behind",
+                !leftover);
+        check("r4/vault: the live vault no longer holds the entry",
+                !new TransferVault(vroot, testWrapKey())
+                        .has(TransferVault.receiverKey(1)));
+
+        // (3) I-09: the section 3.4 free-space floor must be
+        // judged BEFORE the promotion freezes a writer,
+        // quarantines a placement or adopts a plan. Checked
+        // only inside executePromotion, a refusal left the
+        // trial with an adopted plan — and an adopted,
+        // unfinished plan closes the writer gate for every
+        // identity in the store (F-06) until space frees.
+        Pair q = newPair(true);
+        TransferSender.ExportResult qx =
+                q.sender.exportPackageOneshot(q.seed);
+        TransferReceiver.IntakeResult qin = q.receiver.intakePackage(
+                qx.packageFile, qx.transferCode);
+        q.receiver.completeIntake(qin.deviceId, qin.generation,
+                qin.packageSha256);
+        q.receiver.setFreeFloorBytes(Long.MAX_VALUE / 4);
+        check("r4/floor: a confirm under the free-space floor is refused",
+                throwsAny(() -> q.receiver.confirmOneshot(q.deviceId, 1)));
+        Map<String, Object> qtrial = TransferState.child(
+                TransferState.load(q.receiverRoot)
+                        .receiver(q.deviceId, 1), "trial");
+        check("r4/floor: the refusal lands before any plan is adopted",
+                qtrial == null || !TransferState.boolOr(
+                        qtrial, "plan_adopted", false));
+        q.receiver.setFreeFloorBytes(0);
+        q.receiver.recover();
+        Map<String, Object> qclosure = TransferState.child(
+                TransferState.load(q.receiverRoot)
+                        .receiver(q.deviceId, 1), "closure");
+        check("r4/floor: recovery completes the confirm once space allows",
+                qclosure != null && "committed_oneshot".equals(
+                        TransferState.stringOr(qclosure, "kind", null)));
+
+        // (4) I-17: an abandon issued AFTER a completed
+        // cancellation must record the restoration as
+        // complete. issueAbandon overwrote the trial's stage
+        // with "refused" and only then asked whether the
+        // stage was "cancel_complete", so the question could
+        // never be answered yes: every adopted-plan trial was
+        // recorded "restoration pending" — which closes the
+        // writer gate for that identity until some later
+        // recovery pass re-derives what was already true.
+        Pair a = newPair(true);
+        TransferSender.ExportResult ax = a.sender.exportPackage(a.seed);
+        a.receiver.intakePackage(ax.packageFile, ax.transferCode);
+        Map<String, Object> an = a.receiver.buildNotice(a.deviceId, 1);
+        Map<String, Object> ap = a.sender.issuePermit(a.seed, an);
+        a.receiver.intakePermit(ap);
+        a.receiverFin.value = 400000L + 1000 + 100;
+        a.receiver.confirmTrial(a.deviceId, 1);
+        Map<String, Object> atrial = TransferState.child(
+                TransferState.load(a.receiverRoot)
+                        .receiver(a.deviceId, 1), "trial");
+        check("r4/abandon: fixture is a cancelled trial with an adopted plan",
+                atrial != null && "cancel_complete".equals(
+                        TransferState.stringOr(atrial, "stage", null))
+                        && TransferState.boolOr(
+                                atrial, "plan_adopted", false));
+        a.receiver.issueAbandon(a.deviceId, 1);
+        check("r4/abandon: restoration is complete after a completed cancellation",
+                "complete".equals(TransferState.stringOr(
+                        TransferState.load(a.receiverRoot)
+                                .receiver(a.deviceId, 1),
+                        "restoration", null)));
+
+        // (5) I-18: cancelling a trial whose staging record
+        // is gone is the classification-(c) stop recovery
+        // already names ("trial without a staging record"),
+        // not a NullPointerException out of the cancel path.
+        Pair c = newPair(true);
+        TransferSender.ExportResult cx =
+                c.sender.exportPackageOneshot(c.seed);
+        TransferReceiver.IntakeResult cin = c.receiver.intakePackage(
+                cx.packageFile, cx.transferCode);
+        c.receiver.completeIntake(cin.deviceId, cin.generation,
+                cin.packageSha256);
+        c.receiver.setFreeFloorBytes(Long.MAX_VALUE / 4);
+        throwsAny(() -> c.receiver.confirmOneshot(c.deviceId, 1));
+        c.receiver.setFreeFloorBytes(0);
+        File croot = TransferStore.stagingRoot(c.receiverRoot,
+                c.deviceId, 1, cin.packageSha256);
+        check("r4/cancel: fixture removed the staging record",
+                TransferStore.stagingRecordFile(croot).delete());
+        check("r4/cancel: a missing staging record is a named inconsistency",
+                throwsType(() -> c.receiver.cancelTrial(c.deviceId, 1),
+                        TransferReceiver.InconsistencyException.class));
+
+        // (6) I-23: a one-shot S1 closed through a STRICT-side
+        // closer (the pre-permit cancel is offered whatever
+        // the open handover's mode) left its commit-keys vault
+        // entry behind for good: only the two one-shot closers
+        // removed it.
+        Pair k = newPair(false);
+        k.sender.exportPackageOneshot(k.seed);
+        check("r4/commitkeys: fixture holds the one-shot commit-key entry",
+                k.senderVault.has("commit-keys:1"));
+        k.sender.cancelBeforePermit(k.seed);
+        check("r4/commitkeys: a strict-side cancel removes the commit keys too",
+                !k.senderVault.has("commit-keys:1"));
+    }
+
     public static void main(String[] args) throws Exception {
         testCodec();
         testWriterGate();
@@ -4678,6 +5010,7 @@ public final class TransferHarnessMain {
         testM3MissingCommitKey();
         testM4SameIdentityFreeze();
         testTracesAndRemediation();
+        testS07SentOutErasureCandidates();
         testF6MarkerScope();
         testM8TraceConsistency();
         testF7CommitKeyRescueLedger();
@@ -4703,6 +5036,9 @@ public final class TransferHarnessMain {
         testExpansionDebris();
         testH07NoPlaintextSeedInStaging();
         testH08IterationsGate();
+        testS02ArchiveIterationsGate();
+        testS03VerifiedCountAfterArchiveFailure();
+        testRound4CoreFollowUps();
         testH10SigVerifiedCache();
         testF19OneshotAbandonNoneForm();
         testF06WriterGateDisplacement();

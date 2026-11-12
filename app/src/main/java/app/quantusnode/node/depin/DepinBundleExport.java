@@ -66,8 +66,10 @@ public final class DepinBundleExport {
         AndroidSeedVault vault = new AndroidSeedVault(context);
         byte[] seed = null;
         try {
-            String shadowDeviceId = DepinCore.deviceIdFromPubkey(
-                    vault.publicKey());
+            // I-07: create-free, like the journal construction.
+            byte[] homePubkey = vault.publicKeyIfPresent();
+            String shadowDeviceId = homePubkey == null ? null
+                    : DepinCore.deviceIdFromPubkey(homePubkey);
             DepinTransferRuntime.WriterResolution resolution =
                     DepinTransferRuntime.resolveWriter(
                             context, shadowDeviceId);
@@ -85,7 +87,12 @@ public final class DepinBundleExport {
                             "transferred identity seed missing");
                 }
             } else {
-                seed = vault.loadOrCreateSeed();
+                seed = vault.loadSeedIfPresent();
+                if (seed == null) {
+                    throw new IllegalStateException(
+                            "home identity seed absent; refusing to "
+                                    + "mint one during bundle export");
+                }
             }
             String seedDeviceId = DepinCore.deviceIdFromPubkey(
                     Ed25519.publickeyFromSeed(seed));

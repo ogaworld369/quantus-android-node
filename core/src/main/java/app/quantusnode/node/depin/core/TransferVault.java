@@ -87,6 +87,39 @@ public final class TransferVault {
         root.put("entries", m);
         TransferIo.writeRecordAtomic(file,
                 Json.canonicalBytes(root));
+        sweepOrphanTemps();
+    }
+
+    /** Final check round 4 (I-08): remove temp files an
+     *  interrupted vault write left behind. writeRecordAtomic
+     *  names its temp uniquely per call (audit H-3), so a
+     *  writer killed between the temp write and the rename
+     *  leaves a full copy of the vault — every wrapped entry
+     *  as it stood — that no later write ever overwrites. An
+     *  entry erased afterwards was gone from the live file
+     *  only; the orphan kept its wrap. Vault writers are
+     *  serialised by the app layers (one transfer operation at
+     *  a time), so once this write's own temp has been renamed
+     *  into place every remaining sibling temp is an orphan.
+     *  Best effort: a leftover that cannot be deleted now is
+     *  retried by the next vault write. */
+    private void sweepOrphanTemps() {
+        try {
+            File dir = file.getAbsoluteFile().getParentFile();
+            File[] kids = dir == null ? null : dir.listFiles();
+            if (kids == null) {
+                return;
+            }
+            String prefix = FILE_NAME + ".tmp";
+            for (File k : kids) {
+                if (k.isFile() && k.getName().startsWith(prefix)) {
+                    //noinspection ResultOfMethodCallIgnored
+                    k.delete();
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // Housekeeping; the next vault write sweeps again.
+        }
     }
 
     public static String senderKey(long generation) {
