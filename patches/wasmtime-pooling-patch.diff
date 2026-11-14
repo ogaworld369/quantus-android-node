@@ -1,0 +1,28 @@
+diff --git a/client/executor-wasmtime/src/runtime.rs b/client/executor-wasmtime/src/runtime.rs
+index 2e47f14..03e61e7 100644
+--- a/client/executor-wasmtime/src/runtime.rs
++++ b/client/executor-wasmtime/src/runtime.rs
+@@ -263,9 +263,21 @@ fn common_config(semantics: &Semantics) -> std::result::Result<wasmtime::Config,
+ 	config.wasm_tail_call(false);
+ 	config.wasm_extended_const(false);
+ 
++	// Android build patch (wasmtime-pooling): ignore the pooling part of the
++	// requested strategy. Wasmtime's pooling allocator reserves its whole
++	// memory pool with a single mmap of 64 instances * (4 GiB max memory +
++	// guard) = 258 GiB of virtual address space, which some Android devices
++	// refuse (mmap ENOMEM: "failed to create memory pool mapping"). Once that
++	// happens no runtime can be created at all and block verification fails
++	// permanently. Recreate instances on demand instead; copy-on-write
++	// memory images are kept where the requested strategy used them. This is
++	// patched here, in the one place every runtime creation in the process
++	// funnels through, because executors are also built with default
++	// semantics outside the node service (e.g. the chain spec's genesis
++	// config builder).
+ 	let (use_pooling, use_cow) = match semantics.instantiation_strategy {
+-		InstantiationStrategy::PoolingCopyOnWrite => (true, true),
+-		InstantiationStrategy::Pooling => (true, false),
++		InstantiationStrategy::PoolingCopyOnWrite => (false, true),
++		InstantiationStrategy::Pooling => (false, false),
+ 		InstantiationStrategy::RecreateInstanceCopyOnWrite => (false, true),
+ 		InstantiationStrategy::RecreateInstance => (false, false),
+ 	};

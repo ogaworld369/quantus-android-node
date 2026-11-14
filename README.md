@@ -10,7 +10,7 @@ The design concept is to make the node's pulse visible: live block/peer visualiz
 
 | | |
 |---|---|
-| Current release | **v3.0.1** (versionCode 62), published 2026-11-12 — [release page](https://github.com/ogaworld369/quantus-android-node/releases/tag/v3.0.1) |
+| Current release | **v3.0.2** (versionCode 63), published 2026-11-14 — [release page](https://github.com/ogaworld369/quantus-android-node/releases/tag/v3.0.2) |
 | First public release | v0.1.0, published 2026-11-04 |
 | Download | Signed APK from [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) |
 | Requirements | Android 12 or later, arm64 device |
@@ -25,6 +25,12 @@ The design concept is to make the node's pulse visible: live block/peer visualiz
 - **It is not** a miner. It does not mine and earns no rewards.
 - **It is not** a wallet. It never handles wallet seed phrases or reward keys; the only secrets on the device are identity keys, and neither controls any assets (see "Security first" below).
 - **New in v3.0 — activity recording (DePIN), built in.** Opt-in and off by default. With it on, the app keeps a signed record of the node's uptime and relay work, which you can export as a proof bundle file whenever you choose.
+
+## What's in v3.0.2
+
+- **A hotfix release: the bundled node binary is rebuilt** (the first binary change since versionCode 10). No feature changes, no new permissions, and no changes to the app code, the node launch arguments or the database.
+- On some devices (reported on a Xiaomi phone) a node could stall permanently — stuck far behind the tip with peers dropping to zero — because the node's Wasm runtime reserved its memory pool with a single 258 GiB virtual-memory mapping that the device refused; after that, every block verification failed. The rebuilt binary creates runtime instances on demand instead of reserving the pool. Block validation itself is unchanged.
+- Details: [CHANGELOG.md](CHANGELOG.md).
 
 ## What's in v3.0.1
 

@@ -8,6 +8,28 @@ the first public release (published 2026-11-04).
 "versionCode" is the Android build number of the MVP app (the bundled
 node binary is unchanged unless a build says otherwise).
 
+## versionCode 63 / v3.0.2 — 2026-11-14
+- **A hotfix release: the bundled node binary is rebuilt** (the
+  first binary change since versionCode 10). App code,
+  permissions (still five), the node launch arguments and the
+  database are unchanged from v3.0.1.
+  - **Nodes could stall permanently on some devices** (reported
+    on a Xiaomi device, stuck at block 16,038 while the network
+    was at ~402k, with peers dropping to zero). The node's Wasm
+    runtime reserved its memory pool with a single 258 GiB
+    virtual-memory mapping; when a device refuses that
+    reservation, no runtime can be created and every block
+    verification fails from then on. The rebuilt binary creates
+    runtime instances on demand instead of reserving the pool,
+    so the failure cannot occur. Other devices were not
+    affected; the fix changes nothing about block validation
+    itself.
+  - The stall could also leave the status showing "synced"
+    while the node was far behind, because the node itself no
+    longer considered itself syncing once peers were gone.
+    With verification working again the node catches up and
+    the status follows.
+
 ## versionCode 62 / v3.0.1 — 2026-11-12
 - **A maintenance release: audit fixes only.** The node launch
   arguments, the database and the bundled node binary are

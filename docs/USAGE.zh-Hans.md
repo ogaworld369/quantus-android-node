@@ -4,7 +4,7 @@
 
 本应用在 Android 手机上运行 Quantus Network（QTC 主网）的**非验证者全节点**。它同步区块链、自行验证每一个区块，并向对等节点中继数据。它**不挖矿**，也**没有钱包**——从不接触助记词或奖励密钥。
 
-> 当前状态：v3.0.1 已发布（2026-11-12，当前版本，审计修复维护版；v3.0 为 2026-11-11 的 DePIN 集成版）。签名 APK 已在 [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) 上提供，并附带 SHA-256 校验和。此前的测试版本由维护者直接提供。
+> 当前状态：v3.0.2 已发布（2026-11-14，当前版本，针对某些设备上节点同步可能停滞问题的紧急修复版；v3.0.1 为 2026-11-12 的审计修复维护版）。签名 APK 已在 [GitHub Releases](https://github.com/ogaworld369/quantus-android-node/releases) 上提供，并附带 SHA-256 校验和。此前的测试版本由维护者直接提供。
 
 ## 系统要求
 

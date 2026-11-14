@@ -43,9 +43,9 @@ cargo update -p rustix   # 1.1.2 -> 1.1.6 (linux-raw-sys 0.11.0->0.12.1, libc 0.
 
 The change is limited to `Cargo.lock` (11 lines). **At the compile-verification (Phase 0) stage**, no source code patches were needed. However, the current build that runs on a real device requires the two patches in the next section.
 
-## 3. Source code patches (required for the shipping build; two of them)
+## 3. Source code patches (required for the shipping build; three of them)
 
-Not needed for compile verification alone, but to produce a binary that works on a real device, apply the two patches in the repository's `patches/` before building. **If either one is missing, the result is unusable on a real device** (even when built exactly per the procedure in §5, pruning does not take effect and archive storage is forced / the binary panics and dies immediately right after networking starts. Both were actually hit on a real device).
+Not needed for compile verification alone, but to produce a binary that works on a real device, apply the three patches in the repository's `patches/` before building. **If either one is missing, the result is unusable on a real device** (even when built exactly per the procedure in §5, pruning does not take effect and archive storage is forced / the binary panics and dies immediately right after networking starts. Both were actually hit on a real device).
 
 ### 3.1 Pruning patch
 
@@ -65,6 +65,15 @@ When the node is run from the app as a plain process, litep2p's DNS resolution (
 3. Add a `[patch.crates-io]` entry to `chain/Cargo.toml` (the hunk at the end of the patch) to replace these two crates with the vendored versions (`Cargo.lock` is updated by cargo)
 
 After the patch, DNS resolution falls back in the order JNI (only when an Android context exists) → system properties `net.dns1` through `net.dns4` → public DNS (1.1.1.1 / 8.8.8.8), and never panics on any path.
+
+### 3.3 Wasmtime pooling patch
+
+The default instantiation strategy (PoolingCopyOnWrite) makes wasmtime reserve its whole memory pool with a single mmap of 64 instances × (4 GiB max memory + guard) = 258 GiB of virtual address space. Some Android devices refuse that reservation (mmap ENOMEM, logged as `failed to create memory pool mapping: mmap failed to reserve 0x4082000000 bytes`), after which no runtime can be created and block verification fails permanently; this was reported by a user on a Xiaomi device whose node stalled at block 16,038 while the network was at ~402k (2026-11-14). Applying `patches/wasmtime-pooling-patch.diff` (a one-file diff to `client/executor-wasmtime/src/runtime.rs`) makes every runtime creation recreate instances on demand instead of pooling them (copy-on-write memory images are kept). The patch sits in the executor's config construction, the one place all runtime creation in the process funnels through, because executors are also built with default semantics outside the node service (the chain spec's genesis config builder is one such path; a service-level override alone does not cover it). Verified on the host by running the node with a 16 GiB virtual-address-space limit (`ulimit -v`): unpatched it aborts at startup with the exact reported error; patched it starts fully and creates runtimes with no pool mapping.
+
+```sh
+cd chain
+patch -p1 < ../patches/wasmtime-pooling-patch.diff   # adjust the path to patches/ to match your layout
+```
 
 ## 4. Environment variables (the required set)
 

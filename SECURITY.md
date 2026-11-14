@@ -8,7 +8,7 @@ We will acknowledge reports as soon as we reasonably can and will credit reporte
 
 ## Scope notes
 - This app holds no wallet secrets by design. Its secrets are identity keys only: the node P2P identity key, and — only when DePIN activity recording is enabled — the DePIN participation identity seed (stored encrypted in app-private storage). Neither controls any assets.
-- Public releases began on 2026-11-04 (v0.1.0); the current release is v3.0.1. Signed release APKs and their SHA-256 checksums are published on the Releases page. Builds from other sources should not be trusted.
+- Public releases began on 2026-11-04 (v0.1.0); the current release is v3.0.2. Signed release APKs and their SHA-256 checksums are published on the Releases page. Builds from other sources should not be trusted.
 
 ## Security notes
 
